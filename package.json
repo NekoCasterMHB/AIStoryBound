@@ -1,0 +1,52 @@
+{
+  "name": "aistorybound",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI 小说驱动互动游戏平台 —— 上传一本小说,选择一个身份,进入故事,并亲手改变原本的结局。",
+  "type": "module",
+  "packageManager": "pnpm@10.6.5",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "lint": "eslint .",
+    "typecheck": "nuxt typecheck",
+    "build:cf": "nuxt build --preset cloudflare_module",
+    "deploy:cf": "nuxt build --preset cloudflare_module && wrangler deploy",
+    "db:generate": "drizzle-kit generate",
+    "db:studio": "drizzle-kit studio",
+    "db:migrate:local": "wrangler d1 execute aistorybound --local --file=./drizzle/0000_nostalgic_domino.sql",
+    "db:migrate:remote": "wrangler d1 execute aistorybound --remote --file=./drizzle/0000_nostalgic_domino.sql"
+  },
+  "dependencies": {
+    "@iconify-json/lucide": "^1.2.123",
+    "@iconify-json/simple-icons": "^1.2.93",
+    "@nuxt/ui": "^4.10.0",
+    "drizzle-orm": "^0.45.2",
+    "nuxt": "^4.5.2",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260820.1",
+    "@nuxt/eslint": "^1.17.0",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^10.8.1",
+    "nitro-cloudflare-dev": "^0.2.2",
+    "typescript": "^5.9.3",
+    "vue-tsc": "^3.3.10",
+    "wrangler": "^4.124.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "@tailwindcss/oxide",
+      "unrs-resolver",
+      "vue-demi",
+      "@parcel/watcher",
+      "rolldown",
+      "workerd",
+      "@cloudflare/workerd-linux-64"
+    ]
+  }
+}

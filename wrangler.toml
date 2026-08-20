@@ -1,0 +1,22 @@
+# AI StoryBound — Cloudflare Worker 配置
+# 本地 dev: nitro-cloudflare-dev 通过 getPlatformProxy 读取本文件,在 Nitro dev server 模拟 binding
+# 部署:     wrangler deploy 将 binding 注入生产 Worker(与本地同构)
+# 类型:     修改 binding 后运行 `npx wrangler types` 重新生成 worker-configuration.d.ts
+
+name = "aistorybound"
+main = ".output/server/index.mjs"
+compatibility_date = "2026-08-20"
+
+# Node.js compatibility(如需 node:module 等)
+[nodejs_compat]
+
+# D1 数据库绑定(真实 database_id,已在账户中创建)
+[[d1_databases]]
+binding = "DB"
+database_name = "aistorybound"
+database_id = "a54b678b-1498-4db6-98e0-3794712e1f57"
+
+# R2 对象存储绑定(小说 TXT / 角色卡)
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "aistorybound"
