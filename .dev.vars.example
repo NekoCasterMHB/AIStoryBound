@@ -1,14 +1,11 @@
 # 本地开发 LLM 网关配置(复制为 .dev.vars 填写真实值,.dev.vars 已被 gitignore)
-# 生产环境请用: wrangler secret put AI_API_KEY 和 wrangler secret put AI_BASE_URL(可选)
+# 默认已指向 DeepSeek Flash 模型。如用其他服务商,改 AI_BASE_URL 与 AI_MODEL,例如:
+#   OpenAI  : https://api.openai.com/v1           模型 gpt-4o-mini
+#   Moonshot: https://api.moonshot.cn/v1          模型 moonshot-v1-8k
+#   Groq    : https://api.groq.com/openai/v1      模型 llama-3.1-8b-instant
 
-# OpenAI 兼容 base URL(含 /v1)。示例分别指向不同服务商:
-#   OpenAI:   https://api.openai.com/v1
-#   DeepSeek: https://api.deepseek.com/v1
-#   Moonshot: https://api.moonshot.cn/v1
-AI_BASE_URL=https://api.openai.com/v1
+AI_BASE_URL=https://api.deepseek.com/v1
+AI_MODEL=deepseek-v4-flash
 
-# API Key(本地用测试值即可跑通链路)
-AI_API_KEY=sk-xxx
-
-# 默认模型
-AI_MODEL=gpt-4o-mini
+# API Key(必填,本地用测试值即可跑通链路)
+AI_API_KEY=

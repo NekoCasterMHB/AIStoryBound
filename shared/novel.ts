@@ -50,6 +50,188 @@ export interface ChapterSegment {
   content: string
 }
 
+/**
+ * 人物卡(规划 §5.1 Characters + §6 Character Card)。
+ * 由 LLM 在小说解析阶段生成,存于 novels.world_state 的 characters 数组。
+ */
+export interface CharacterCard {
+  name: string
+  /** 主角 / 配角 / 反派 */
+  role: string
+  /** 别名 */
+  alias?: string | null
+  gender?: string | null
+  /** 年龄允许模糊表达,如"约40岁""未知" */
+  age?: string | null
+  /** 身份 / 职业,如"警察""天文学家" */
+  identity?: string | null
+  /** 外貌描写 */
+  appearance?: string | null
+  /** 性格特征 */
+  personality: string[]
+  /** 说话风格 */
+  speech_style?: string[]
+  /** 背景故事 */
+  background?: string | null
+  /** 能力 / 特殊技能 */
+  abilities?: string[]
+  goals?: string[]
+  fears?: string[]
+  secrets?: string[]
+  /** 人物关系:name=对方、type=关系类型、value=-100..100 的亲密度 */
+  relationships?: { name: string, type: string, value: number }[]
+  /** 首次出现章节 */
+  first_appearance?: string | null
+  dead?: boolean | null
+  /** 耐心程度,0-100 整数(数值越小越急躁,影响 AI 演绎的对话风格) */
+  patience?: number | null
+  /** 心软程度,0-100 整数(数值越大越容易心软妥协) */
+  softness?: number | null
+}
+
+/** 世界观速览(规划 §5),整体存于 novels.world_state */
+export interface WorldOverlay {
+  title?: string
+  genre?: string
+  summary?: string
+  characters?: CharacterCard[]
+}
+
+/** LLM 用量统计 */
+export interface TokenUsage {
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+}
+
+/**
+ * 上传→生成 阶段的 SSE 事件(POST /api/novels 的响应体,text/event-stream)。
+ * - progress / token: 生成期间实时推送
+ * - world + done: 成功收尾(done 携带真实 usage)
+ * - error: 失败
+ */
+export type UploadSseEvent =
+  | { type: 'progress', stage: string, progress: number }
+  | { type: 'token', tokens: number, chars: number, elapsedMs: number, speed: number }
+  | { type: 'world', world: WorldOverlay }
+  | {
+      type: 'done'
+      id: string
+      title: string
+      encoding: string
+      status: string
+      chapter_count: number
+      usage?: TokenUsage
+      elapsedMs: number
+    }
+  | { type: 'error', message: string }
+
+// ---- 游戏(MVP-1:会话/消息/选项/存档) ----
+
+/** 游戏模式 */
+export type GameMode = 'canonical'
+
+/** 游戏状态(规划 §10/§33:地点/时间/HP/金钱/关系/任务/Flag;内部状态不进回复文本) */
+export interface GameState {
+  location?: string
+  time?: string
+  hp?: number
+  money?: number
+  /** 角色名 -> 好感度(-100..100) */
+  relationships?: Record<string, number>
+  quests?: string[]
+  flags?: Record<string, boolean | string | number>
+  /** AI 内部状态(不展示给玩家,仅进 prompt) */
+  internal?: Record<string, unknown>
+}
+
+export type GameStatus = 'active' | 'ended'
+
+/** 游戏会话(D1 games 行) */
+export interface GameRow {
+  id: string
+  novel_id: string | null
+  user_id: string | null
+  player_character_id: string | null
+  player_character_name: string | null
+  mode: string | null
+  current_chapter: string | null
+  status: string | null
+  summary: string | null
+  state: string | null
+  created_at: string
+  updated_at: string | null
+}
+
+/** 消息角色:narrator=旁白/剧情, character=角色台词, user=玩家, system=系统 */
+export type MessageRole = 'narrator' | 'character' | 'user' | 'system'
+
+/** 游戏消息(D1 game_messages 行) */
+export interface GameMessageRow {
+  id: string
+  game_id: string | null
+  idx: number
+  role: string
+  speaker: string | null
+  content: string
+  created_at: string
+}
+
+/** 一轮选项(D1 game_options 行) */
+export interface GameOptionRow {
+  id: string
+  game_id: string | null
+  message_id: string | null
+  idx: number
+  text: string
+  effects: string | null
+}
+
+/** 存档(D1 saves 行) */
+export interface SaveRow {
+  id: string
+  game_id: string | null
+  name: string | null
+  snapshot: string | null
+  created_at: string
+}
+
+/** 存档快照(存于 saves.snapshot JSON,读档时整体恢复) */
+export interface SaveSnapshot {
+  state: GameState
+  current_chapter: string | null
+  summary: string | null
+  messages: { id: string, idx: number, role: string, speaker: string | null, content: string }[]
+}
+
+/** 单回合结构化输出:3 个选项 + 状态变化(轻量引擎按白名单合并) */
+export interface TurnStructured {
+  options: string[]
+  state_delta: {
+    location?: string
+    time?: string
+    /** 相对当前值的增量(可为负) */
+    hp?: number
+    /** 相对当前值的增量(可为负) */
+    money?: number
+    quests?: string[]
+    flags?: Record<string, boolean | string | number>
+    /** 角色名 -> 相对当前好感度的增量(-100..100 区间内) */
+    relationships?: Record<string, number>
+  }
+  current_chapter?: string | null
+}
+
+/** 回合接口 SSE 事件(POST /api/games/[id]/turn) */
+export type TurnSseEvent =
+  | { type: 'progress', stage: string, progress: number }
+  | { type: 'token', tokens: number, chars: number, elapsedMs: number, speed: number }
+  | { type: 'delta', text: string }
+  | { type: 'options', list: { idx: number, text: string }[], state: GameState, current_chapter: string | null }
+  | { type: 'usage', promptTokens?: number, completionTokens?: number, totalTokens?: number }
+  | { type: 'done' }
+  | { type: 'error', message: string }
+
 // ---- 简单工具 ----
 
 /** 生成 UUID(v4,无外部依赖) */

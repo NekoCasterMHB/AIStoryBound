@@ -16,6 +16,12 @@ binding = "DB"
 database_name = "aistorybound"
 database_id = "a54b678b-1498-4db6-98e0-3794712e1f57"
 
+# LLM 网关非敏感配置(注入 env.AI_BASE_URL / env.AI_MODEL,server/utils/ai.ts 读取)
+# 注意:AI_API_KEY 属于敏感信息,不放这里,用 `wrangler secret put AI_API_KEY` 设置
+[vars]
+AI_BASE_URL = "https://api.deepseek.com/v1"
+AI_MODEL = "deepseek-v4-flash"
+
 # R2 对象存储绑定(小说 TXT / 角色卡)
 [[r2_buckets]]
 binding = "BUCKET"

@@ -31,6 +31,15 @@ export interface ChatOptions {
   maxTokens?: number
   /** 请求结构化输出(OpenAI 兼容的 response_format json_object) */
   json?: boolean
+  /** 流式附加参数(如 include_usage: 在流末尾推送真实用量分片) */
+  streamOptions?: { include_usage?: boolean }
+  /**
+   * 思考强度(reasoning),DeepSeek v4 系列支持:
+   * - { type: 'disabled' }        关闭思考(最快最省,结构化输出推荐)
+   * - { type: 'enabled' }         开启思考(默认行为,预算不设上限)
+   * - { type: 'enabled', budget_tokens: N }  开启思考并限制思考 token 预算
+   */
+  thinking?: { type: 'enabled' | 'disabled'; budget_tokens?: number }
   /** 附加的请求头(如 provider 特殊字段) */
   headers?: Record<string, string>
   signal?: AbortSignal
@@ -105,6 +114,7 @@ export async function chatCompletion(event: H3Event, messages: AiMessage[], opts
   }
   if (opts.maxTokens) body.max_tokens = opts.maxTokens
   if (opts.json) body.response_format = { type: 'json_object' }
+  if (opts.thinking) body.thinking = opts.thinking
 
   const signal = combineSignals(opts.signal, timeoutSignal(opts.timeoutMs))
 
@@ -158,6 +168,8 @@ export async function streamChat(event: H3Event, messages: AiMessage[], opts: Ch
   }
   if (opts.maxTokens) body.max_tokens = opts.maxTokens
   if (opts.json) body.response_format = { type: 'json_object' }
+  if (opts.streamOptions) body.stream_options = opts.streamOptions
+  if (opts.thinking) body.thinking = opts.thinking
 
   const signal = combineSignals(opts.signal, timeoutSignal(opts.timeoutMs))
 
@@ -180,6 +192,70 @@ export async function streamChat(event: H3Event, messages: AiMessage[], opts: Ch
     })
   }
   return res
+}
+
+export interface ChatStreamHandlers {
+  /** 每个内容分片(纯文本增量) */
+  onDelta?: (delta: string) => void
+  /** 流末尾的真实用量(需 stream_options.include_usage,服务商可能不返回) */
+  onUsage?: (usage: ChatUsage) => void
+  /** 流正常结束 */
+  onDone?: () => void
+}
+
+/**
+ * 消费上游 OpenAI 兼容的 SSE 流(data: {...} 分片,data: [DONE] 结束)。
+ * 逐个分片解析:累计 content 增量回调 onDelta、识别末尾 usage 回调 onUsage,结束时回调 onDone。
+ */
+export async function consumeChatStream(res: Response, handlers: ChatStreamHandlers): Promise<void> {
+  if (!res.body) {
+    handlers.onDone?.()
+    return
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+
+  const parseChunk = (raw: string) => {
+    const jsonBody = raw.replace(/^data:\s*/i, '').trim()
+    if (!jsonBody || jsonBody === '[DONE]') return
+    try {
+      const data = JSON.parse(jsonBody) as {
+        choices?: { delta?: { content?: string } }[]
+        usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
+      }
+      if (data.choices?.[0]?.delta?.content) {
+        handlers.onDelta?.(data.choices[0].delta.content)
+      }
+      if (data.usage) {
+        handlers.onUsage?.({
+          promptTokens: data.usage.prompt_tokens,
+          completionTokens: data.usage.completion_tokens,
+          totalTokens: data.usage.total_tokens
+        })
+      }
+    } catch {
+      // 非 JSON 分片(如注释或最后一行)忽略
+    }
+  }
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, idx).trim()
+      buf = buf.slice(idx + 1)
+      if (line) parseChunk(line)
+    }
+  }
+  // 末尾残留
+  buf = buf.trim()
+  if (buf) parseChunk(buf)
+
+  handlers.onDone?.()
 }
 
 // ---- 结构化输出辅助 ----
@@ -245,6 +321,8 @@ export async function structuredOutput<T>(
     model?: string
     temperature?: number
     maxTokens?: number
+    /** 结构化输出场景推荐 { type: 'disabled' },避免思考 token 挤占 max_tokens 导致 JSON 截断 */
+    thinking?: ChatOptions['thinking']
     /** 解析后的自定义校验,返回错误信息则视为失败 */
     validate?: (data: unknown) => string | null
     maxRetries?: number
@@ -263,6 +341,7 @@ export async function structuredOutput<T>(
       temperature: opts.temperature ?? 0.3,
       maxTokens: opts.maxTokens,
       json: true,
+      thinking: opts.thinking,
       timeoutMs: opts.timeoutMs
     })
 

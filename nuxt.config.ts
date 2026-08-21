@@ -31,9 +31,9 @@ export default defineNuxtConfig({
   // 见 server/utils/ai.ts 的 getAiConfig():env 会覆盖这里的默认值,并能在本地 dev 与部署态一致工作。
   runtimeConfig: {
     ai: {
-      baseUrl: 'https://api.openai.com/v1',
+      baseUrl: 'https://api.deepseek.com/v1',
       apiKey: '',
-      model: 'gpt-4o-mini'
+      model: 'deepseek-v4-flash'
     }
   },
 
