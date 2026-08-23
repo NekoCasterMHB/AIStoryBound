@@ -1,0 +1,6 @@
+# Cloudflare Workers Static Assets 响应头(随 public 一起发布到 .output/public)
+# sw.js / manifest 必须绕过 HTTP 缓存,否则浏览器更新检查会被 Assets 默认缓存拖延
+/sw.js
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache

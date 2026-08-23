@@ -16,3 +16,128 @@
   --color-green-900: #0A5331;
   --color-green-950: #052E16;
 }
+
+/* 隐藏 Edge 浏览器自带的密码明文切换按钮(避免与自定义眼睛按钮重叠) */
+::-ms-reveal {
+  display: none;
+}
+
+/* ---- 首页落地页装饰工具类 ---- */
+
+/* 品牌渐变文字(标题关键词高亮用) */
+.text-gradient {
+  background-image: linear-gradient(115deg, var(--color-green-500) 10%, var(--color-teal-500) 55%, var(--color-cyan-500) 110%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.dark .text-gradient {
+  background-image: linear-gradient(115deg, var(--color-green-400) 10%, var(--color-teal-400) 55%, var(--color-cyan-300) 110%);
+}
+
+/* 细网格背景:配合 mask 径向渐隐,避免生硬边界 */
+.bg-grid {
+  background-image:
+    linear-gradient(to right, rgb(15 23 42 / 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(15 23 42 / 0.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 85% 70% at 50% 28%, black 35%, transparent 80%);
+  mask-image: radial-gradient(ellipse 85% 70% at 50% 28%, black 35%, transparent 80%);
+}
+
+.dark .bg-grid {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.055) 1px, transparent 1px);
+}
+
+/* 飘浮光斑(hero 背景装饰) */
+.animate-drift {
+  animation: drift 10s ease-in-out infinite;
+}
+
+@keyframes drift {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(16px, -20px, 0) scale(1.07);
+  }
+}
+
+/* 产品演示窗口入场 */
+.animate-mockup-in {
+  animation: mockup-in 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
+}
+
+@keyframes mockup-in {
+  from {
+    opacity: 0;
+    transform: translateY(28px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 滚动进入视口淡入:初始态由 v-reveal 指令在客户端标记,SSR 首屏不含该态 */
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(26px);
+  transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1), transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-reveal].is-revealed {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-drift,
+  .animate-mockup-in {
+    animation: none;
+  }
+
+  [data-reveal] {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+/* ---- 沉浸式阅读护眼主题(阅读页根容器动态切换 class 生效) ----
+   --reader-bg 背景 / --reader-text 正文 / --reader-sub 次级文字 / --reader-border 分隔线
+   --reader-toolbar 工具栏底色(color-mix 不支持时回退为 --reader-bg) */
+.reader-theme-green {
+  --reader-bg: #c7edcc;
+  --reader-text: #2f4a38;
+  --reader-sub: #5f7d66;
+  --reader-border: rgba(47, 74, 56, 0.18);
+  --reader-toolbar: color-mix(in srgb, var(--reader-bg) 90%, var(--reader-text) 10%);
+}
+
+.reader-theme-sepia {
+  --reader-bg: #f5efe0;
+  --reader-text: #5c4b37;
+  --reader-sub: #8d7d68;
+  --reader-border: rgba(92, 75, 55, 0.18);
+  --reader-toolbar: color-mix(in srgb, var(--reader-bg) 90%, var(--reader-text) 10%);
+}
+
+.reader-theme-night {
+  --reader-bg: #141414;
+  --reader-text: #a3a3a3;
+  --reader-sub: #6e6e6e;
+  --reader-border: rgba(255, 255, 255, 0.12);
+  --reader-toolbar: color-mix(in srgb, var(--reader-bg) 88%, var(--reader-text) 12%);
+}
+
+.reader-theme-light {
+  --reader-bg: #ffffff;
+  --reader-text: #333333;
+  --reader-sub: #8a8a8a;
+  --reader-border: rgba(0, 0, 0, 0.12);
+  --reader-toolbar: color-mix(in srgb, var(--reader-bg) 90%, var(--reader-text) 10%);
+}

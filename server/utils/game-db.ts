@@ -1,12 +1,12 @@
 // server/utils/game-db.ts
-// 游戏数据访问层:基于 Drizzle + Cloudflare D1(binding DB),会话/消息/选项/存档
+// 游戏数据访问层(D1 作为云端同步存储):会话/消息。浏览器本地为真源,云端仅镜像
 import type { H3Event } from 'h3'
 import { useD1 } from './d1'
-import { games, gameMessages, gameOptions, saves } from '../db/schema'
-import { eq, and, asc, desc, gt, inArray } from 'drizzle-orm'
-import type { GameRow, GameMessageRow, GameOptionRow, SaveRow, MessageRole } from '../../shared/novel'
+import { games, gameMessages, gameOptions } from '../db/schema'
+import { eq, asc } from 'drizzle-orm'
+import type { GameRow, GameMessageRow, GameOptionRow, MessageRole } from '../../shared/novel'
 
-function mapGame(r: any): GameRow {
+function mapGame(r: typeof games.$inferSelect): GameRow {
   return {
     id: r.id,
     novel_id: r.novelId,
@@ -23,19 +23,19 @@ function mapGame(r: any): GameRow {
   }
 }
 
-function mapMessage(r: any): GameMessageRow {
+function mapMessage(r: typeof gameMessages.$inferSelect): GameMessageRow {
   return {
     id: r.id,
     game_id: r.gameId,
     idx: r.idx ?? 0,
-    role: r.role,
+    role: r.role ?? 'narrator',
     speaker: r.speaker,
     content: r.content ?? '',
     created_at: r.createdAt
   }
 }
 
-function mapOption(r: any): GameOptionRow {
+function mapOption(r: typeof gameOptions.$inferSelect): GameOptionRow {
   return {
     id: r.id,
     game_id: r.gameId,
@@ -43,16 +43,6 @@ function mapOption(r: any): GameOptionRow {
     idx: r.idx ?? 0,
     text: r.text ?? '',
     effects: r.effects
-  }
-}
-
-function mapSave(r: any): SaveRow {
-  return {
-    id: r.id,
-    game_id: r.gameId,
-    name: r.name,
-    snapshot: r.snapshot,
-    created_at: r.createdAt
   }
 }
 
@@ -124,21 +114,10 @@ export async function appendMessage(event: H3Event, m: {
   }).run()
 }
 
-export async function countMessages(event: H3Event, gameId: string): Promise<number> {
-  const db = useD1(event)
-  const rows = await db.select({ id: gameMessages.id }).from(gameMessages).where(eq(gameMessages.gameId, gameId)).all()
-  return rows.length
-}
-
 export async function listMessages(event: H3Event, gameId: string): Promise<GameMessageRow[]> {
   const db = useD1(event)
   const rows = await db.select().from(gameMessages).where(eq(gameMessages.gameId, gameId)).orderBy(asc(gameMessages.idx)).all()
   return rows.map(mapMessage)
-}
-
-export async function deleteMessage(event: H3Event, messageId: string) {
-  const db = useD1(event)
-  return db.delete(gameMessages).where(eq(gameMessages.id, messageId)).run()
 }
 
 export async function deleteMessagesByGame(event: H3Event, gameId: string) {
@@ -146,72 +125,10 @@ export async function deleteMessagesByGame(event: H3Event, gameId: string) {
   return db.delete(gameMessages).where(eq(gameMessages.gameId, gameId)).run()
 }
 
-/** 回滚:删除序号 > idx 的消息,并清理这些消息挂载的选项行;返回删除的消息数 */
-export async function deleteMessagesFrom(event: H3Event, gameId: string, idx: number) {
-  const db = useD1(event)
-  const rows = await db.select({ id: gameMessages.id }).from(gameMessages)
-    .where(and(eq(gameMessages.gameId, gameId), gt(gameMessages.idx, idx))).all()
-  const ids = rows.map(r => r.id)
-  await db.delete(gameMessages).where(and(eq(gameMessages.gameId, gameId), gt(gameMessages.idx, idx))).run()
-  if (ids.length) {
-    await db.delete(gameOptions).where(and(eq(gameOptions.gameId, gameId), inArray(gameOptions.messageId, ids))).run()
-  }
-  return ids.length
-}
-
-// ---- 选项 ----
-
-export async function insertOptions(event: H3Event, opts: {
-  id: string
-  game_id: string
-  message_id: string
-  text: string
-  effects?: string | null
-}[]) {
-  const db = useD1(event)
-  await db.insert(gameOptions).values(
-    opts.map((o, i) => ({
-      id: o.id,
-      gameId: o.game_id,
-      messageId: o.message_id,
-      idx: i,
-      text: o.text,
-      effects: o.effects ?? null
-    }))
-  ).run()
-}
+// ---- 选项(云端恢复时还原某条消息挂载的选项) ----
 
 export async function listOptionsByMessage(event: H3Event, messageId: string): Promise<GameOptionRow[]> {
   const db = useD1(event)
   const rows = await db.select().from(gameOptions).where(eq(gameOptions.messageId, messageId)).orderBy(asc(gameOptions.idx)).all()
   return rows.map(mapOption)
-}
-
-// ---- 存档 ----
-
-export async function createSave(event: H3Event, s: { id: string, game_id: string, name?: string | null, snapshot: string }) {
-  const db = useD1(event)
-  return db.insert(saves).values({
-    id: s.id,
-    gameId: s.game_id,
-    name: s.name ?? null,
-    snapshot: s.snapshot
-  }).run()
-}
-
-export async function getSave(event: H3Event, id: string): Promise<SaveRow | null> {
-  const db = useD1(event)
-  const rows = await db.select().from(saves).where(eq(saves.id, id)).all()
-  return rows[0] ? mapSave(rows[0]) : null
-}
-
-export async function listSaves(event: H3Event, gameId: string): Promise<SaveRow[]> {
-  const db = useD1(event)
-  const rows = await db.select().from(saves).where(eq(saves.gameId, gameId)).orderBy(desc(saves.createdAt)).all()
-  return rows.map(mapSave)
-}
-
-export async function deleteSave(event: H3Event, id: string) {
-  const db = useD1(event)
-  return db.delete(saves).where(eq(saves.id, id)).run()
 }

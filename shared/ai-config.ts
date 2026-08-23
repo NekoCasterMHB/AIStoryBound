@@ -1,0 +1,53 @@
+// shared/ai-config.ts
+// 自建 AI 配置的 API 格式定义(客户端与服务器共用)。
+// 当前主流三种:Chat Completions(/chat/completions)、Anthropic Messages(/v1/messages)、Responses(/responses)。
+export type AiApiFormat = 'chat' | 'anthropic' | 'responses'
+
+export interface AiApiFormatMeta {
+  value: AiApiFormat
+  /** 展示名 */
+  label: string
+  /** 一句话说明(选择器帮助文案) */
+  desc: string
+  /** baseUrl 输入框占位/默认值 */
+  defaultBaseUrl: string
+  /** 模型名占位 */
+  placeholderModel: string
+  /** 是否支持思考模式切换 */
+  supportsThinking: boolean
+}
+
+export const AI_API_FORMATS: AiApiFormatMeta[] = [
+  {
+    value: 'chat',
+    label: 'Chat Completions',
+    desc: 'OpenAI 标准 /chat/completions 接口,DeepSeek、通义、智谱及各类中转站通用',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    placeholderModel: 'gpt-4o-mini',
+    supportsThinking: true
+  },
+  {
+    value: 'anthropic',
+    label: 'Anthropic Messages',
+    desc: 'Claude 官方 /v1/messages 接口(x-api-key 认证)',
+    defaultBaseUrl: 'https://api.anthropic.com',
+    placeholderModel: 'claude-sonnet-4-20250514',
+    supportsThinking: true
+  },
+  {
+    value: 'responses',
+    label: 'Responses',
+    desc: 'OpenAI 新一代 /responses 接口,支持推理模型',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    placeholderModel: 'gpt-4.1-mini',
+    supportsThinking: true
+  }
+]
+
+export function aiFormatMeta(format: AiApiFormat): AiApiFormatMeta {
+  return AI_API_FORMATS.find(f => f.value === format) ?? AI_API_FORMATS[0]!
+}
+
+export function isAiApiFormat(v: unknown): v is AiApiFormat {
+  return v === 'chat' || v === 'anthropic' || v === 'responses'
+}

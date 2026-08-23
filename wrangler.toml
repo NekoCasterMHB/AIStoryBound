@@ -8,7 +8,8 @@ main = ".output/server/index.mjs"
 compatibility_date = "2026-08-20"
 
 # Node.js compatibility(如需 node:module 等)
-[nodejs_compat]
+# 注意:wrangler 4 已将 nodejs_compat 改为 compatibility flag,顶层表写法会告警
+compatibility_flags = ["nodejs_compat"]
 
 # D1 数据库绑定(真实 database_id,已在账户中创建)
 [[d1_databases]]
@@ -21,8 +22,16 @@ database_id = "a54b678b-1498-4db6-98e0-3794712e1f57"
 [vars]
 AI_BASE_URL = "https://api.deepseek.com/v1"
 AI_MODEL = "deepseek-v4-flash"
+# 验证码邮件(Cloudflare Email Service — Email Sending REST API,见 server/utils/email.ts):
+# 发件人地址必须属于已 onboard 到 Email Service 的域名
+EMAIL_FROM = "no-reply@no-reply.orange-trees.com"
+# Cloudflare 账号 ID(非敏感);发信 API token(CF_API_TOKEN_SEND_EMAIL)属敏感信息,
+# 不放这里,用 `wrangler secret put CF_API_TOKEN_SEND_EMAIL` 设置(本地 .dev.vars 直接填)
+CLOUDFLARE_ACCOUNT_ID = "2fcf10a5bc6d1fa3383bcacd80e5ce7d"
 
-# R2 对象存储绑定(小说 TXT / 角色卡)
-[[r2_buckets]]
-binding = "BUCKET"
-bucket_name = "aistorybound"
+# Workers Static Assets:托管 .output/public(客户端 JS/CSS 与预置小说 public/txt/*.txt)
+# 使 `wrangler deploy` 与 nitro.json 生成的 `--assets public` 命令等效;
+# 部署后可通过 env.ASSETS 在 Worker 内读取静态文件(见 server/api/presets/[id]/download.get.ts)
+[assets]
+directory = ".output/public"
+binding = "ASSETS"

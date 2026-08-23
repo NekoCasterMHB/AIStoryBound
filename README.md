@@ -62,3 +62,37 @@ Check out the [deployment documentation](https://nuxt.com/docs/getting-started/d
 ## Renovate integration
 
 Install [Renovate GitHub app](https://github.com/apps/renovate/installations/select_target) on your repository and you are good to go.
+
+---
+
+## AI StoryBound 项目说明
+
+小说驱动互动游戏平台：预置小说（静态部署 public/txt/ + D1 索引）→ 预览阅读（全文自动缓存到浏览器 IndexedDB）→ 一键生成世界观 → 选角色进入 AI 互动故事。
+
+### 本地开发
+
+```bash
+pnpm install
+pnpm dev            # http://localhost:4567(.dev.vars 配置 AI_API_KEY 等 LLM 网关)
+pnpm db:migrate:local   # 应用 drizzle 迁移到本地 D1(幂等,可重复执行)
+```
+
+### 预置小说（首页推荐列表）
+
+- 小说 TXT 放 `public/txt/`（随站点静态部署，部署后可直接访问 `/txt/<书名>.txt`），元数据放 `public/txt/index.json`（可选，按文件名覆盖题材/推荐语/封面等；不填则自动从首行解析《标题》与作者、首段作推荐语）。
+- 运行种子脚本把元数据写入 D1（正文无需上传，由 wrangler `[assets]` 托管、下载接口经 ASSETS binding 直读）：
+  ```bash
+  pnpm seed:presets:local    # 本地 miniflare D1
+  pnpm seed:presets:remote   # 云端 D1(wrangler 需已登录)
+  ```
+- 重复执行会幂等更新（下载计数保留）。
+
+### 常用命令
+
+```bash
+pnpm db:generate       # schema 变更后生成 drizzle 迁移
+pnpm db:migrate:remote # 应用到云端 D1
+pnpm build:cf          # cloudflare_module 构建
+pnpm deploy:cf         # 构建 + wrangler deploy
+pnpm lint / pnpm typecheck
+```

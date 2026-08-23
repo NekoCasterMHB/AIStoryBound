@@ -1,57 +1,55 @@
 <script setup lang="ts">
-// 游戏页:剧情流(SSE 打字机)+ 3 个选项 + 自由输入 + 公开状态面板 + 每回合 token 消耗
+// 游戏页(浏览器驱动回合):本地游戏会话 + 本地作品(人物卡) → /api/ai/chat 中继
+// 叙事流式(打字机)→ 选项结构化 → mergeState 本地应用 → 落 IndexedDB + 本地存档点
+// 回滚完全本地(存盘点恢复);登录用户可一键同步云端(跨设备续玩)。
+import { aiChat, aiChatJson, estimateTokens } from '../../utils/aiRelay'
+import { buildTurnPrompt, mergeState, TURN_OPTIONS_SCHEMA } from '../../../shared/game'
+import { uuid } from '../../../shared/novel'
+import type { GameState, LocalGame, LocalWork, TurnStructured } from '../../../shared/novel'
+import { getLocalGame, saveLocalGame, syncGameToCloud } from '../../utils/gameStore'
+import { getWork, touchWork, addWorkTokens } from '../../utils/worldGen'
 import { saveGamePoint, listGamePoints, pruneGamePoints } from '../../utils/gameSaveStore'
 
 useHead({ title: 'AI StoryBound · 游戏' })
 
-interface GameState {
-  location?: string
-  time?: string
-  hp?: number
-  money?: number
-  relationships?: Record<string, number>
-  quests?: string[]
-  flags?: Record<string, unknown>
-}
-interface Msg {
-  id: string
-  idx: number
-  role: string
-  speaker: string | null
-  content: string
-}
-interface OptionItem {
-  idx: number
-  text: string
-}
-interface GameDetail {
-  id: string
-  player_character_name: string | null
-  current_chapter: string | null
-  status: string
-  state: GameState
-  messages: Msg[]
-  optionsByMessage: Record<string, OptionItem[]>
-  world?: { title?: string, genre?: string, summary?: string }
-}
-
 const route = useRoute()
 const gameId = route.params.id as string
 
-const { data: detail } = await useFetch<GameDetail>(`/api/games/${gameId}`, { watch: false })
+const game = ref<LocalGame | null>(null)
+const work = ref<LocalWork | null>(null)
+const state = ref<GameState>({})
+const messages = ref<LocalGame['messages']>([])
+const currentChapter = ref<string | null>(null)
+const options = ref<{ idx: number, text: string }[]>([])
+const loadError = ref<string | null>(null)
 
-const messages = ref<Msg[]>(detail.value?.messages ?? [])
-const state = ref<GameState>(detail.value?.state ?? {})
-const playerName = ref(detail.value?.player_character_name ?? '玩家')
-const currentChapter = ref<string | null>(detail.value?.current_chapter ?? null)
+onMounted(async () => {
+  const g = await getLocalGame(gameId)
+  if (!g) {
+    loadError.value = '本地未找到该游戏会话(可能已在新设备上;请从首页云端恢复)'
+    return
+  }
+  game.value = g
+  work.value = g.workId ? await getWork(g.workId) : null
+  if (g.workId) void touchWork(g.workId)
+  state.value = g.state
+  messages.value = g.messages
+  currentChapter.value = g.currentChapter ?? null
+  const last = g.messages.at(-1)
+  options.value = last ? (g.optionsByMessage?.[last.id] ?? []) : []
+  // 初始存档点:保证第一轮行动也有回滚目标
+  await savePointNow()
+})
 
-const lastMsgId = detail.value?.messages?.at(-1)?.id ?? ''
-const options = ref<OptionItem[]>(detail.value ? (detail.value.optionsByMessage?.[lastMsgId] ?? []) : [])
+const playerName = computed(() => game.value?.playerName ?? '玩家')
+const cards = computed(() => work.value?.overlay?.characters ?? [])
+const playerCard = computed(() => cards.value.find(c => c.name === game.value?.characterName))
 
 const streaming = ref(false)
 const streamText = ref('')
-const tokens = ref(0)
-const speed = ref(0)
+const liveTokens = ref(0)
+const liveSpeed = ref(0)
+let liveStartedAt = 0
 const turnUsage = ref<string | null>(null)
 const error = ref<string | null>(null)
 const input = ref('')
@@ -59,70 +57,110 @@ const chatRef = ref<HTMLElement | null>(null)
 
 const started = computed(() => messages.value.length > 0 || streaming.value)
 
+function persist() {
+  if (!game.value) return
+  game.value.state = JSON.parse(JSON.stringify(state.value))
+  game.value.messages = JSON.parse(JSON.stringify(messages.value))
+  game.value.currentChapter = currentChapter.value
+  game.value.syncStatus = game.value.syncStatus === 'synced' ? 'dirty' : game.value.syncStatus
+  void saveLocalGame(game.value)
+}
+
+async function savePointNow() {
+  const last = messages.value.at(-1)
+  await saveGamePoint({
+    key: `${gameId}:${last?.idx ?? -1}`,
+    gameId,
+    idx: last?.idx ?? -1,
+    state: JSON.parse(JSON.stringify(state.value)),
+    currentChapter: currentChapter.value,
+    messages: JSON.parse(JSON.stringify(messages.value)),
+    savedAt: new Date().toISOString()
+  }).catch(() => {})
+}
+
 async function sendTurn(choice?: string) {
-  if (streaming.value) return
+  if (streaming.value || !game.value) return
   streaming.value = true
   error.value = null
   turnUsage.value = null
-  tokens.value = 0
-  speed.value = 0
   streamText.value = ''
   options.value = []
-  // 玩家的行动立即上屏(后端同步入库,刷新后从历史恢复)
+  liveTokens.value = 0
+  liveSpeed.value = 0
+  liveStartedAt = Date.now()
+
   if (choice) {
-    messages.value.push({
-      id: `local-${Date.now()}`,
-      idx: messages.value.length,
-      role: 'user',
-      speaker: playerName.value,
-      content: choice
-    })
+    messages.value.push({ id: uuid(), idx: messages.value.length, role: 'user', speaker: playerName.value, content: choice })
   }
+  persist()
+
   try {
-    const res = await fetch(`/api/games/${gameId}/turn`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(choice ? { choice } : {})
+    // 1) 叙事流式(中继 SSE)
+    const prompt = buildTurnPrompt({
+      title: work.value?.overlay?.title || '未命名小说',
+      genre: work.value?.overlay?.genre,
+      summary: work.value?.overlay?.summary,
+      playerName: playerName.value,
+      playerCard: playerCard.value,
+      cards: cards.value,
+      state: state.value,
+      history: messages.value,
+      choice,
+      summaryText: game.value.summary?.text
     })
-    if (!res.ok || !res.body) {
-      const t = await res.text().catch(() => '')
-      throw new Error(t ? t.slice(0, 200) : `请求失败 (${res.status})`)
-    }
-    await readSseStream(res, (ev) => {
-      switch (ev.name) {
-        case 'delta':
-          streamText.value += String(ev.payload.text ?? '')
-          break
-        case 'token':
-          tokens.value = Number(ev.payload.tokens ?? 0)
-          speed.value = Number(ev.payload.speed ?? 0)
-          break
-        case 'options':
-          options.value = (ev.payload.list as OptionItem[]) ?? []
-          state.value = (ev.payload.state as GameState) ?? state.value
-          currentChapter.value = (ev.payload.current_chapter as string | null) ?? currentChapter.value
-          break
-        case 'usage':
-          turnUsage.value = `本回合 ${Number(ev.payload.totalTokens ?? 0).toLocaleString()} tokens`
-          break
-        case 'error':
-          throw new Error(String(ev.payload.message ?? '回合失败'))
+    const narr = await aiChat(prompt, { maxTokens: 2400, temperature: 0.9, thinking: false }, {
+      onDelta: (d) => {
+        streamText.value += d
+        // 实时消耗估算(与生成页一致:字符 → token,含速度)
+        const elapsed = Date.now() - liveStartedAt
+        const tokens = estimateTokens(streamText.value.length)
+        liveTokens.value = tokens
+        liveSpeed.value = elapsed > 0 ? Math.round((tokens / elapsed) * 1000) : 0
       }
     })
-    if (streamText.value.trim()) {
-      messages.value.push({
-        id: `local-${Date.now()}`,
-        idx: messages.value.length,
-        role: 'narrator',
-        speaker: null,
-        content: streamText.value
-      })
-      streamText.value = ''
-      // 回合完成:自动存档点(覆盖同 key,记录最新状态)
-      savePointNow()
-    }
+    if (!narr.ok) throw new Error(narr.message)
+    // 游玩消耗累计到作品计量(含失败重试已消耗的部分)
+    void addWorkTokens(game.value.workId, narr.usage?.totalTokens ?? 0)
+
+    const narratorText = streamText.value.trim()
+    if (!narratorText) throw new Error('AI 未返回剧情内容,请重试')
+    const narratorMsg = { id: uuid(), idx: messages.value.length, role: 'narrator', speaker: null, content: narratorText }
+    messages.value.push(narratorMsg)
+    streamText.value = ''
+
+    // 2) 选项 + 状态变化(结构化)
+    const optRes = await aiChatJson<TurnStructured>(
+      [
+        {
+          role: 'system',
+          content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3 个下一回合的行动选项,以及本轮对游戏状态的增量变化(相对当前值)。\n输出 JSON:\n${TURN_OPTIONS_SCHEMA}`
+        },
+        {
+          role: 'user',
+          content: `当前状态:${JSON.stringify(state.value)}\n上文剧情:\n${messages.value.slice(-8).map(m => m.content).join('\n')}`
+        }
+      ],
+      { maxTokens: 1200, temperature: 0.5, thinking: false }
+    )
+    if (!optRes.ok) throw new Error(optRes.message)
+    void addWorkTokens(game.value.workId, optRes.usage?.totalTokens ?? 0)
+    const turn = optRes.data
+
+    state.value = mergeState(state.value, turn.state_delta)
+    if (turn.current_chapter) currentChapter.value = turn.current_chapter
+    options.value = (turn.options ?? []).map((t, i) => ({ idx: i, text: String(t) }))
+    if (!game.value.optionsByMessage) game.value.optionsByMessage = {}
+    game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(options.value))
+
+    const total = (narr.usage?.totalTokens ?? 0) + (optRes.usage?.totalTokens ?? 0)
+    turnUsage.value = `本回合 ${total.toLocaleString()} tokens`
+    persist()
+    await savePointNow()
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
+    // 叙事已上屏而收尾失败:保留剧情,下次重试只补选项
+    streamText.value = ''
   } finally {
     streaming.value = false
   }
@@ -140,54 +178,14 @@ function sendInput() {
   void sendTurn(v)
 }
 
-// ---- 本地存档点(IndexedDB):每次行动完成后自动快照,长按/右键行动气泡可回滚 ----
-/** 以当前界面状态写入一个存档点(key=最后一条消息序号) */
-function savePointNow() {
-  const last = messages.value.at(-1)
-  if (!last) return
-  void saveGamePoint({
-    key: `${gameId}:${last.idx}`,
-    gameId,
-    idx: last.idx,
-    state: JSON.parse(JSON.stringify(state.value)),
-    currentChapter: currentChapter.value,
-    messages: JSON.parse(JSON.stringify(messages.value)),
-    savedAt: new Date().toISOString()
-  }).catch(e => console.warn('[saveGamePoint] failed:', e))
-}
-
-// 初始存档点:页面加载即记录当前状态,保证第一轮行动也有回滚目标
-onMounted(() => {
-  const last = messages.value.at(-1)
-  void saveGamePoint({
-    key: `${gameId}:${last?.idx ?? -1}`,
-    gameId,
-    idx: last?.idx ?? -1,
-    state: JSON.parse(JSON.stringify(state.value)),
-    currentChapter: currentChapter.value,
-    messages: JSON.parse(JSON.stringify(messages.value)),
-    savedAt: new Date().toISOString()
-  }).catch(e => console.warn('[saveGamePoint] failed:', e))
-})
+// ---- 回滚(纯本地:存盘点恢复) ----
 
 interface RollbackMenuState { x: number, y: number, msgId: string }
 
 const rollbackMenu = ref<RollbackMenuState | null>(null)
 let longPressTimer: ReturnType<typeof setTimeout> | null = null
 
-async function openRollbackMenu(e: MouseEvent | PointerEvent, msg: Msg) {
-  if (streaming.value || msg.role !== 'user') return
-  // 只有存在更早的存档点才提供回滚
-  const points = await listGamePoints(gameId)
-  if (!points.some(p => p.idx < msg.idx)) return
-  rollbackMenu.value = {
-    x: Math.min(e.clientX, window.innerWidth - 240),
-    y: Math.min(e.clientY, window.innerHeight - 96),
-    msgId: msg.id
-  }
-}
-
-function startLongPress(e: PointerEvent, msg: Msg) {
+function startLongPress(e: PointerEvent, msg: LocalGame['messages'][number]) {
   if (streaming.value || msg.role !== 'user') return
   longPressTimer = setTimeout(() => {
     void openRollbackMenu(e, msg)
@@ -201,7 +199,17 @@ function cancelLongPress() {
   }
 }
 
-/** 回滚到该行动之前:本地恢复快照,并同步服务端截断历史与状态 */
+async function openRollbackMenu(e: MouseEvent | PointerEvent, msg: LocalGame['messages'][number]) {
+  if (streaming.value || msg.role !== 'user') return
+  const points = await listGamePoints(gameId)
+  if (!points.some(p => p.idx < msg.idx)) return
+  rollbackMenu.value = {
+    x: Math.min(e.clientX, window.innerWidth - 240),
+    y: Math.min(e.clientY, window.innerHeight - 96),
+    msgId: msg.id
+  }
+}
+
 async function rollbackAction() {
   const menu = rollbackMenu.value
   if (!menu || streaming.value) return
@@ -213,16 +221,6 @@ async function rollbackAction() {
   const target = points.find(p => p.idx < msg.idx)
   if (!target) return
 
-  try {
-    await $fetch(`/api/games/${gameId}/rollback`, {
-      method: 'POST',
-      body: { idx: target.idx, state: target.state, current_chapter: target.currentChapter }
-    })
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
-    return
-  }
-
   messages.value = JSON.parse(JSON.stringify(target.messages))
   state.value = JSON.parse(JSON.stringify(target.state))
   currentChapter.value = target.currentChapter
@@ -230,10 +228,35 @@ async function rollbackAction() {
   options.value = []
   turnUsage.value = null
   error.value = null
-
-  // 清理失效快照,并以恢复后的状态重建当前存档点
+  if (game.value) {
+    if (!game.value.optionsByMessage) game.value.optionsByMessage = {}
+    // 重建选项表,丢弃已回滚掉的消息对应的选项(避免动态 delete)
+    const kept: Record<string, { idx: number, text: string }[]> = {}
+    for (const [k, v] of Object.entries(game.value.optionsByMessage)) {
+      if (messages.value.some(m => m.id === k)) kept[k] = v
+    }
+    game.value.optionsByMessage = kept
+  }
+  persist()
   await pruneGamePoints(gameId, msg.idx)
-  savePointNow()
+  await savePointNow()
+}
+
+// ---- 云端同步 ----
+
+const syncing = ref(false)
+const syncMsg = ref<string | null>(null)
+
+async function onSyncCloud() {
+  if (!game.value || syncing.value) return
+  syncing.value = true
+  syncMsg.value = null
+  try {
+    const ok = await syncGameToCloud(game.value)
+    syncMsg.value = ok ? '已同步到云端' : '同步失败(未登录或网络错误)'
+  } finally {
+    syncing.value = false
+  }
 }
 
 // 新内容自动滚到底部
@@ -250,25 +273,38 @@ watch([messages, streamText], async () => {
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="min-w-0">
           <h1 class="truncate text-xl font-semibold">
-            {{ detail?.world?.title || '游戏' }}
+            {{ work?.overlay?.title || '故事' }}
           </h1>
           <p class="text-xs text-neutral-500">
             你是「{{ playerName }}」{{ currentChapter ? ` · ${currentChapter}` : '' }}
+            <span
+              v-if="game?.syncStatus === 'dirty'"
+              class="ml-1 text-amber-500"
+            >· 未同步</span>
+            <span
+              v-else-if="game?.syncStatus === 'synced'"
+              class="ml-1 text-emerald-500"
+            >· 已同步</span>
           </p>
         </div>
         <div class="flex items-center gap-2">
           <span
-            v-if="streaming"
+            v-if="streaming && liveTokens > 0"
             class="text-xs text-neutral-400 tabular-nums"
-          >
-            ≈ {{ tokens }} tokens · {{ speed }}/s
-          </span>
+          >≈ {{ liveTokens }} tokens · {{ liveSpeed }}/s</span>
           <span
             v-else-if="turnUsage"
             class="text-xs text-neutral-400"
-          >
-            {{ turnUsage }}
-          </span>
+          >{{ turnUsage }}</span>
+          <UButton
+            label="同步"
+            icon="i-lucide-cloud-upload"
+            color="neutral"
+            variant="outline"
+            size="sm"
+            :loading="syncing"
+            @click="onSyncCloud"
+          />
           <UButton
             label="返回"
             icon="i-lucide-arrow-left"
@@ -279,6 +315,19 @@ watch([messages, streamText], async () => {
           />
         </div>
       </div>
+
+      <UAlert
+        v-if="loadError"
+        color="error"
+        variant="soft"
+        :title="loadError"
+      />
+      <UAlert
+        v-if="syncMsg"
+        color="success"
+        variant="soft"
+        :title="syncMsg"
+      />
 
       <!-- 公开状态面板 -->
       <div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
@@ -324,9 +373,7 @@ watch([messages, streamText], async () => {
                 v-for="(v, k) in state.relationships"
                 :key="k"
                 class="mr-1.5"
-              >
-                {{ k }} {{ v > 0 ? '+' : '' }}{{ v }}
-              </span>
+              >{{ k }} {{ v > 0 ? '+' : '' }}{{ v }}</span>
             </template>
             <template v-else>
               —
@@ -358,7 +405,7 @@ watch([messages, streamText], async () => {
             class="size-8 text-neutral-300"
           />
           <p class="text-sm text-neutral-500">
-            故事尚未开始。以「{{ playerName }}」的身份进入《{{ detail?.world?.title || '' }}》，AI 将为你铺设开场。
+            故事尚未开始。以「{{ playerName }}」的身份进入《{{ work?.overlay?.title || '' }}》，AI 将为你铺设开场。
           </p>
           <UButton
             label="开始故事"
@@ -403,7 +450,6 @@ watch([messages, streamText], async () => {
             </p>
           </div>
 
-          <!-- 正在生成(打字机) -->
           <div
             v-if="streaming"
             class="text-sm"
@@ -429,7 +475,6 @@ watch([messages, streamText], async () => {
             class="h-auto py-2.5 text-left leading-snug"
             @click="pickOption(o.text)"
           >
-            <!-- label prop 默认 truncate 会截断文字,这里用插槽自定义换行展示 -->
             <span class="min-w-0 whitespace-pre-line">{{ o.text }}</span>
           </UButton>
         </div>
@@ -458,7 +503,7 @@ watch([messages, streamText], async () => {
         </div>
       </div>
 
-      <!-- 回滚菜单(长按/右键行动气泡弹出,渲染到 body) -->
+      <!-- 回滚菜单 -->
       <Teleport to="body">
         <div
           v-if="rollbackMenu"

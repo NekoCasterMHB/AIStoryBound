@@ -1,0 +1,86 @@
+{
+  "上下左右": {
+    "genre": "现代言情",
+    "description": "酒精点燃的夏夜，她与两道少年身影之间的距离悄然失衡，欲望与克制反复拉扯。连载中。",
+    "coverEmoji": "🧭",
+    "featured": 1,
+    "sortOrder": 4
+  },
+  "优选（sp）": {
+    "genre": "现代言情",
+    "description": "酒吧里的小野猫被表叔拎回家，在管教与宠溺之间反复试探边界。SP 1V1，已完结。",
+    "coverEmoji": "🦌",
+    "featured": 1,
+    "sortOrder": 5
+  },
+  "原则崩坏（1v1）": {
+    "genre": "现代言情",
+    "description": "撞破男友背叛后，她的世界被重新洗牌，原则一点点崩坏又重建。1V1，已完结。",
+    "coverEmoji": "⚖️",
+    "featured": 1,
+    "sortOrder": 6
+  },
+  "她永远不乖": {
+    "genre": "现代言情",
+    "description": "日语老师夏远安遇上不交作业的陈暖暖，惩罚从讲台蔓延到卧房。SP 1V1 年上师生，连载中。",
+    "coverEmoji": "🍎",
+    "featured": 1,
+    "sortOrder": 7
+  },
+  "小橘狗": {
+    "genre": "校园言情",
+    "description": "成绩垫底的时乐橘被学霸陆斯也盯上，白切黑的 brat 遇上少年感的 daddy。校园 1V1，连载中。",
+    "coverEmoji": "🐶",
+    "featured": 1,
+    "sortOrder": 8
+  },
+  "巴掌印": {
+    "genre": "现代言情",
+    "description": "一段以疼痛为语言的亲密关系，在克制与失控之间反复试探。完结含番外。",
+    "coverEmoji": "✋",
+    "featured": 1,
+    "sortOrder": 1
+  },
+  "撩愈": {
+    "genre": "现代言情",
+    "description": "北极上空开始的相遇，一场关于驯服与依赖的亲密博弈。SP 1V1，已完结。",
+    "coverEmoji": "🧊",
+    "featured": 1,
+    "sortOrder": 2
+  },
+  "救命索（年上 强制 调教 H）": {
+    "genre": "现代言情",
+    "description": "大二兼职的宋长云被年上男人拖进一段强制调教的关系，挣脱不得，越陷越深。连载中。",
+    "coverEmoji": "🪢",
+    "featured": 1,
+    "sortOrder": 9
+  },
+  "秋的故事 （SM）": {
+    "genre": "现代言情",
+    "description": "聪慧温静的苏忆秋，在主人秦思学面前交出全部尊严与羞耻。SM，连载中。",
+    "coverEmoji": "🍂",
+    "featured": 1,
+    "sortOrder": 10
+  },
+  "膝盖之上（Over the knee）": {
+    "genre": "现代言情",
+    "description": "F1 车队的权力场里，陈斯绒逃不开主人的膝盖之上。OTK，连载中。",
+    "coverEmoji": "🏎️",
+    "featured": 1,
+    "sortOrder": 11
+  },
+  "被曾经欺骗过的学长抓回去打屁股了，嘤嘤（1v1 sp）": {
+    "genre": "现代言情",
+    "description": "被学长骗到手又抓回去的宁律师，在挨打与撒娇里过上幸福日子。SP 1V1，已完结。",
+    "coverEmoji": "🙈",
+    "featured": 1,
+    "sortOrder": 12
+  },
+  "黯馨": {
+    "genre": "现代言情",
+    "description": "一杯苦艾酒开启的故事，DS 关系中的沉沦与清醒。DS 1V1，连载中。",
+    "coverEmoji": "🥃",
+    "featured": 1,
+    "sortOrder": 3
+  }
+}

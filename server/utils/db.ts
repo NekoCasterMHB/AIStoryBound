@@ -3,9 +3,55 @@
 // 每个函数接收 H3Event,从中取 D1 binding 并初始化 drizzle(见 useD1)
 import type { H3Event } from 'h3'
 import { useD1 } from './d1'
-import { novels, novelChapters, jobs } from '../db/schema'
-import { eq } from 'drizzle-orm'
-import type { NovelRow, ChapterRow, JobRow } from '../../shared/novel'
+import { novels, presetNovels } from '../db/schema'
+import { eq, sql } from 'drizzle-orm'
+import type { NovelRow, PresetNovelRow } from '../../shared/novel'
+
+// ---- 预置小说 ----
+
+function toPresetRow(r: typeof presetNovels.$inferSelect): PresetNovelRow {
+  return {
+    id: r.id,
+    title: r.title ?? '',
+    author: r.author,
+    genre: r.genre,
+    description: r.description,
+    cover_emoji: r.coverEmoji,
+    storage_key: r.storageKey,
+    encoding: r.encoding ?? 'utf-8',
+    chapter_count: r.chapterCount ?? 0,
+    char_count: r.charCount ?? 0,
+    featured: r.featured ?? 1,
+    sort_order: r.sortOrder ?? 0,
+    download_count: r.downloadCount ?? 0,
+    created_at: r.createdAt
+  }
+}
+
+/** 查询单本预置小说 */
+export async function getPresetNovel(event: H3Event, id: string): Promise<PresetNovelRow | null> {
+  const db = useD1(event)
+  const rows = await db.select().from(presetNovels).where(eq(presetNovels.id, id)).all()
+  return rows[0] ? toPresetRow(rows[0]) : null
+}
+
+/** 首页推荐列表(featured=1,按 sort_order 升序) */
+export async function listFeaturedPresets(event: H3Event): Promise<PresetNovelRow[]> {
+  const db = useD1(event)
+  const rows = await db.select().from(presetNovels)
+    .where(eq(presetNovels.featured, 1))
+    .orderBy(presetNovels.sortOrder, presetNovels.createdAt)
+    .all()
+  return rows.map(toPresetRow)
+}
+
+/** 下载链接被访问时累加下载计数 */
+export async function incrementPresetDownloads(event: H3Event, id: string) {
+  const db = useD1(event)
+  await db.update(presetNovels)
+    .set({ downloadCount: sql`${presetNovels.downloadCount} + 1` })
+    .where(eq(presetNovels.id, id)).run()
+}
 
 /** 新增小说记录 */
 export async function createNovel(event: H3Event, novel: {
@@ -60,7 +106,7 @@ export async function getNovel(event: H3Event, id: string): Promise<NovelRow | n
 export async function listNovelsByUser(event: H3Event, userId: string): Promise<NovelRow[]> {
   const db = useD1(event)
   const rows = await db.select().from(novels).where(eq(novels.userId, userId)).orderBy(novels.createdAt).all()
-  return rows.map((r) => ({
+  return rows.map(r => ({
     id: r.id,
     user_id: r.userId,
     title: r.title ?? '',
@@ -91,62 +137,4 @@ export async function updateNovel(event: H3Event, id: string, patch: Partial<Omi
   if ('error' in patch) values.error = patch.error
   if (Object.keys(values).length === 0) return
   return db.update(novels).set(values).where(eq(novels.id, id)).run()
-}
-
-/** 批量插入章节 */
-export async function insertChapters(event: H3Event, novelId: string, chapters: { idx: number, title: string, content: string }[]) {
-  const db = useD1(event)
-  await db.insert(novelChapters).values(
-    chapters.map((c) => ({
-      id: `${novelId}-${c.idx}`,
-      novelId,
-      idx: c.idx,
-      title: c.title ?? '',
-      content: c.content,
-      charCount: c.content.length
-    }))
-  ).run()
-}
-
-export async function countChapters(event: H3Event, novelId: string): Promise<number> {
-  const db = useD1(event)
-  const rows = await db.select({ n: novelChapters.id }).from(novelChapters).where(eq(novelChapters.novelId, novelId)).all()
-  return rows.length
-}
-
-export async function listChapters(event: H3Event, novelId: string): Promise<ChapterRow[]> {
-  const db = useD1(event)
-  const rows = await db.select().from(novelChapters).where(eq(novelChapters.novelId, novelId)).orderBy(novelChapters.idx).all()
-  return rows.map((r) => ({
-    id: r.id,
-    novel_id: r.novelId,
-    idx: r.idx ?? 0,
-    title: r.title ?? '',
-    content: r.content ?? '',
-    char_count: r.charCount ?? 0
-  }))
-}
-
-// ---- jobs ----
-
-export async function createJob(event: H3Event, job: { id: string, type: string, payload?: string, status?: string }) {
-  const db = useD1(event)
-  return db.insert(jobs).values({
-    id: job.id,
-    type: job.type,
-    payload: job.payload ?? '{}',
-    status: job.status ?? 'queued'
-  }).run()
-}
-
-export async function updateJob(event: H3Event, id: string, patch: Partial<Omit<JobRow, 'id'>>) {
-  const db = useD1(event)
-  const values: Record<string, unknown> = {}
-  if ('status' in patch) values.status = patch.status
-  if ('progress' in patch) values.progress = patch.progress
-  if ('error' in patch) values.error = patch.error
-  if ('result' in patch) values.result = patch.result
-  values.updatedAt = new Date().toISOString()
-  if (Object.keys(values).filter((k) => k !== 'updatedAt').length === 0) return
-  return db.update(jobs).set(values).where(eq(jobs.id, id)).run()
 }

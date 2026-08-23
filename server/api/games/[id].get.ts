@@ -2,6 +2,7 @@
 // 查询游戏会话详情:会话 + 已解析的 state + 消息流 + 所属小说的世界观(供游戏页/选角页渲染)
 import { getNovel } from '../../utils/db'
 import { getGame, listMessages, listOptionsByMessage } from '../../utils/game-db'
+import { assertGameOwned } from '../../utils/authz'
 import type { WorldOverlay, GameState } from '../../../shared/novel'
 
 export default defineEventHandler(async (event) => {
@@ -13,6 +14,7 @@ export default defineEventHandler(async (event) => {
   if (!game) {
     throw createError({ statusCode: 404, statusMessage: 'Game not found' })
   }
+  await assertGameOwned(event, game)
 
   let world: WorldOverlay | null = null
   if (game.novel_id) {
@@ -30,7 +32,7 @@ export default defineEventHandler(async (event) => {
   const messages = await listMessages(event, id)
   const optionsByMessage: Record<string, { idx: number, text: string }[]> = {}
   for (const m of messages) {
-    optionsByMessage[m.id] = (await listOptionsByMessage(event, m.id)).map((o) => ({ idx: o.idx, text: o.text }))
+    optionsByMessage[m.id] = (await listOptionsByMessage(event, m.id)).map(o => ({ idx: o.idx, text: o.text }))
   }
 
   let state: GameState | null = null

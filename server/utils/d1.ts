@@ -9,13 +9,14 @@ import * as schema from '../db/schema'
 
 /** 从请求上下文中取出 D1 binding */
 export function getD1Binding(event: H3Event): D1Database {
-  const env = (event.context as any).cloudflare?.env as Env | undefined
+  const ctx = event.context as unknown as { cloudflare?: { env?: Env } | undefined }
+  const env = ctx.cloudflare?.env
   if (env?.DB) {
     return env.DB
   }
-  const g = globalThis as any
+  const g = globalThis as unknown as { __env__?: { DB?: D1Database } }
   if (g.__env__?.DB) {
-    return g.__env__.DB as D1Database
+    return g.__env__.DB
   }
   throw createError({ statusCode: 500, statusMessage: 'D1 binding (DB) not available' })
 }
