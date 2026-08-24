@@ -19,7 +19,7 @@
         <span class="size-2.5 rounded-full bg-yellow-400/80" />
         <span class="size-2.5 rounded-full bg-green-400/80" />
         <span class="ml-3 truncate text-xs text-neutral-400">
-          AIStoryBound · 互动游玩
+          AISpankWorld · 互动游玩
         </span>
         <span class="ml-auto hidden items-center gap-1.5 text-[11px] text-neutral-500 sm:flex">
           <UIcon

@@ -187,7 +187,7 @@ function resetRegister() {
 
 // ---- 视图切换:登录 ⇄ 注册(互不混排) ----
 const view = ref<'login' | 'register'>('login')
-const modalTitle = computed(() => view.value === 'login' ? '登录 AI StoryBound' : '注册账号')
+const modalTitle = computed(() => view.value === 'login' ? '登录 AI SpankWorld' : '注册账号')
 const modalDescription = computed(() => view.value === 'login'
   ? '未登录仅可预览;登录后生成世界并保存作品'
   : '注册即赠送 30 万 token,生成世界与游戏回合按实际用量消耗')

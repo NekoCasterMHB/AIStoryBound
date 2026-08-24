@@ -2,18 +2,23 @@
 // /generate — 生成世界页(游客可见,但生成需要登录):未登录显示引导卡 + 弹出登录模态框;
 // 登录后选择 TXT → 本地编排生成(实时 token 消耗)→ 完成 → 跳选角页。
 import { parseLocalNovel, generateWorld } from '../utils/worldGen'
+import { checkWorldGenQuota } from '../utils/tokenQuota'
 import { useAuthModal } from '~/composables/useAuthModal'
 import { useAuthSession } from '../utils/auth-client'
 import type { LocalWork } from '#shared/novel'
 import type { GenerateProgress } from '../utils/worldGen'
+import type { TokenQuotaInfo } from '../utils/tokenQuota'
 
-useHead({ title: 'AI StoryBound · 生成世界' })
+useHead({ title: 'AI SpankWorld · 生成世界' })
 
 const { data: session } = await useAuthSession()
 const loggedIn = computed(() => !!session.value?.user)
 const { requireLogin } = useAuthModal()
 
 const resultWork = ref<LocalWork | null>(null)
+
+/** 平台 token 额度预检结果(不足时提示,不阻断生成) */
+const quotaWarn = ref<TokenQuotaInfo | null>(null)
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const picking = ref(false)
@@ -74,10 +79,15 @@ async function onFileChosen(e: Event) {
   input.value = ''
   if (!file) return
   picking.value = false
+  quotaWarn.value = null
   genState.value = { phase: 'parsing', title: file.name, progress: null, error: null, resultId: null, tokensUsed: 0 }
   try {
     const parsed = await parseLocalNovel(file)
     genState.value.title = parsed.title
+    // 生成前预检平台 token 额度(不足时提示,不阻断)
+    quotaWarn.value = await checkWorldGenQuota(
+      parsed.chapters.reduce((sum, c) => sum + c.content.length, 0)
+    )
     await runGeneration(parsed.title, parsed.chapters, parsed.frontMatter)
   } catch (err) {
     genState.value = {
@@ -185,6 +195,14 @@ async function runGeneration(title: string, chapters: Parameters<typeof generate
         v-if="genState.phase === 'parsing' || genState.phase === 'generating'"
         class="mt-4 space-y-3"
       >
+        <UAlert
+          v-if="quotaWarn?.insufficient"
+          color="warning"
+          variant="soft"
+          icon="i-lucide-triangle-alert"
+          title="Token 额度不足,可能生成失败"
+          :description="`当前余额 ${quotaWarn.balance.toLocaleString()} tokens,预计至少需要 ${quotaWarn.needed.toLocaleString()} tokens(小说字数 × 1.5)。建议先到个人中心购买加油包,或配置自己的 API Key。`"
+        />
         <p class="text-sm font-medium">
           {{ genState.title }}
         </p>

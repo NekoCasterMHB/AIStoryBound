@@ -40,7 +40,7 @@ export function getAuthConfig(event: H3Event): AuthEnvConfig {
 function createAuth(db: D1Database, cfg: AuthEnvConfig, emailCtx: ReturnType<typeof getEmailCtx>) {
   const orm = drizzle(db, { schema })
   return betterAuth({
-    appName: 'AI StoryBound',
+    appName: 'AI SpankWorld',
     secret: cfg.secret,
     baseURL: cfg.baseUrl,
     database: drizzleAdapter(orm, { provider: 'sqlite' }),

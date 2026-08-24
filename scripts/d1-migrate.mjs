@@ -12,7 +12,7 @@ import { wrangler } from './wrangler.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const target = process.argv[2] === '--remote' ? '--remote' : '--local'
-const database = 'aistorybound'
+const database = 'aiSpankWorld'
 
 const files = readdirSync(join(root, 'drizzle'))
   .filter(f => /^\d+_.+\.sql$/.test(f))

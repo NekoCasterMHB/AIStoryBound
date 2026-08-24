@@ -38,7 +38,7 @@ async function onLogout() {
             name="i-lucide-sparkles"
             class="size-5 text-primary"
           />
-          AIStoryBound
+          AISpankWorld
         </NuxtLink>
       </template>
 
@@ -110,7 +110,7 @@ async function onLogout() {
             name="i-lucide-sparkles"
             class="size-5 text-primary"
           />
-          AIStoryBound
+          AISpankWorld
         </div>
         <p class="mt-2 max-w-xs text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
           把每一本小说,变成真实可互动的世界。上传的小说仅供生成与本地游玩,章节正文不离开你的设备。
@@ -178,7 +178,7 @@ async function onLogout() {
 
       <template #bottom>
         <p class="text-xs text-neutral-500 dark:text-neutral-500">
-          © 2026 AIStoryBound · 上传的小说仅供生成与本地游玩,章节正文不离开你的设备
+          © 2026 AISpankWorld · 上传的小说仅供生成与本地游玩,章节正文不离开你的设备
         </p>
       </template>
     </UFooter>

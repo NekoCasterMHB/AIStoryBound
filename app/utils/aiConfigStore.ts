@@ -21,12 +21,12 @@ export interface AiConfigState {
   configs: LocalAiConfig[]
 }
 
-const DB_NAME = 'aistorybound'
+const DB_NAME = 'aiSpankWorld'
 const STORE_NAME = 'kv'
 const KEY_RECORD = 'ai-master-key'
 const DATA_RECORD = 'ai-configs'
 /** 认证附加数据:绑定密文用途,防止密文被搬到别的场景 */
-const AAD = new TextEncoder().encode('aistorybound-ai-configs-v1')
+const AAD = new TextEncoder().encode('aiSpankWorld-ai-configs-v1')
 
 interface Envelope {
   v: 1

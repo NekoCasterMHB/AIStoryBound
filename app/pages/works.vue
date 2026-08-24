@@ -7,7 +7,7 @@ import { listReadingProgress } from '../utils/readingStore'
 import { useAuthSession } from '../utils/auth-client'
 import { type LocalWork, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
 
-useHead({ title: 'AI StoryBound · 我的书架' })
+useHead({ title: 'AI SpankWorld · 我的书架' })
 
 const { data: session } = await useAuthSession()
 

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-// /admin — 兑换码管理(隐藏页,无导航入口;仅 ADMIN_EMAIL 账号可访问,接口层 requireAdmin 鉴权)
+// /admin — 兑换码管理(隐藏页,无导航入口;非管理员访问直接重定向回首页,接口层 requireAdmin 二次鉴权)
 import { useAuthSession } from '../utils/auth-client'
+import type { RadioGroupItem } from '@nuxt/ui'
 
-useHead({ title: 'AI StoryBound · 兑换码管理' })
+useHead({ title: 'AI SpankWorld · 兑换码管理' })
 
 const { data: session } = await useAuthSession()
 const toast = useToast()
@@ -27,8 +28,6 @@ interface RedemptionRow {
 }
 
 const isAdmin = ref(false)
-const adminChecked = ref(false)
-const adminError = ref<string | null>(null)
 const codes = ref<RedeemCodeRow[]>([])
 const codesLoading = ref(false)
 
@@ -37,12 +36,21 @@ async function loadCodes() {
   try {
     codes.value = await $fetch<RedeemCodeRow[]>('/api/admin/redeem/list')
     isAdmin.value = true
-    adminError.value = null
   } catch (e) {
-    isAdmin.value = false
-    adminError.value = (e as { statusCode?: number }).statusCode === 403
-      ? '当前账号无管理权限(需登录 ADMIN_EMAIL 对应的账号)'
-      : '加载兑换码列表失败'
+    const status = (e as { statusCode?: number }).statusCode
+    if (status === 401 || status === 403) {
+      // 未登录 / 非管理员:不展示页面,直接回首页
+      toast.add({
+        title: status === 401 ? '请先登录' : '当前账号无管理权限',
+        description: '正在为你跳转到首页…',
+        color: 'error'
+      })
+      await navigateTo('/')
+    } else {
+      // 非鉴权类错误(如服务器 500):放行页面,列表留空由 toast 提示
+      isAdmin.value = true
+      toast.add({ title: '加载兑换码列表失败,请刷新重试', color: 'error' })
+    }
   } finally {
     codesLoading.value = false
   }
@@ -50,16 +58,25 @@ async function loadCodes() {
 onMounted(() => { void loadCodes() })
 
 // ---- 生成表单 ----
-const RULES = [
-  { value: 'activity', label: '活动码:每人限领一次,不限总量' },
-  { value: 'limited', label: '限量码:每人限领一次,总量限 N 次' },
-  { value: 'oneTime', label: '一码一用:单人单次' }
-] as const
+type RuleValue = 'activity' | 'limited' | 'oneTime'
+
+/** token 快捷档位(1M = 100 万) */
+const TOKEN_QUICK = [
+  { label: '1M', value: 1_000_000 },
+  { label: '3M', value: 3_000_000 },
+  { label: '5M', value: 5_000_000 }
+]
+
+const RULE_ITEMS: RadioGroupItem[] = [
+  { label: '每人限一次 · 不限总量', value: 'activity', description: '活动码:一个码可被多个用户兑换,每个账号限领一次,不限制总次数' },
+  { label: '每人限一次 · 限量 N 次', value: 'limited', description: '活动码:每人限领一次,总次数领完即止,适合限定规模的活动' },
+  { label: '一码一用', value: 'oneTime', description: '每个码只能被兑换一次,用完即废,适合邀请码/定向发放' }
+]
 
 const form = ref({
   tokens: '',
   count: '1',
-  rule: 'activity' as typeof RULES[number]['value'],
+  rule: 'activity' as RuleValue,
   maxUses: '',
   expireDays: ''
 })
@@ -196,15 +213,10 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
       </div>
     </div>
 
-    <!-- 非管理员:仅提示,不渲染任何功能 -->
-    <UAlert
-      v-if="adminChecked && !isAdmin"
-      color="error"
-      variant="soft"
-      icon="i-lucide-shield-alert"
-      title="无权限"
-      :description="adminError ?? ''"
-    />
+    <!-- 校验完成前只显示加载态;非管理员会在校验失败时被重定向回首页 -->
+    <div v-if="!isAdmin" class="py-10 text-center text-sm text-neutral-500">
+      正在校验管理权限…
+    </div>
 
     <template v-else>
       <!-- 生成表单 -->
@@ -214,7 +226,18 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
         </p>
         <div class="grid gap-4 sm:grid-cols-2">
           <UFormField label="每个码可兑换 token 数" required>
-            <UInput v-model="form.tokens" type="number" min="1" placeholder="如 50000" />
+            <div class="flex gap-2">
+              <UInput v-model="form.tokens" type="number" min="1" placeholder="自定义数量" class="flex-1" />
+              <UButton
+                v-for="p in TOKEN_QUICK"
+                :key="p.label"
+                :color="Number(form.tokens) === p.value ? 'primary' : 'neutral'"
+                :variant="Number(form.tokens) === p.value ? 'solid' : 'outline'"
+                @click="form.tokens = String(p.value)"
+              >
+                {{ p.label }}
+              </UButton>
+            </div>
           </UFormField>
           <UFormField label="生成数量" required>
             <UInput v-model="form.count" type="number" min="1" max="100" />
@@ -222,18 +245,12 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
         </div>
 
         <UFormField label="核销规则" class="mt-4">
-          <div class="flex flex-col gap-2">
-            <UButton
-              v-for="r in RULES"
-              :key="r.value"
-              :color="form.rule === r.value ? 'primary' : 'neutral'"
-              :variant="form.rule === r.value ? 'solid' : 'outline'"
-              :block="true"
-              @click="form.rule = r.value"
-            >
-              {{ r.label }}
-            </UButton>
-          </div>
+          <URadioGroup
+            v-model="form.rule"
+            color="primary"
+            variant="card"
+            :items="RULE_ITEMS"
+          />
         </UFormField>
 
         <div class="mt-4 grid gap-4 sm:grid-cols-2">

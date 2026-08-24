@@ -15,8 +15,8 @@ modules: [
   pwa: {
     registerType: 'autoUpdate',
     manifest: {
-      name: 'AIStoryBound',
-      short_name: 'AIStoryBound',
+      name: 'AISpankWorld',
+      short_name: 'AISpankWorld',
       description: 'AI 互动小说与文字冒险平台',
       lang: 'zh-CN',
       display: 'standalone',

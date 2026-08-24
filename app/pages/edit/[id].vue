@@ -301,7 +301,7 @@ function goBack() {
   else navigateTo('/works')
 }
 
-useSeoMeta({ title: computed(() => `${title.value.trim() || '编辑'} · AIStoryBound`) })
+useSeoMeta({ title: computed(() => `${title.value.trim() || '编辑'} · AISpankWorld`) })
 </script>
 
 <template>

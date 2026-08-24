@@ -16,7 +16,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const target = process.argv.includes('--remote') ? '--remote' : '--local'
 const dirArg = process.argv.find(a => a.startsWith('--dir='))
 const srcDir = join(root, dirArg ? dirArg.slice(6) : 'public/txt')
-const dbName = 'aistorybound'
+const dbName = 'aiSpankWorld'
 
 interface MetaOverride {
   title?: string

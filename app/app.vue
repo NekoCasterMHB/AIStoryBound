@@ -11,7 +11,7 @@ useHead({
   }
 })
 
-const title = 'AIStoryBound'
+const title = 'AISpankWorld'
 const description = 'AI 小说驱动互动游戏平台 —— 上传一本小说,选择一个身份,进入故事,并亲手改变原本的结局。'
 
 useSeoMeta({

@@ -3,7 +3,7 @@
 // 与本地小说作品库(works)、本地游戏会话(games)、阅读进度(reading)同库,版本升级时按需建仓。仅浏览器端生效(SSR 时由各调用方自行跳过)。
 import { openDB } from 'idb'
 
-export const DB_NAME = 'aistorybound-local'
+export const DB_NAME = 'aiSpankWorld-local'
 const DB_VERSION = 5
 const STORE_WORLDS = 'worlds'
 const STORE_SAVES = 'saves'

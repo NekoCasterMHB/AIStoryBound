@@ -6,7 +6,9 @@
 import { segmentChapters } from '../../utils/chapters'
 import type { PresetNovelRow, ChapterSegment } from '#shared/novel'
 import { generateWorld as runWorldGeneration } from '../../utils/worldGen'
+import { checkWorldGenQuota } from '../../utils/tokenQuota'
 import type { GenerateProgress } from '../../utils/worldGen'
+import type { TokenQuotaInfo } from '../../utils/tokenQuota'
 import { useAuthModal } from '~/composables/useAuthModal'
 
 const { requireLogin } = useAuthModal()
@@ -75,6 +77,8 @@ const generating = ref(false)
 const genProgress = ref<GenerateProgress | null>(null)
 const genDone = ref<{ workId: string, tokensUsed: number } | null>(null)
 const genError = ref<string | null>(null)
+/** 平台 token 额度预检结果(不足时提示,不阻断生成) */
+const quotaWarn = ref<TokenQuotaInfo | null>(null)
 
 const genStageLabel: Record<string, string> = {
   parse: '解析文本…',
@@ -91,6 +95,10 @@ async function generateWorld() {
   // 生成需要登录:未登录弹出全局登录模态框,登录成功后继续
   const ok = await requireLogin()
   if (!ok) return
+  // 生成前预检平台 token 额度(不足时提示,不阻断)
+  quotaWarn.value = await checkWorldGenQuota(
+    chapters.value.reduce((sum, c) => sum + c.content.length, 0)
+  )
   generating.value = true
   genError.value = null
   genDone.value = null
@@ -233,6 +241,14 @@ const genPercent = computed(() => {
           v-if="generating"
           class="space-y-4 rounded-2xl border border-neutral-200 p-5 dark:border-neutral-700"
         >
+          <UAlert
+            v-if="quotaWarn?.insufficient"
+            color="warning"
+            variant="soft"
+            icon="i-lucide-triangle-alert"
+            title="Token 额度不足,可能生成失败"
+            :description="`当前余额 ${quotaWarn.balance.toLocaleString()} tokens,预计至少需要 ${quotaWarn.needed.toLocaleString()} tokens(小说字数 × 1.5)。建议先到个人中心购买加油包,或配置自己的 API Key。`"
+          />
           <div class="flex items-center justify-between gap-3 text-sm">
             <div class="flex items-center gap-2 text-neutral-600 dark:text-neutral-300">
               <UIcon

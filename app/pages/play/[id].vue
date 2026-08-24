@@ -5,7 +5,7 @@ import { createLocalGame } from '../../utils/gameStore'
 import { uuid } from '#shared/novel'
 import type { GameState } from '#shared/novel'
 
-useHead({ title: 'AI StoryBound · 选择身份' })
+useHead({ title: 'AI SpankWorld · 选择身份' })
 
 const route = useRoute()
 const router = useRouter()

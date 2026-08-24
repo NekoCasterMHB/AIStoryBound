@@ -2,8 +2,8 @@
 // Drizzle Kit 配置:为 Cloudflare D1(兼容 SQLite 方言)生成迁移
 // - `pnpm db:generate` → npx drizzle-kit generate 生成 SQL 到 ./drizzle
 // - 应用迁移不用 drizzle-kit migrate,而是:
-//   本地模拟: wrangler d1 migrations apply aistorybound-local(或 --local)
-//   云端:     wrangler d1 migrations apply aistorybound --remote
+//   本地模拟: wrangler d1 migrations apply aiSpankWorld-local(或 --local)
+//   云端:     wrangler d1 migrations apply aiSpankWorld --remote
 import { defineConfig } from 'drizzle-kit'
 
 export default defineConfig({

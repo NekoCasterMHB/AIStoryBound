@@ -1,5 +1,5 @@
 // shared/novel.ts
-// AI StoryBound 共享类型与工具(不依赖运行时,前后端/服务端均可引用)
+// AI SpankWorld 共享类型与工具(不依赖运行时,前后端/服务端均可引用)
 
 /** 小说解析状态 */
 export type NovelStatus = 'uploaded' | 'parsing' | 'ready' | 'failed'

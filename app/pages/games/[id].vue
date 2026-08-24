@@ -10,7 +10,7 @@ import { getLocalGame, saveLocalGame, syncGameToCloud } from '../../utils/gameSt
 import { getWork, touchWork, addWorkTokens } from '../../utils/worldGen'
 import { saveGamePoint, listGamePoints, pruneGamePoints } from '../../utils/gameSaveStore'
 
-useHead({ title: 'AI StoryBound · 游戏' })
+useHead({ title: 'AI SpankWorld · 游戏' })
 
 const route = useRoute()
 const gameId = route.params.id as string
@@ -468,11 +468,12 @@ watch([messages, streamText], async () => {
           class="grid gap-2"
         >
           <UButton
-            v-for="o in options"
+            v-for="(o, i) in options"
             :key="o.idx"
             color="neutral"
             variant="soft"
-            class="h-auto py-2.5 text-left leading-snug"
+            class="h-auto py-2.5 text-left leading-snug option-fade-in"
+            :style="{ animationDelay: `${i * 120}ms` }"
             @click="pickOption(o.text)"
           >
             <span class="min-w-0 whitespace-pre-line">{{ o.text }}</span>
@@ -529,3 +530,22 @@ watch([messages, streamText], async () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 选项逐个淡入:间隔 120ms 依次出现 */
+.option-fade-in {
+  opacity: 0;
+  animation: option-fade-in 0.4s ease-out both;
+}
+
+@keyframes option-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+</style>

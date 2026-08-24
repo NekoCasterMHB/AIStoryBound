@@ -9,7 +9,7 @@ import { useAuthSession } from '../utils/auth-client'
 import { ensureAiConfigLoaded, getAiConfigStateSync, saveAiConfigState } from '../utils/aiConfigStore'
 import type { LocalAiConfig } from '../utils/aiConfigStore'
 
-useHead({ title: 'AI StoryBound · 个人中心' })
+useHead({ title: 'AI SpankWorld · 个人中心' })
 
 const { data: session } = await useAuthSession()
 

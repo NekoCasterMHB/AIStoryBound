@@ -4,8 +4,8 @@
 import { getAuthConfig } from './auth'
 import type { H3Event } from 'h3'
 
-const HKDF_SALT = 'aistorybound-ai-config-salt'
-const HKDF_INFO = 'aistorybound-ai-config-key'
+const HKDF_SALT = 'aiSpankWorld-ai-config-salt'
+const HKDF_INFO = 'aiSpankWorld-ai-config-key'
 
 function toBase64(bytes: Uint8Array): string {
   let bin = ''

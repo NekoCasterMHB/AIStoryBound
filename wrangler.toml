@@ -1,9 +1,9 @@
-# AI StoryBound — Cloudflare Worker 配置
+# AISpankWorld — Cloudflare Worker 配置
 # 本地 dev: nitro-cloudflare-dev 通过 getPlatformProxy 读取本文件,在 Nitro dev server 模拟 binding
 # 部署:     wrangler deploy 将 binding 注入生产 Worker(与本地同构)
 # 类型:     修改 binding 后运行 `npx wrangler types` 重新生成 worker-configuration.d.ts
 
-name = "aistorybound"
+name = "aispankworld"
 main = ".output/server/index.mjs"
 compatibility_date = "2026-08-20"
 
@@ -14,7 +14,7 @@ compatibility_flags = ["nodejs_compat"]
 # D1 数据库绑定(真实 database_id,已在账户中创建)
 [[d1_databases]]
 binding = "DB"
-database_name = "aistorybound"
+database_name = "aiSpankWorld"
 database_id = "a54b678b-1498-4db6-98e0-3794712e1f57"
 
 # LLM 网关非敏感配置(注入 env.AI_BASE_URL / env.AI_MODEL,server/utils/ai.ts 读取)
@@ -30,7 +30,7 @@ EMAIL_FROM = "no-reply@no-reply.orange-trees.com"
 CLOUDFLARE_ACCOUNT_ID = "2fcf10a5bc6d1fa3383bcacd80e5ce7d"
 # 管理员邮箱(兑换码生成等管理接口的身份校验,server/utils/authz.ts requireAdmin 读取):
 # 务必改成你自己的注册邮箱,否则 /admin 与全部管理接口恒 403
-ADMIN_EMAIL = ""
+ADMIN_EMAIL = "2575525962@qq.com"
 
 # Workers Static Assets:托管 .output/public(客户端 JS/CSS 与预置小说 public/txt/*.txt)
 # 使 `wrangler deploy` 与 nitro.json 生成的 `--assets public` 命令等效;
