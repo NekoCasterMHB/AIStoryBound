@@ -4,7 +4,7 @@
 import { parseLocalNovel, generateWorld } from '../utils/worldGen'
 import { useAuthModal } from '~/composables/useAuthModal'
 import { useAuthSession } from '../utils/auth-client'
-import type { LocalWork } from '../../shared/novel'
+import type { LocalWork } from '#shared/novel'
 import type { GenerateProgress } from '../utils/worldGen'
 
 useHead({ title: 'AI StoryBound · 生成世界' })

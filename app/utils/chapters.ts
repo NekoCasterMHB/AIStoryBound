@@ -1,7 +1,7 @@
 // app/utils/chapters.ts
 // 浏览器端章节切分(预览阅读页用)。与服务端 shared/novel.ts 的 segmentChapters 保持同一条正则,
-// 不直接从 shared 值导入:Nitro 服务端二次打包无法解析 app → 项目根的相对值导入(类型导入则会被擦除,无碍)。
-import type { ChapterSegment, PresetNovelRow } from '../../shared/novel'
+// 不直接从 shared 值导入:app → 项目根的相对值导入会被 vite SSR 构建外部化,Nitro 二次打包无法解析。
+import type { ChapterSegment, PresetNovelRow } from '#shared/novel'
 import { getCachedPreset, saveCachedPreset } from './presetStore'
 
 /** 与 shared/novel.ts CHAPTER_REGEX 一致(改动时两处同步) */

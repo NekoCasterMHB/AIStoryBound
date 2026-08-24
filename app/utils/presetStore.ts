@@ -2,7 +2,7 @@
 // 预置小说全文的 IndexedDB 缓存:预览时自动下载并持久化,之后阅读/生成直接读本地缓存,
 // 避免重复下载(可离线阅读)。Nuxt 会自动导入本文件导出。
 import { db } from './localDb'
-import type { CachedPreset, PresetNovelRow } from '../../shared/novel'
+import type { CachedPreset, PresetNovelRow } from '#shared/novel'
 
 /**
  * 尝试读取缓存;未命中返回 null。

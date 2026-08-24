@@ -1,7 +1,7 @@
 // app/utils/gameSaveStore.ts
 // 游戏存档点(本地 IndexedDB):每次行动完成后把整局快照(消息流+状态+章节)落盘,
 // 长按/右键行动气泡可回滚到任意历史节点。仅浏览器端生效(SSR 时自动跳过)。
-import type { GameState } from '../../shared/novel'
+import type { GameState } from '#shared/novel'
 import { db } from './localDb'
 
 const STORE = 'saves'

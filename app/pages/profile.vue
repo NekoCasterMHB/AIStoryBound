@@ -1,10 +1,10 @@
 <script setup lang="ts">
 // /profile — 个人中心:token 余额、加油包购买(微支付网关跳转)、购买记录、自建模型配置(加密存储)
 // 模型配置:默认配置(平台配额)与自建配置二选一;自建配置可存多套命名配置(Chat Completions / Anthropic Messages / Responses),表单在模态框内填写
-import { TOKEN_PACKAGES } from '../../shared/quota-packages'
-import type { TokenPackage } from '../../shared/quota-packages'
-import { AI_API_FORMATS, aiFormatMeta } from '../../shared/ai-config'
-import type { AiApiFormat } from '../../shared/ai-config'
+import { TOKEN_PACKAGES } from '#shared/quota-packages'
+import type { TokenPackage } from '#shared/quota-packages'
+import { AI_API_FORMATS, aiFormatMeta } from '#shared/ai-config'
+import type { AiApiFormat } from '#shared/ai-config'
 import { useAuthSession } from '../utils/auth-client'
 import { ensureAiConfigLoaded, getAiConfigStateSync, saveAiConfigState } from '../utils/aiConfigStore'
 import type { LocalAiConfig } from '../utils/aiConfigStore'

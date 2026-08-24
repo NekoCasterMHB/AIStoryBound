@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 推荐作品:拉取官方预置小说(/api/presets,featured=1),公开接口。
 // 封面无图片素材,用 emoji + 渐变底做视觉化处理;接口失败/为空时优雅降级。
-import type { PresetNovelRow } from '../../../shared/novel'
+import type { PresetNovelRow } from '#shared/novel'
 
 // 与 works.vue 相同的字数格式化
 function fmtChars(n?: number) {

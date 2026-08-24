@@ -2,7 +2,7 @@
 // AI 中继浏览器客户端:统一封装 POST /api/ai/chat(SSE 流式)。
 // - aiChat: 流式(回合叙事等),onDelta 逐片回调,返回总 usage
 // - aiChatJson: 请求 json:true,累积所有 delta 后抽取 JSON(生成管线/选项结构化用)
-import { extractJson } from '../../shared/json'
+import { extractJson } from '#shared/json'
 import { getActiveRelayConfig } from './aiConfigStore'
 
 export interface RelayedUsage {

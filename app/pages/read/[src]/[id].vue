@@ -7,8 +7,8 @@ import { loadPresetChapters } from '../../../utils/chapters'
 import { getReadingProgress, saveReadingProgress } from '../../../utils/readingStore'
 import {
   readingKey, DEFAULT_READER_SETTINGS, READER_FONT_SIZES, READER_LINE_HEIGHTS
-} from '../../../../shared/novel'
-import type { ChapterSegment, ReaderSettings, ReadingProgress, ReaderTheme } from '../../../../shared/novel'
+} from '#shared/novel'
+import type { ChapterSegment, ReaderSettings, ReadingProgress, ReaderTheme } from '#shared/novel'
 
 definePageMeta({ layout: 'reader' })
 

@@ -2,7 +2,7 @@
 // 自建 AI 配置本地加密存储(模式 A):随机 AES-256-GCM 密钥、extractable=false,
 // CryptoKey 对象存 IndexedDB(材料受操作系统钥匙串/DPAPI 包裹);配置整体加密落 IDB。
 // 服务端不保存任何配置——调用时由 aiRelay 将活跃配置随请求体临时带上,仅本次请求内存使用。
-import type { AiApiFormat } from '../../shared/ai-config'
+import type { AiApiFormat } from '#shared/ai-config'
 
 export interface LocalAiConfig {
   id: string

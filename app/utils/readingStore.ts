@@ -2,7 +2,7 @@
 // 沉浸式阅读进度的 IndexedDB 持久化(reading store,key = `${src}:${id}`)。
 // 遵循本地优先模式:SSR 守卫 + 写入前 JSON 序列化(剥离 Vue reactive 代理)。
 import { db } from './localDb'
-import type { ReadingProgress } from '../../shared/novel'
+import type { ReadingProgress } from '#shared/novel'
 
 const STORE_READING = 'reading'
 

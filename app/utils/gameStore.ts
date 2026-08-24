@@ -1,7 +1,7 @@
 // app/utils/gameStore.ts
 // 本地游戏会话库(IndexedDB games):浏览器驱动回合,本地为真源。
 // 登录用户可手动同步云端(POST /api/games/import / GET /api/games 跨设备恢复)。
-import type { LocalGame, GameState } from '../../shared/novel'
+import type { LocalGame, GameState } from '#shared/novel'
 import { db } from './localDb'
 
 const STORE = 'games'

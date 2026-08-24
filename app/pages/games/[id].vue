@@ -3,9 +3,9 @@
 // 叙事流式(打字机)→ 选项结构化 → mergeState 本地应用 → 落 IndexedDB + 本地存档点
 // 回滚完全本地(存盘点恢复);登录用户可一键同步云端(跨设备续玩)。
 import { aiChat, aiChatJson, estimateTokens } from '../../utils/aiRelay'
-import { buildTurnPrompt, mergeState, TURN_OPTIONS_SCHEMA } from '../../../shared/game'
-import { uuid } from '../../../shared/novel'
-import type { GameState, LocalGame, LocalWork, TurnStructured } from '../../../shared/novel'
+import { buildTurnPrompt, mergeState, TURN_OPTIONS_SCHEMA } from '#shared/game'
+import { uuid } from '#shared/novel'
+import type { GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
 import { getLocalGame, saveLocalGame, syncGameToCloud } from '../../utils/gameStore'
 import { getWork, touchWork, addWorkTokens } from '../../utils/worldGen'
 import { saveGamePoint, listGamePoints, pruneGamePoints } from '../../utils/gameSaveStore'

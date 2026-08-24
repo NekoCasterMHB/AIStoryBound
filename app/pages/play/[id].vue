@@ -2,8 +2,8 @@
 // /play/[id] — 选角页(本地作品):展示人物卡 → 选择身份 → 创建本地游戏会话 → 进入游戏
 import { getWork, touchWork } from '../../utils/worldGen'
 import { createLocalGame } from '../../utils/gameStore'
-import { uuid } from '../../../shared/novel'
-import type { GameState } from '../../../shared/novel'
+import { uuid } from '#shared/novel'
+import type { GameState } from '#shared/novel'
 
 useHead({ title: 'AI StoryBound · 选择身份' })
 

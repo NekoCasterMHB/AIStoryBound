@@ -4,8 +4,8 @@
 // 正文为整本连排文本,保存时按章节标题重新切分,章节结构随原文保留。
 import { getWork, saveWork, parseChaptersFromText } from '../../utils/worldGen'
 import { getReadingProgress } from '../../utils/readingStore'
-import { readingKey, DEFAULT_READER_SETTINGS, CHAPTER_REGEX } from '../../../shared/novel'
-import type { LocalWork, ReaderSettings, ChapterSegment } from '../../../shared/novel'
+import { readingKey, DEFAULT_READER_SETTINGS, CHAPTER_REGEX } from '#shared/novel'
+import type { LocalWork, ReaderSettings, ChapterSegment } from '#shared/novel'
 
 definePageMeta({ layout: 'reader' })
 

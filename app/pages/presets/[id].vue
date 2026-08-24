@@ -4,7 +4,7 @@
 // - 章节切分复用 shared/novel 的 segmentChapters(浏览器端可用)
 // - "用这本小说生成世界" → 本地编排生成(经 /api/ai/chat 中继)→ 完成后跳转本地选角页
 import { segmentChapters } from '../../utils/chapters'
-import type { PresetNovelRow, ChapterSegment } from '../../../shared/novel'
+import type { PresetNovelRow, ChapterSegment } from '#shared/novel'
 import { generateWorld as runWorldGeneration } from '../../utils/worldGen'
 import type { GenerateProgress } from '../../utils/worldGen'
 import { useAuthModal } from '~/composables/useAuthModal'

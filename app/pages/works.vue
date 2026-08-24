@@ -5,7 +5,7 @@ import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, parseChapter
 import { listLocalGames } from '../utils/gameStore'
 import { listReadingProgress } from '../utils/readingStore'
 import { useAuthSession } from '../utils/auth-client'
-import { type LocalWork, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '../../shared/novel'
+import { type LocalWork, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
 
 useHead({ title: 'AI StoryBound · 我的书架' })
 

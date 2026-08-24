@@ -2,14 +2,14 @@
 // 浏览器端"上传 → 生成世界"编排(服务器只提供 /api/ai/chat 中继):
 //   本地解析 → 作者识别 → 分块并发提取 → 本地合并 → 引用校验 → 一致性检查 → 成书 → 落 IndexedDB(works)
 // 进度由本地状态驱动;中间产物仅内存(单章失败=跳过+告警,>1/3 失败中止)。
-import { detectEncoding, extractFrontMatter, segmentChapters, uuid } from '../../shared/novel'
+import { detectEncoding, extractFrontMatter, segmentChapters, uuid } from '#shared/novel'
 import type {
   ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, EntitySource, LocalWork, WorldEntities
-} from '../../shared/novel'
+} from '#shared/novel'
 import {
   buildCheckMessages, buildExtractMessages, buildSynthesizeMessages, mergeExtractions,
   splitUnits, verifyQuotes, TOP_CHARACTERS
-} from '../../shared/world-build'
+} from '#shared/world-build'
 import { aiChatJson } from './aiRelay'
 import { detectAuthor } from './authorDetect'
 import { db } from './localDb'

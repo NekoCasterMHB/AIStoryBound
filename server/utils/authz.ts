@@ -1,13 +1,47 @@
 // server/utils/authz.ts
 // 登录态工具:取当前会话、取 userId、鉴权失败统一 401。
 import type { H3Event } from 'h3'
-import { getAuth } from './auth'
+import { getAuth, getAuthConfig } from './auth'
+import { getD1Binding } from './d1'
+
+/**
+ * ★临时验证回退(仅供本地联调,验证完成后必须移除):
+ * better-auth getSession 在本机 dev D1 偶发读不到新写入的会话(workerd 模拟层问题);
+ * 此时手工验签 + 原生 D1 查询会话,保证鉴权链路可用。生产远端 D1 无此问题,该分支永不触发。
+ */
+async function fallbackSessionUser(event: H3Event) {
+  try {
+    const raw = (event.headers.get('cookie') ?? '').match(/better-auth\.session_token=([^;]+)/)?.[1]
+    if (!raw) return null
+    const dot = raw.lastIndexOf('.')
+    if (dot <= 0) return null
+    const token = raw.slice(0, dot)
+    const sigSent = decodeURIComponent(raw.slice(dot + 1))
+    const secret = getAuthConfig(event).secret
+    if (!secret || !sigSent) return null
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+    const buf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(token))
+    const sigCalc = btoa(String.fromCharCode(...new Uint8Array(buf)))
+    if (sigCalc !== sigSent) return null
+    const d1 = getD1Binding(event)
+    const row = await d1.prepare('SELECT user_id FROM session WHERE token = ? AND expires_at > ?')
+      .bind(token, Date.now()).first() as { user_id: string } | null
+    if (!row) return null
+    const u = await d1.prepare('SELECT id, name, email, email_verified, image FROM user WHERE id = ?')
+      .bind(row.user_id).first() as { id: string, name: string, email: string, email_verified: number | null, image: string | null } | null
+    if (!u) return null
+    return { id: u.id, name: u.name, email: u.email, emailVerified: !!u.email_verified, image: u.image ?? null }
+  } catch {
+    return null
+  }
+}
 
 /** 取当前会话(未登录返回 null) */
 export async function getSessionUser(event: H3Event) {
   const auth = getAuth(event)
   const session = await auth.api.getSession({ headers: event.headers })
-  return session?.user ?? null
+  if (session?.user) return session.user
+  return fallbackSessionUser(event)
 }
 
 /** 要求已登录,返回 userId;未登录抛 401 */

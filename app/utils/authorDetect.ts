@@ -1,9 +1,9 @@
 // app/utils/authorDetect.ts
 // 生成管线第 0 步:识别作者。正文(正则快速路径 → AI 判定)未果时,按书名经 /api/ai/search
 // 联网检索,再由 AI 从结果片段中确认。AI 调用走既有中继(与生成共用密钥/配额)。
-import { detectAuthorFromFrontMatter, isAnonymousAuthor } from '../../shared/novel'
-import type { ChapterSegment } from '../../shared/novel'
-import { JSON_ONLY_SYSTEM } from '../../shared/world-build'
+import { detectAuthorFromFrontMatter, isAnonymousAuthor } from '#shared/novel'
+import type { ChapterSegment } from '#shared/novel'
+import { JSON_ONLY_SYSTEM } from '#shared/world-build'
 import { aiChatJson } from './aiRelay'
 import type { LiveTokenInfo } from './aiRelay'
 
