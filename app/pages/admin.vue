@@ -393,19 +393,20 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
 
       <!-- 兑换明细 -->
       <UModal v-model:open="detailOpen" :title="`兑换明细 · ${detail?.code ?? ''}`">
-        <div v-if="detailLoading" class="py-6 text-center text-sm text-neutral-500">
-          加载中…
-        </div>
-        <template v-else>
-          <p v-if="!detail?.redemptions.length" class="py-4 text-center text-sm text-neutral-500">
-            还没有人兑换
-          </p>
-          <ul v-else class="divide-y divide-neutral-100 dark:divide-neutral-900">
-            <li
-              v-for="r in detail.redemptions"
-              :key="r.id"
-              class="flex items-center justify-between gap-3 py-2.5 text-sm"
-            >
+        <template #body>
+          <div v-if="detailLoading" class="py-6 text-center text-sm text-neutral-500">
+            加载中…
+          </div>
+          <template v-else>
+            <p v-if="!detail?.redemptions.length" class="py-4 text-center text-sm text-neutral-500">
+              还没有人兑换
+            </p>
+            <ul v-else class="divide-y divide-neutral-100 dark:divide-neutral-900">
+              <li
+                v-for="r in detail.redemptions"
+                :key="r.id"
+                class="flex items-center justify-between gap-3 py-2.5 text-sm"
+              >
               <div class="min-w-0">
                 <p class="truncate font-medium">
                   {{ r.userName || '匿名用户' }}
@@ -424,6 +425,7 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
               </div>
             </li>
           </ul>
+          </template>
         </template>
       </UModal>
     </template>

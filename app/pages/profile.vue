@@ -121,9 +121,16 @@ function statusLabel(s: string) {
 }
 
 // ---- 兑换码 ----
+const redeemOpen = ref(false)
 const redeemCode = ref('')
 const redeemBusy = ref(false)
 const redeemMsg = ref<{ kind: 'ok' | 'error', text: string } | null>(null)
+
+function openRedeem() {
+  redeemCode.value = ''
+  redeemMsg.value = null
+  redeemOpen.value = true
+}
 
 async function submitRedeem() {
   const code = redeemCode.value.trim()
@@ -421,15 +428,24 @@ function aiFormatLabel(f: AiApiFormat) {
             生成世界与游戏回合按实际用量扣减;配置自己的 API Key 后不消耗本余额
           </p>
         </div>
-        <UButton
-          color="neutral"
-          variant="outline"
-          icon="i-lucide-receipt-text"
-          class="shrink-0"
-          @click="openHistory"
-        >
-          购买记录
-        </UButton>
+        <div class="flex shrink-0 gap-2">
+          <UButton
+            color="neutral"
+            variant="outline"
+            icon="i-lucide-receipt-text"
+            @click="openHistory"
+          >
+            购买记录
+          </UButton>
+          <UButton
+            color="neutral"
+            variant="outline"
+            icon="i-lucide-ticket"
+            @click="openRedeem"
+          >
+            兑换码
+          </UButton>
+        </div>
       </div>
 
       <UButton
@@ -442,37 +458,42 @@ function aiFormatLabel(f: AiApiFormat) {
       >
         购买加油包
       </UButton>
+    </UCard>
 
-      <!-- 兑换码 -->
-      <div class="mt-5 border-t border-neutral-200 pt-4 dark:border-neutral-800">
-        <div class="flex gap-2">
+    <!-- 兑换码模态框 -->
+    <UModal v-model:open="redeemOpen" title="兑换码">
+      <template #body>
+        <div class="flex flex-col gap-3">
+          <p class="text-sm text-neutral-500">
+            输入活动兑换码,兑换的 token 将直接到账余额
+          </p>
           <UInput
             v-model="redeemCode"
-            placeholder="输入兑换码(活动赠送)"
-            class="flex-1"
+            placeholder="输入兑换码"
+            size="lg"
             :disabled="redeemBusy"
             @keyup.enter="submitRedeem"
           />
           <UButton
-            color="neutral"
-            variant="soft"
-            icon="i-lucide-ticket"
+            color="primary"
+            block
+            icon="i-lucide-ticket-check"
             :loading="redeemBusy"
             :disabled="!redeemCode.trim()"
             @click="submitRedeem"
           >
             兑换
           </UButton>
+          <p
+            v-if="redeemMsg"
+            class="text-sm"
+            :class="redeemMsg.kind === 'ok' ? 'text-emerald-600' : 'text-red-500'"
+          >
+            {{ redeemMsg.text }}
+          </p>
         </div>
-        <p
-          v-if="redeemMsg"
-          class="mt-2 text-xs"
-          :class="redeemMsg.kind === 'ok' ? 'text-emerald-600' : 'text-red-500'"
-        >
-          {{ redeemMsg.text }}
-        </p>
-      </div>
-    </UCard>
+      </template>
+    </UModal>
 
     <!-- 模型配置:默认(平台配额)/ 自建 -->
     <UCard class="mb-6">
