@@ -28,6 +28,9 @@ EMAIL_FROM = "no-reply@no-reply.orange-trees.com"
 # Cloudflare 账号 ID(非敏感);发信 API token(CF_API_TOKEN_SEND_EMAIL)属敏感信息,
 # 不放这里,用 `wrangler secret put CF_API_TOKEN_SEND_EMAIL` 设置(本地 .dev.vars 直接填)
 CLOUDFLARE_ACCOUNT_ID = "2fcf10a5bc6d1fa3383bcacd80e5ce7d"
+# 管理员邮箱(兑换码生成等管理接口的身份校验,server/utils/authz.ts requireAdmin 读取):
+# 务必改成你自己的注册邮箱,否则 /admin 与全部管理接口恒 403
+ADMIN_EMAIL = ""
 
 # Workers Static Assets:托管 .output/public(客户端 JS/CSS 与预置小说 public/txt/*.txt)
 # 使 `wrangler deploy` 与 nitro.json 生成的 `--assets public` 命令等效;

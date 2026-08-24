@@ -29,3 +29,7 @@ logs
 # Playwright MCP 调试产物
 .playwright-mcp/
 .wrangler/state/v3
+.tmp-seed-redeem.sql
+.tmp-verify-redeem.mjs
+.tmp-verify-redeem2.mjs
+drizzle/0005_spicy_thunderball.sql

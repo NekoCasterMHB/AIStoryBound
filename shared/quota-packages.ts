@@ -17,6 +17,8 @@ export interface TokenPackage {
   originalPriceYuan?: number
   /** 折扣文案,如 '7.9 折'(可选) */
   discountLabel?: string
+  /** 限购:true 时每个用户最多购买一次(按已支付订单判定) */
+  oneTimeOnly?: boolean
 }
 
 /** DeepSeek V4 flash 输出单价(USD / 1M tokens,峰值价) */
@@ -30,6 +32,18 @@ export function packPriceYuan(mTokens: number): number {
 }
 
 export const TOKEN_PACKAGES: TokenPackage[] = [
+  {
+    id: 'tokens_1m_once',
+    label: '新人特惠 1M',
+    shortLabel: '新人1M',
+    description: '新人福利 · 每人限购 1 次',
+    description2: '约 10+ 次世界生成 · 170 万字对话',
+    tokens: 1_000_000,
+    priceYuan: 3,
+    originalPriceYuan: packPriceYuan(1),
+    discountLabel: '1.5 折',
+    oneTimeOnly: true
+  },
   {
     id: 'tokens_1m',
     label: '1M tokens',

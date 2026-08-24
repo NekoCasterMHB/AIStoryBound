@@ -28,6 +28,22 @@ export async function requireUser(event: H3Event) {
   return user
 }
 
+/** 管理员环境变量名(与 wrangler.toml [vars] / .env.example 保持一致) */
+export const ADMIN_EMAIL_ENV = 'ADMIN_EMAIL'
+
+/** 要求当前用户为管理员(邮箱与 ADMIN_EMAIL 环境变量一致);未配置或非本人抛 403 */
+export async function requireAdmin(event: H3Event) {
+  const user = await requireUser(event)
+  const rt = useRuntimeConfig(event).admin?.email ?? ''
+  const env = (event.context as { cloudflare?: { env?: Record<string, string | undefined> } | undefined }).cloudflare?.env
+  const adminEmail = (env?.ADMIN_EMAIL || rt).trim().toLowerCase()
+  const userEmail = user.email?.trim().toLowerCase() ?? ''
+  if (!adminEmail || userEmail !== adminEmail) {
+    throw createError({ statusCode: 403, statusMessage: '无权限' })
+  }
+  return user
+}
+
 /** 校验游戏会话归属当前用户(防止越权访问他人游戏),返回 userId */
 export async function assertGameOwned(event: H3Event, game: { user_id: string | null }): Promise<string> {
   const userId = await requireUserId(event)

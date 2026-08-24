@@ -6,6 +6,7 @@ import { getMicropayConfig, buildSignStr, signRSA, generateOutTradeNo } from '..
 import { isTokenPackageId, getTokenPackageById } from '../../../shared/quota-packages'
 import { useD1 } from '../../utils/d1'
 import { quotaPackageOrder } from '../../db/schema'
+import { eq, and } from 'drizzle-orm'
 import { uuid } from '../../../shared/novel'
 
 /** 网关提交地址(参考 docs/payment-integration.md) */
@@ -50,6 +51,19 @@ export default defineEventHandler(async (event) => {
   // 建 pending 订单(购买记录可查;回调据此幂等入账)
   const now = new Date()
   const db = useD1(event)
+
+  // 限购套餐:每人仅可购买一次(按已支付订单判定;待支付/已退款不拦截)
+  if (pkg.oneTimeOnly) {
+    const owned = await db.select().from(quotaPackageOrder)
+      .where(and(
+        eq(quotaPackageOrder.userId, sessUser.id),
+        eq(quotaPackageOrder.packageId, packageId),
+        eq(quotaPackageOrder.status, 'paid')
+      ))
+      .get()
+    if (owned) throw createError({ statusCode: 400, statusMessage: '该套餐每人限购一次' })
+  }
+
   await db.insert(quotaPackageOrder).values({
     id: uuid(),
     orderNo: outTradeNo,

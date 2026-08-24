@@ -190,7 +190,7 @@ const view = ref<'login' | 'register'>('login')
 const modalTitle = computed(() => view.value === 'login' ? '登录 AI StoryBound' : '注册账号')
 const modalDescription = computed(() => view.value === 'login'
   ? '未登录仅可预览;登录后生成世界并保存作品'
-  : '注册即赠送 10 万 token,生成世界与游戏回合按实际用量消耗')
+  : '注册即赠送 30 万 token,生成世界与游戏回合按实际用量消耗')
 
 function switchToRegister() {
   errorMsg.value = ''

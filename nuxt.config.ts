@@ -54,9 +54,10 @@ modules: [
       model: 'deepseek-v4-flash'
     },
     // 认证(Better Auth):NUXT_AUTH_SECRET / NUXT_AUTH_BASE_URL,或 wrangler vars/secret(BETTER_AUTH_SECRET / BETTER_AUTH_URL)
+    // baseUrl 留空 → 本地 dev 自动为 localhost:4569,生产自动为部署域名;需要固定域名时再显式配置
     auth: {
       secret: '',
-      baseUrl: 'http://localhost:4569'
+      baseUrl: ''
     },
     // 验证码邮件(Cloudflare Email Service — Email Sending REST API):
     // NUXT_EMAIL_FROM / NUXT_EMAIL_ACCOUNT_ID(非敏感)或 wrangler vars;token 走 env(CF_API_TOKEN_SEND_EMAIL),不放 runtimeConfig
@@ -69,6 +70,11 @@ modules: [
       pid: '',
       privateKey: '',
       publicKey: ''
+    },
+    // 管理员身份(兑换码等管理接口):NUXT_ADMIN_EMAIL,或 wrangler vars(ADMIN_EMAIL)
+    // 留空 = 管理接口对所有人 403,保证未配置时无管理员权限可被利用
+    admin: {
+      email: ''
     }
   }, // 开发端口(生产部署与端口无关)。4567 在长时间反复启停后残留大量 TIME_WAIT/FIN_WAIT_2 连接,
   // 会被 get-port 误判为占用导致自动换端口与启动异常,故改用 4569 起步

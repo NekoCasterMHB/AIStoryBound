@@ -3,7 +3,9 @@
 // - 数据库:D1 + Drizzle 适配器(SQLite 方言)
 // - 注册即发验证码(emailOTP overrideDefaultEmailVerification,requireEmailVerification 强制验证后才可登录)
 // - 新用户注册赠送 FREE_TOKEN_GRANT 平台 token 配额
-// 密钥/回调域名从 env(BETTER_AUTH_SECRET / BETTER_AUTH_URL)或 runtimeConfig.auth 读取。
+// 密钥从 env(BETTER_AUTH_SECRET)或 runtimeConfig.auth 读取;回调域名默认不配置,
+// 由 better-auth 按请求 Host 自动推断(本地 dev 即 localhost:4569,生产即部署域名);
+// 如需固定域名(如前后端分离部署),仍可用 BETTER_AUTH_URL / runtimeConfig.auth.baseUrl 覆盖。
 // Worker 内 binding 与配置在进程生命周期内稳定,首次取到后缓存实例,避免每次请求重建。
 import type { H3Event } from 'h3'
 import { betterAuth } from 'better-auth'
@@ -17,20 +19,21 @@ import { getD1Binding } from './d1'
 import { getEmailCtx, sendOtpEmail } from './email'
 
 /** 注册赠送的平台 AI 配额(token 数)。约等于 1~2 本 20 万字小说的生成量,产品决策可调 */
-export const FREE_TOKEN_GRANT = 100_000
+export const FREE_TOKEN_GRANT = 300_000
 
 export interface AuthEnvConfig {
   secret: string
-  baseUrl: string
+  /** undefined 时由 better-auth 按请求 Host 自动推断 */
+  baseUrl?: string
 }
 
-/** 读取认证配置(env 优先,runtimeConfig 兜底) */
+/** 读取认证配置(env 优先,runtimeConfig 兜底;baseUrl 未配置时自动适配请求域名) */
 export function getAuthConfig(event: H3Event): AuthEnvConfig {
   const env = (event.context as { cloudflare?: { env?: Record<string, string | undefined> } | undefined }).cloudflare?.env
   const rt = (useRuntimeConfig(event).auth ?? {}) as { secret?: string, baseUrl?: string }
   return {
     secret: env?.BETTER_AUTH_SECRET || rt.secret || '',
-    baseUrl: env?.BETTER_AUTH_URL || rt.baseUrl || 'http://localhost:4567'
+    baseUrl: env?.BETTER_AUTH_URL || rt.baseUrl || undefined
   }
 }
 

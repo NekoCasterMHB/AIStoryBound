@@ -47,6 +47,8 @@ const balanceText = computed(() => balance.value.toLocaleString())
 // ---- 购买加油包 ----
 const buyOpen = ref(false)
 const selectedPkg = ref<TokenPackage | null>(null)
+const newbiePkg = TOKEN_PACKAGES.find(p => p.oneTimeOnly) ?? null
+const regularPackages = TOKEN_PACKAGES.filter(p => !p.oneTimeOnly)
 const buyBusy = ref<'wxpay' | 'alipay' | null>(null)
 const buyError = ref<string | null>(null)
 
@@ -116,6 +118,31 @@ function statusLabel(s: string) {
     refunded: { text: '已退款', color: 'error' }
   }
   return map[s] ?? { text: s, color: 'neutral' }
+}
+
+// ---- 兑换码 ----
+const redeemCode = ref('')
+const redeemBusy = ref(false)
+const redeemMsg = ref<{ kind: 'ok' | 'error', text: string } | null>(null)
+
+async function submitRedeem() {
+  const code = redeemCode.value.trim()
+  if (!code || redeemBusy.value) return
+  redeemBusy.value = true
+  redeemMsg.value = null
+  try {
+    const res = await $fetch<{ ok: true, tokens: number }>('/api/redeem', {
+      method: 'POST',
+      body: { code }
+    })
+    redeemCode.value = ''
+    redeemMsg.value = { kind: 'ok', text: `兑换成功,已到账 ${res.tokens.toLocaleString()} tokens` }
+    void loadMe()
+  } catch (e) {
+    redeemMsg.value = { kind: 'error', text: errText(e) }
+  } finally {
+    redeemBusy.value = false
+  }
 }
 
 // ---- 自建模型配置(浏览器本地加密存储,服务端不保存;调用时由 aiRelay 随请求临时带 key) ----
@@ -415,6 +442,36 @@ function aiFormatLabel(f: AiApiFormat) {
       >
         购买加油包
       </UButton>
+
+      <!-- 兑换码 -->
+      <div class="mt-5 border-t border-neutral-200 pt-4 dark:border-neutral-800">
+        <div class="flex gap-2">
+          <UInput
+            v-model="redeemCode"
+            placeholder="输入兑换码(活动赠送)"
+            class="flex-1"
+            :disabled="redeemBusy"
+            @keyup.enter="submitRedeem"
+          />
+          <UButton
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-ticket"
+            :loading="redeemBusy"
+            :disabled="!redeemCode.trim()"
+            @click="submitRedeem"
+          >
+            兑换
+          </UButton>
+        </div>
+        <p
+          v-if="redeemMsg"
+          class="mt-2 text-xs"
+          :class="redeemMsg.kind === 'ok' ? 'text-emerald-600' : 'text-red-500'"
+        >
+          {{ redeemMsg.text }}
+        </p>
+      </div>
     </UCard>
 
     <!-- 模型配置:默认(平台配额)/ 自建 -->
@@ -571,42 +628,94 @@ function aiFormatLabel(f: AiApiFormat) {
           <p class="text-sm text-neutral-500">
             选择加油包套餐:
           </p>
-          <div class="grid gap-3 sm:grid-cols-3">
+          <div class="space-y-3">
+            <!-- 新人限购包:独占整行 -->
             <UCard
-              v-for="pkg in TOKEN_PACKAGES"
-              :key="pkg.id"
+              v-if="newbiePkg"
               class="cursor-pointer border-2 transition"
-              :class="selectedPkg?.id === pkg.id ? 'border-primary-400' : 'border-transparent'"
-              :ui="{ body: 'p-2 sm:p-3' }"
-              @click="selectedPkg = pkg"
+              :class="selectedPkg?.id === newbiePkg.id ? 'border-primary-400' : 'border-transparent'"
+              :ui="{ body: 'p-3 sm:p-4' }"
+              @click="selectedPkg = newbiePkg"
             >
-              <p class="font-semibold">
-                {{ pkg.label }}
-              </p>
-              <p class="text-xs text-neutral-500">
-                {{ pkg.description }}
-                <br>
-                {{ pkg.description2 }}
-              </p>
-              <p class="mt-2 flex items-baseline gap-1.5">
-                <span class="text-lg font-bold">¥{{ pkg.priceYuan }}</span>
-                <span
-                  v-if="pkg.originalPriceYuan"
-                  class="text-xs text-neutral-400 line-through"
-                >¥{{ pkg.originalPriceYuan }}</span>
-                <UBadge
-                  v-if="pkg.discountLabel"
-                  size="sm"
-                  color="error"
-                  variant="soft"
-                >
-                  {{ pkg.discountLabel }}
-                </UBadge>
-              </p>
-              <p class="text-xs text-neutral-500">
-                到账 {{ pkg.tokens.toLocaleString() }} tokens
-              </p>
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p class="flex items-center gap-1.5 font-semibold">
+                    {{ newbiePkg.label }}
+                    <UBadge
+                      size="sm"
+                      color="warning"
+                      variant="soft"
+                    >
+                      限购一次
+                    </UBadge>
+                    <UBadge
+                      v-if="newbiePkg.discountLabel"
+                      size="sm"
+                      color="error"
+                      variant="soft"
+                    >
+                      {{ newbiePkg.discountLabel }}
+                    </UBadge>
+                  </p>
+                  <p class="mt-1 text-xs text-neutral-500">
+                    {{ newbiePkg.description }}
+                    <br>
+                    {{ newbiePkg.description2 }}
+                  </p>
+                </div>
+                <div class="text-right">
+                  <p class="flex items-baseline justify-end gap-1.5">
+                    <span class="text-2xl font-bold">¥{{ newbiePkg.priceYuan }}</span>
+                    <span
+                      v-if="newbiePkg.originalPriceYuan"
+                      class="text-xs text-neutral-400 line-through"
+                    >¥{{ newbiePkg.originalPriceYuan }}</span>
+                  </p>
+                  <p class="text-xs text-neutral-500">
+                    到账 {{ newbiePkg.tokens.toLocaleString() }} tokens
+                  </p>
+                </div>
+              </div>
             </UCard>
+
+            <!-- 常规加油包:三列 -->
+            <div class="grid gap-3 sm:grid-cols-3">
+              <UCard
+                v-for="pkg in regularPackages"
+                :key="pkg.id"
+                class="cursor-pointer border-2 transition"
+                :class="selectedPkg?.id === pkg.id ? 'border-primary-400' : 'border-transparent'"
+                :ui="{ body: 'p-2 sm:p-3' }"
+                @click="selectedPkg = pkg"
+              >
+                <p class="font-semibold">
+                  {{ pkg.label }}
+                </p>
+                <p class="text-xs text-neutral-500">
+                  {{ pkg.description }}
+                  <br>
+                  {{ pkg.description2 }}
+                </p>
+                <p class="mt-2 flex items-baseline gap-1.5">
+                  <span class="text-lg font-bold">¥{{ pkg.priceYuan }}</span>
+                  <span
+                    v-if="pkg.originalPriceYuan"
+                    class="text-xs text-neutral-400 line-through"
+                  >¥{{ pkg.originalPriceYuan }}</span>
+                  <UBadge
+                    v-if="pkg.discountLabel"
+                    size="sm"
+                    color="error"
+                    variant="soft"
+                  >
+                    {{ pkg.discountLabel }}
+                  </UBadge>
+                </p>
+                <p class="text-xs text-neutral-500">
+                  到账 {{ pkg.tokens.toLocaleString() }} tokens
+                </p>
+              </UCard>
+            </div>
           </div>
           <p
             v-if="buyError"

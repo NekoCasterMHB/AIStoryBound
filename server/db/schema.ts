@@ -94,6 +94,41 @@ export const quotaPackageOrder = sqliteTable('quota_package_order', {
   index('idx_order_status').on(t.status)
 ])
 
+// ---- 兑换码(仅管理员可生成,用户兑换得 token;见 /admin 管理页与 /api/redeem) ----
+export const redeemCodes = sqliteTable('redeem_codes', {
+  id: text('id').primaryKey(),
+  /** 大写字母数字码(去易混淆字符,32 字符空间,不可暴力枚举) */
+  code: text('code').notNull().unique(),
+  /** 兑换可得 token 数 */
+  tokens: integer('tokens').notNull(),
+  /** 总用量上限,null=不限 */
+  maxUses: integer('max_uses'),
+  /** 每人限用次数(1=活动码每人限领一次) */
+  perUserLimit: integer('per_user_limit').notNull().default(1),
+  /** 已兑换次数 */
+  usedCount: integer('used_count').notNull().default(0),
+  /** 1=停用(码泄露时封禁,不再可兑换) */
+  disabled: integer('disabled').notNull().default(0),
+  /** 过期时间,null=永不过期 */
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }),
+  createdBy: text('created_by').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
+})
+
+// ---- 兑换记录(每人每次兑换一条;支撑每人限次校验与管理页明细) ----
+export const redeemCodeRedemptions = sqliteTable('redeem_code_redemptions', {
+  id: text('id').primaryKey(),
+  codeId: text('code_id').notNull().references(() => redeemCodes.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** 入账 token 数(冗余快照) */
+  tokens: integer('tokens').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  index('idx_redemption_code').on(t.codeId),
+  index('idx_redemption_user').on(t.userId)
+])
+
 // ---- 小说 ----
 export const novels = sqliteTable('novels', {
   id: text('id').primaryKey(),

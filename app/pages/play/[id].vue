@@ -90,7 +90,8 @@ function roleColor(role: string | undefined) {
       <UCard
         v-for="c in cards"
         :key="c.name"
-        class="cursor-pointer transition hover:border-primary-400"
+        class="flex h-full cursor-pointer flex-col transition hover:border-primary-400"
+        :ui="{ body: 'flex flex-1 flex-col' }"
         @click="startAs(c.name)"
       >
         <div class="flex items-start justify-between gap-2">
@@ -121,7 +122,7 @@ function roleColor(role: string | undefined) {
         >
           {{ c.background }}
         </p>
-        <div class="mt-3 flex items-center justify-between text-xs text-neutral-400">
+        <div class="mt-auto flex items-center justify-between pt-3 text-xs text-neutral-400">
           <span>{{ c.relationships?.length ? `关系网 ${c.relationships.length} 条` : '' }}</span>
           <span>{{ c.first_appearance || '' }}</span>
         </div>

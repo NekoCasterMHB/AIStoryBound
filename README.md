@@ -73,7 +73,7 @@ Install [Renovate GitHub app](https://github.com/apps/renovate/installations/sel
 
 ```bash
 pnpm install
-pnpm dev            # http://localhost:4567(.dev.vars 配置 AI_API_KEY 等 LLM 网关)
+pnpm dev            # http://localhost:4569(环境变量模板见 .env.example,复制为 .dev.vars 并填写 AI_API_KEY 等)
 pnpm db:migrate:local   # 应用 drizzle 迁移到本地 D1(幂等,可重复执行)
 ```
 
