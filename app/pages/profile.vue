@@ -10,7 +10,7 @@ import { isCloudSaveEnabled, setCloudSaveEnabled } from '../utils/cloudSave'
 import { isAdultModeEnabled, setAdultModeEnabled } from '../utils/adultMode'
 import { loadScenePrefs, saveScenePrefs } from '../utils/scenePrefs'
 import { loadEnabledAiSkills, saveEnabledAiSkills, getUserSkills, saveUserSkill, deleteUserSkill } from '../utils/aiSkills'
-import { AI_SKILLS, normalizeSkill } from '#shared/ai-skills'
+import { AI_SKILLS, parseSkillMd } from '#shared/ai-skills'
 import type { AiSkill } from '#shared/ai-skills'
 import { ensureAiConfigLoaded, getAiConfigStateSync, saveAiConfigState } from '../utils/aiConfigStore'
 import type { LocalAiConfig } from '../utils/aiConfigStore'
@@ -508,7 +508,7 @@ async function refreshUserSkills() {
   }
 }
 
-// ---- 链接导入 / 删除自定义技能 ----
+// ---- 链接导入 / 删除自定义技能(SKILL.md:frontmatter 声明 name/description + 自由正文)----
 const importUrl = ref('')
 const importing = ref(false)
 const importMsg = ref<{ kind: 'ok' | 'err', text: string } | null>(null)
@@ -518,10 +518,15 @@ async function importSkillFromUrl() {
   importing.value = true
   importMsg.value = null
   try {
-    const raw = await $fetch<unknown>('/api/ai/skill-import', { method: 'POST', body: { url } })
-    const skill = normalizeSkill(raw)
+    const res = await $fetch<{ url: string, text: string, files: { name: string, text: string }[] }>(
+      '/api/ai/skill-import',
+      { method: 'POST', body: { url } }
+    )
+    const skill = parseSkillMd(res.text)
+    skill.sourceUrl = res.url
+    if (res.files.length) skill.attachments = res.files
     if (isBuiltinSkill(skill.key)) {
-      throw new Error(`key「${skill.key}」与内置玩法冲突,请修改文件中的 key 后重试`)
+      throw new Error(`key「${skill.key}」与内置玩法冲突,请修改文件中的 name 后重试`)
     }
     const existed = userSkills.value.some(s => s.key === skill.key)
     await saveUserSkill(skill)
@@ -1052,16 +1057,16 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- 链接导入自定义玩法(标准 skill JSON,经服务器下载绕开 CORS) -->
+      <!-- 链接导入自定义玩法(市面通用 SKILL.md,经服务器下载绕开 CORS) -->
       <div class="mb-3 space-y-2 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-900">
         <p class="text-xs text-neutral-500">
-          通过链接导入自定义玩法(Skill 文件,agent skill 三层结构:触发/执行步骤/规则/参考,直链如 GitHub raw / jsdelivr),导入后存本地:
-          <code class="text-[11px]">{"key":"my-skill","name":"玩法名","desc":"说明","trigger":"触发条件","steps":["步骤1","步骤2"],"rules":["规则"],"references":["参考"],"defaultOn":true}</code>
+          通过链接导入自定义玩法(Skill 文件,市面通用格式:文件头 --- 包裹的 name/description + 自由 Markdown 正文;
+          同级引用文件如 reference.md 会自动一并抓取)。直链如 GitHub raw / jsdelivr,导入后存本地:
         </p>
         <div class="flex gap-2">
           <UInput
             v-model="importUrl"
-            placeholder="https://…/skill.json"
+            placeholder="https://…/SKILL.md"
             class="flex-1"
           />
           <UButton
@@ -1100,7 +1105,7 @@ onMounted(() => {
               </UBadge>
             </p>
             <p class="truncate text-xs text-neutral-500">
-              {{ s.desc || ((s.steps?.length || s.trigger) ? '含详细玩法设定(触发/步骤/规则)' : '') }}
+              {{ s.desc || ((s.body || s.steps?.length || s.trigger) ? '含详细玩法设定' : '') }}
             </p>
           </div>
           <div class="flex shrink-0 items-center gap-1">

@@ -231,6 +231,67 @@ CREATE TABLE IF NOT EXISTS `jobs` (
 	`updated_at` text
 );
 
+-- ---- Skill 商城商品(zip 存 R2 SKILL_FILES;购买拆账 80/20,见 shared/store-skill.ts) ----
+CREATE TABLE IF NOT EXISTS `skill_products` (
+	`id` text PRIMARY KEY NOT NULL,
+	`seller_id` text NOT NULL,
+	`name` text NOT NULL,
+	`desc` text NOT NULL,
+	`price` integer NOT NULL,
+	`file_key` text NOT NULL,
+	`file_name` text NOT NULL,
+	`file_size` integer NOT NULL,
+	`file_entries` text,
+	`status` text DEFAULT 'pending' NOT NULL,
+	`reject_reason` text,
+	`featured` integer DEFAULT 0 NOT NULL,
+	`download_count` integer DEFAULT 0 NOT NULL,
+	`purchase_count` integer DEFAULT 0 NOT NULL,
+	`reviewed_by` text,
+	`reviewed_at` integer,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL,
+	FOREIGN KEY (`seller_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`reviewed_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE no action
+);
+
+-- ---- Skill 版本(每次发布/更新生成一条;审核、购买锁定与下载都以版本为准;旧数据由一次性
+--      INSERT ... SELECT 从 skill_products 回填为 v1,见版本管理迁移说明) ----
+CREATE TABLE IF NOT EXISTS `skill_product_versions` (
+	`id` text PRIMARY KEY NOT NULL,
+	`skill_id` text NOT NULL,
+	`version` integer NOT NULL,
+	`name` text NOT NULL,
+	`desc` text NOT NULL,
+	`price` integer NOT NULL,
+	`file_key` text NOT NULL,
+	`file_name` text NOT NULL,
+	`file_size` integer NOT NULL,
+	`file_entries` text,
+	`status` text DEFAULT 'pending' NOT NULL,
+	`reject_reason` text,
+	`reviewed_by` text,
+	`reviewed_at` integer,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`skill_id`) REFERENCES `skill_products`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`reviewed_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE no action
+);
+
+-- ---- Skill 购买记录(唯一(skill_id,buyer_id)= 一次购买永久可下载,不可重购) ----
+-- 运行中库需一次性补列:ALTER TABLE skill_purchases ADD COLUMN skill_version_id text
+CREATE TABLE IF NOT EXISTS `skill_purchases` (
+	`id` text PRIMARY KEY NOT NULL,
+	`skill_id` text NOT NULL,
+	`buyer_id` text NOT NULL,
+	`price` integer NOT NULL,
+	`seller_share` integer NOT NULL,
+	`platform_fee` integer NOT NULL,
+	`skill_version_id` text,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`skill_id`) REFERENCES `skill_products`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`buyer_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+
 -- ---- 索引 ----
 CREATE UNIQUE INDEX IF NOT EXISTS `user_email_unique` ON `user` (`email`);
 CREATE INDEX IF NOT EXISTS `idx_user_email` ON `user` (`email`);
@@ -243,6 +304,8 @@ CREATE INDEX IF NOT EXISTS `idx_order_user` ON `quota_package_order` (`user_id`)
 CREATE INDEX IF NOT EXISTS `idx_order_status` ON `quota_package_order` (`status`);
 CREATE UNIQUE INDEX IF NOT EXISTS `redeem_codes_code_unique` ON `redeem_codes` (`code`);
 CREATE INDEX IF NOT EXISTS `idx_redemption_code` ON `redeem_code_redemptions` (`code_id`);
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_skill_version_unique` ON `skill_product_versions` (`skill_id`,`version`);
+CREATE INDEX IF NOT EXISTS `idx_skill_version_status` ON `skill_product_versions` (`skill_id`,`status`);
 CREATE INDEX IF NOT EXISTS `idx_redemption_user` ON `redeem_code_redemptions` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_novels_user` ON `novels` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_preset_featured` ON `preset_novels` (`featured`,`sort_order`);
@@ -253,3 +316,7 @@ CREATE INDEX IF NOT EXISTS `idx_messages_game` ON `game_messages` (`game_id`);
 CREATE INDEX IF NOT EXISTS `idx_options_game` ON `game_options` (`game_id`);
 CREATE INDEX IF NOT EXISTS `idx_saves_game` ON `saves` (`game_id`);
 CREATE INDEX IF NOT EXISTS `idx_jobs_status` ON `jobs` (`status`);
+CREATE INDEX IF NOT EXISTS `idx_skill_seller` ON `skill_products` (`seller_id`);
+CREATE INDEX IF NOT EXISTS `idx_skill_status` ON `skill_products` (`status`,`featured`);
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_skill_purchase_unique` ON `skill_purchases` (`skill_id`,`buyer_id`);
+CREATE INDEX IF NOT EXISTS `idx_skill_purchase_buyer` ON `skill_purchases` (`buyer_id`);

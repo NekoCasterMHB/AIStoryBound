@@ -26,6 +26,9 @@ export const FLASH_OUTPUT_PRICE_PER_M_USD = 1.32
 /** 汇率(USD→CNY),可调 */
 export const EXCHANGE_RATE = 7.2
 
+/** 每 1M token 的标准人民币价(元,未向上取整;用于对售价做价值估算等展示) */
+export const TOKEN_CNY_PER_M = FLASH_OUTPUT_PRICE_PER_M_USD * 2 * EXCHANGE_RATE
+
 /** 价格公式:flash 输出价 ×2,向上取整到整数元 */
 export function packPriceYuan(mTokens: number): number {
   return Math.ceil(FLASH_OUTPUT_PRICE_PER_M_USD * 2 * EXCHANGE_RATE * mTokens)

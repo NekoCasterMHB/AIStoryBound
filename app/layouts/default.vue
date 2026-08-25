@@ -69,6 +69,18 @@ async function onLogout() {
           </UButton>
         </div>
 
+        <div class="hidden lg:block">
+          <UButton
+            to="/store"
+            icon="i-lucide-store"
+            variant="subtle"
+            size="sm"
+            aria-label="Skill商城"
+          >
+            <span class="hidden sm:inline">Skill商城</span>
+          </UButton>
+        </div>
+
         <UButton
           color="primary"
           icon="i-lucide-sparkles"
@@ -159,6 +171,14 @@ async function onLogout() {
                   class="text-neutral-600 transition-colors hover:text-primary dark:text-neutral-400 dark:hover:text-primary-400"
                 >
                   个人中心
+                </NuxtLink>
+              </li>
+              <li>
+                <NuxtLink
+                  to="/store"
+                  class="text-neutral-600 transition-colors hover:text-primary dark:text-neutral-400 dark:hover:text-primary-400"
+                >
+                  Skill商城
                 </NuxtLink>
               </li>
             </ul>

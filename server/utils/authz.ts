@@ -31,14 +31,24 @@ export async function requireUser(event: H3Event) {
 /** 管理员环境变量名(与 wrangler.toml [vars] / .env.example 保持一致) */
 export const ADMIN_EMAIL_ENV = 'ADMIN_EMAIL'
 
-/** 要求当前用户为管理员(邮箱与 ADMIN_EMAIL 环境变量一致);未配置或非本人抛 403 */
-export async function requireAdmin(event: H3Event) {
-  const user = await requireUser(event)
+/**
+ * 判断当前用户是否为管理员(邮箱与 ADMIN_EMAIL 环境变量一致)。
+ * 未配置 ADMIN_EMAIL 时恒为 false(与 requireAdmin 的 403 行为一致)。
+ * 传入已取好的 user(如 requireAdmin 内复用)可避免二次查会话。
+ */
+export async function isAdmin(event: H3Event, user?: Awaited<ReturnType<typeof requireUser>>) {
+  const current = user ?? await requireUser(event)
   const rt = useRuntimeConfig(event).admin?.email ?? ''
   const env = (event.context as { cloudflare?: { env?: Record<string, string | undefined> } | undefined }).cloudflare?.env
   const adminEmail = (env?.ADMIN_EMAIL || rt).trim().toLowerCase()
-  const userEmail = user.email?.trim().toLowerCase() ?? ''
-  if (!adminEmail || userEmail !== adminEmail) {
+  const userEmail = current.email?.trim().toLowerCase() ?? ''
+  return !!adminEmail && userEmail === adminEmail
+}
+
+/** 要求当前用户为管理员(邮箱与 ADMIN_EMAIL 环境变量一致);未配置或非本人抛 403 */
+export async function requireAdmin(event: H3Event) {
+  const user = await requireUser(event)
+  if (!(await isAdmin(event, user))) {
     throw createError({ statusCode: 403, statusMessage: '无权限' })
   }
   return user

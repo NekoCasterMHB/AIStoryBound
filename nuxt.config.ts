@@ -5,6 +5,8 @@ export default defineNuxtConfig({
 modules: [
     '@nuxt/eslint',
     '@nuxt/ui',
+    // 管理端在线预览 SKILL.md:提供 MDCRenderer 组件与 parseMarkdown
+    '@nuxtjs/mdc',
     // 仅本地 dev 生效:通过 getPlatformProxy 模拟 wrangler.toml 里的 Cloudflare binding
     // 部署时 nitro 的 cloudflare preset 提供真实 binding,两者访问方式一致(event.context.cloudflare.env)
     'nitro-cloudflare-dev',

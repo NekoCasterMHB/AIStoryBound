@@ -120,18 +120,18 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
   const others = cards.filter(c => c.name !== playerName)
 
   // 规则:系统规则在前,用户偏好场景/避免场景追加在后,明确声明其优先级低于系统规则
-  // AI Skill 玩法:按 agent skill 三层结构(触发/步骤/规则/参考)注入,供模型在成人互动时按 SOP 展开
+  // AI Skill 玩法:开启的技能按 SKILL.md 正文原样注入,供模型在成人互动时按作者写的 SOP 展开
   const skillRules: string[] = []
   if (activeSkills && activeSkills.length) {
     skillRules.push(
-      `本场可用的成人玩法技能:${activeSkills.map(s => s.name).join('、')}。成人互动情节出现时,先按各技能的「触发」判断是否适用,适用则按「执行步骤」逐步展开并遵守「规则」;未启用玩法尽量不出现。`
+      `本场可用的成人玩法技能:${activeSkills.map(s => s.name).join('、')}。成人互动情节出现时,先按各技能的正文指引判断是否适用,适用则按其步骤与规则展开;未启用玩法尽量不出现。`
     )
-    let budget = 2600
+    let budget = 6000
     for (const s of activeSkills.slice(0, 6)) {
       const blocks = skillPromptBlocks(s)
       if (blocks.length === 0 || budget <= 0) continue
       const clipped = blocks.join('\n')
-      const text = `【技能:${s.name}】\n${clipped.length > 440 ? `${clipped.slice(0, 440)}…` : clipped}`
+      const text = `【技能:${s.name}】\n${clipped.length > 1000 ? `${clipped.slice(0, 1000)}…` : clipped}`
       budget -= text.length
       skillRules.push(text)
     }

@@ -1,7 +1,10 @@
 <script setup lang="ts">
-// /admin — 兑换码管理(隐藏页,无导航入口;非管理员访问直接重定向回首页,接口层 requireAdmin 二次鉴权)
-import { useAuthSession } from '../utils/auth-client'
+import { useAuthSession } from '../../utils/auth-client'
 import type { RadioGroupItem } from '@nuxt/ui'
+
+// /admin — 兑换码管理(管理后台 layout 首个页面;管理员校验前置到路由中间件
+// middleware/admin.ts,非管理员在进入页面前就被重定向回首页;接口层 requireAdmin 二次鉴权兜底)
+definePageMeta({ layout: 'admin', middleware: 'admin' })
 
 useHead({ title: 'AI SpankWorld · 兑换码管理' })
 
@@ -39,7 +42,7 @@ async function loadCodes() {
   } catch (e) {
     const status = (e as { statusCode?: number }).statusCode
     if (status === 401 || status === 403) {
-      // 未登录 / 非管理员:不展示页面,直接回首页
+      // 兜底:中间件已拦截非管理员,这里只在权限被中途撤销等极端情况下触发
       toast.add({
         title: status === 401 ? '请先登录' : '当前账号无管理权限',
         description: '正在为你跳转到首页…',
@@ -407,24 +410,24 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
                 :key="r.id"
                 class="flex items-center justify-between gap-3 py-2.5 text-sm"
               >
-              <div class="min-w-0">
-                <p class="truncate font-medium">
-                  {{ r.userName || '匿名用户' }}
-                </p>
-                <p class="truncate text-xs text-neutral-500">
-                  {{ r.userEmail || '—' }}
-                </p>
-              </div>
-              <div class="shrink-0 text-right">
-                <p class="tabular-nums text-emerald-600">
-                  +{{ r.tokens.toLocaleString() }} tokens
-                </p>
-                <p class="text-xs text-neutral-500">
-                  {{ fmtTs(r.createdAt) }}
-                </p>
-              </div>
-            </li>
-          </ul>
+                <div class="min-w-0">
+                  <p class="truncate font-medium">
+                    {{ r.userName || '匿名用户' }}
+                  </p>
+                  <p class="truncate text-xs text-neutral-500">
+                    {{ r.userEmail || '—' }}
+                  </p>
+                </div>
+                <div class="shrink-0 text-right">
+                  <p class="tabular-nums text-emerald-600">
+                    +{{ r.tokens.toLocaleString() }} tokens
+                  </p>
+                  <p class="text-xs text-neutral-500">
+                    {{ fmtTs(r.createdAt) }}
+                  </p>
+                </div>
+              </li>
+            </ul>
           </template>
         </template>
       </UModal>

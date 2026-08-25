@@ -20,6 +20,14 @@ database_name = "aiSpankWorld"
 database_id = "a54b678b-1498-4db6-98e0-3794712e1f57"
 remote = true
 
+# Skill 商城文件存储(R2 bucket)
+# remote = true:本地 dev 直接读写云端真桶(与上方 D1 remote=true 同款 Cloudflare Remote Bindings),
+# 需 wrangler 登录态(`npx wrangler whoami` 可查);部署时始终走真实绑定。
+[[r2_buckets]]
+binding = "SKILL_FILES"
+bucket_name = "aistorybound"
+remote = true
+
 # LLM 网关非敏感配置(注入 env.AI_BASE_URL / env.AI_MODEL,server/utils/ai.ts 读取)
 # 注意:AI_API_KEY 属于敏感信息,不放这里,用 `wrangler secret put AI_API_KEY` 设置
 [vars]

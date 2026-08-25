@@ -27,15 +27,18 @@
     "@iconify-json/lucide": "^1.2.123",
     "@iconify-json/simple-icons": "^1.2.93",
     "@nuxt/ui": "^4.10.0",
+    "@nuxtjs/mdc": "^0.23.1",
     "better-auth": "^1.7.1",
     "drizzle-orm": "^0.45.2",
     "idb": "^8.0.3",
+    "js-yaml": "^5.4.0",
     "nuxt": "^4.5.2",
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260820.1",
     "@nuxt/eslint": "^1.17.0",
+    "@types/js-yaml": "^4.0.9",
     "@vite-pwa/nuxt": "^1.1.1",
     "drizzle-kit": "^0.31.10",
     "eslint": "^10.8.1",

@@ -1,7 +1,7 @@
 // server/db/schema.ts
 // Drizzle ORM schema(SQLite / Cloudflare D1 方言)
 // NuxtHub 以此生成迁移(server/db/migrations/*.sql)与类型
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 // ---- 用户 ----
 export const users = sqliteTable('users', {
@@ -134,6 +134,91 @@ export const redeemCodeRedemptions = sqliteTable('redeem_code_redemptions', {
 }, t => [
   index('idx_redemption_code').on(t.codeId),
   index('idx_redemption_user').on(t.userId)
+])
+
+// ---- Skill 商城商品(zip 存 R2,见 wrangler.toml SKILL_FILES 绑定;购买拆账 80/20) ----
+export const skillProducts = sqliteTable('skill_products', {
+  id: text('id').primaryKey(),
+  /** 发布者 */
+  sellerId: text('seller_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** 展示名称 */
+  name: text('name').notNull(),
+  /** 说明文(商城卡片展示) */
+  desc: text('desc').notNull(),
+  /** 售价(token,正整数) */
+  price: integer('price').notNull(),
+  /** R2 key: skills/<sellerId>/<id>.zip */
+  fileKey: text('file_key').notNull(),
+  /** 上传的原始文件名(下载时回填) */
+  fileName: text('file_name').notNull(),
+  /** 字节数 */
+  fileSize: integer('file_size').notNull(),
+  /** JSON:zip 内文件清单(上传时解析,管理端预览) */
+  fileEntries: text('file_entries'),
+  /** pending=待审核 | approved=已上架 | rejected=已拒绝 | removed=已下架 */
+  status: text('status').notNull().default('pending'),
+  /** 审核驳回原因 */
+  rejectReason: text('reject_reason'),
+  /** 1=平台推荐(优质 skill 推荐标识) */
+  featured: integer('featured').notNull().default(0),
+  downloadCount: integer('download_count').notNull().default(0),
+  purchaseCount: integer('purchase_count').notNull().default(0),
+  reviewedBy: text('reviewed_by').references(() => user.id),
+  reviewedAt: integer('reviewed_at', { mode: 'timestamp_ms' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  index('idx_skill_seller').on(t.sellerId),
+  index('idx_skill_status').on(t.status, t.featured)
+])
+
+// ---- Skill 版本(每次发布/更新生成一条;审核、购买锁定与下载都以版本为准) ----
+export const skillProductVersions = sqliteTable('skill_product_versions', {
+  id: text('id').primaryKey(),
+  skillId: text('skill_id').notNull().references(() => skillProducts.id, { onDelete: 'cascade' }),
+  /** 版本号,从 1 自动递增 */
+  version: integer('version').notNull(),
+  /** 本次提交的名称/说明/售价快照(审核通过后同步到主表) */
+  name: text('name').notNull(),
+  desc: text('desc').notNull(),
+  price: integer('price').notNull(),
+  /** R2 key(每个版本独立文件,不覆盖) */
+  fileKey: text('file_key').notNull(),
+  /** 上传的原始文件名(下载时回填) */
+  fileName: text('file_name').notNull(),
+  /** 字节数 */
+  fileSize: integer('file_size').notNull(),
+  /** JSON:zip 内文件清单(上传时解析,管理端预览) */
+  fileEntries: text('file_entries'),
+  /** pending=待审核 | approved=已上架 | rejected=已拒绝(版本级状态) */
+  status: text('status').notNull().default('pending'),
+  /** 审核驳回原因 */
+  rejectReason: text('reject_reason'),
+  reviewedBy: text('reviewed_by').references(() => user.id),
+  reviewedAt: integer('reviewed_at', { mode: 'timestamp_ms' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  uniqueIndex('idx_skill_version_unique').on(t.skillId, t.version),
+  index('idx_skill_version_status').on(t.skillId, t.status)
+])
+
+// ---- Skill 购买记录(唯一(skill, buyer)= 一次购买永久可下载,不可重购) ----
+export const skillPurchases = sqliteTable('skill_purchases', {
+  id: text('id').primaryKey(),
+  skillId: text('skill_id').notNull().references(() => skillProducts.id, { onDelete: 'cascade' }),
+  buyerId: text('buyer_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** 成交价快照(token) */
+  price: integer('price').notNull(),
+  /** 发布者所得(售价 80%,round 取整) */
+  sellerShare: integer('seller_share').notNull(),
+  /** 平台手续费(售价 20%) */
+  platformFee: integer('platform_fee').notNull(),
+  /** 购买时锁定的版本记录 id(旧数据为 null 时回退 v1) */
+  skillVersionId: text('skill_version_id').references(() => skillProductVersions.id, { onDelete: 'set null' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  uniqueIndex('idx_skill_purchase_unique').on(t.skillId, t.buyerId),
+  index('idx_skill_purchase_buyer').on(t.buyerId)
 ])
 
 // ---- 小说 ----
