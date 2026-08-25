@@ -44,8 +44,6 @@ export interface GenerateProgress {
   tokensUsed: number
   /** 实时估算:已完成真实用量 + 流式进行中调用的估算合计(单调不减) */
   liveTokens: number
-  /** tokens/秒(当前流估算) */
-  liveSpeed?: number
   warnings: string[]
 }
 
@@ -146,7 +144,7 @@ async function pool<T, R>(
  * @param opts.signal 取消信号:触发后中止在途 AI 调用,抛 CancelledError
  * @param opts.eco 节约模式:只提取 5 类核心实体、引用从简;跳过 AI 一致性检查;
  *                 成书只让 AI 出标题/简介/角色定位,人物卡由提取素材本地直拼(约省一半 token)
- * @param opts.limits 生成参数(单单元输入上限/单次输出上限);缺省读个人中心配置的本地偏好
+ * @param opts.limits 生成参数(单单元输入上限/切段重叠/提取、检查、成书输出上限/调用超时);缺省读个人中心配置的本地偏好
  */
 export async function generateWorld(
   title: string,
@@ -157,11 +155,13 @@ export async function generateWorld(
   const warnings: string[] = []
   const { signal, eco = false } = opts
   const genLimits = opts.limits ?? loadGenLimits()
+  /** 单次调用超时(秒→毫秒),随各阶段调用传给中继 */
+  const relayTimeoutMs = genLimits.relayTimeoutSec * 1000
   const isAborted = () => signal?.aborted ?? false
   let tokensUsed = 0
 
   // ---- 1) Map:分块提取(并发 4,失败重试 1 次后跳过) ----
-  const units = splitUnits(chapters, genLimits.unitMaxChars)
+  const units = splitUnits(chapters, genLimits.unitMaxChars, genLimits.unitOverlapChars)
 
   /** 流式进行中调用的估算 token(按调用 key 登记,完成后删除并入真实用量) */
   const liveCalls = new Map<string, number>()
@@ -199,7 +199,6 @@ export async function generateWorld(
       totalUnits: units.length,
       tokensUsed,
       liveTokens: displayFloor,
-      liveSpeed: live?.speed,
       warnings: [...warnings]
     })
   }
@@ -231,7 +230,8 @@ export async function generateWorld(
         // 输出上限取用户配置;节约模式再压到其自身上限(只会更小不会更大)
         maxTokens: eco ? Math.min(ECO_EXTRACT_MAX_TOKENS, genLimits.extractMaxTokens) : genLimits.extractMaxTokens,
         temperature: 0.2,
-        thinking: false
+        thinking: false,
+        timeoutMs: relayTimeoutMs
       }, {
         onLive: liveHandler(`u${index}`, 'extract'),
         signal
@@ -294,9 +294,10 @@ export async function generateWorld(
   } else if (entities.characters.length + entities.locations.length + entities.world_rules.length > 0) {
     const checkAttempt = async (): Promise<CheckReview> => {
       const res = await aiChatJson<CheckReview>(buildCheckMessages(title, entities, conflicts), {
-        maxTokens: 4000,
+        maxTokens: genLimits.checkMaxTokens,
         temperature: 0.2,
-        thinking: false
+        thinking: false,
+        timeoutMs: relayTimeoutMs
       }, {
         onLive: liveHandler('check', 'check'),
         signal
@@ -366,7 +367,8 @@ export async function generateWorld(
       }>(buildEcoSynthMessages(title, entities), {
         maxTokens: ECO_SYNTH_MAX_TOKENS,
         temperature: 0.3,
-        thinking: false
+        thinking: false,
+        timeoutMs: relayTimeoutMs
       }, {
         onLive: liveHandler('synth', 'synthesize'),
         signal
@@ -412,9 +414,10 @@ export async function generateWorld(
         summary?: string
         characters?: CharacterCard[]
       }>(buildSynthesizeMessages(title, entities, conflicts, warnings), {
-        maxTokens: 16000,
+        maxTokens: genLimits.synthMaxTokens,
         temperature: 0.3,
-        thinking: false
+        thinking: false,
+        timeoutMs: relayTimeoutMs
       }, {
         onLive: liveHandler('synth', 'synthesize'),
         signal

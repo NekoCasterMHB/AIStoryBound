@@ -38,6 +38,8 @@ export interface AiChatOptions {
   maxTokens?: number
   temperature?: number
   thinking?: boolean
+  /** 单次中继调用超时(毫秒);缺省用平台默认 600s */
+  timeoutMs?: number
 }
 
 /** 解析上游 SSE 的 data: 行(可能跨块,按行缓冲) */

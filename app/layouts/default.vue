@@ -28,33 +28,46 @@ async function onLogout() {
 <template>
   <div>
     <!-- :toggle="false" 去掉移动端最右侧的侧边栏展开按钮(本布局未提供侧边栏内容) -->
-    <UHeader :toggle="false">
+    <!-- 窄屏压缩:right 组件间距收紧,与隐藏书架按钮配合避免按钮群横向溢出 -->
+    <UHeader
+      :toggle="false"
+      :ui="{
+        right: 'gap-1 lg:gap-1.5'
+      }"
+    >
       <template #left>
         <NuxtLink
           to="/"
-          class="flex items-center gap-1.5 text-lg font-bold tracking-tight text-(--ui-text-highlighted)"
+          class="flex min-w-0 items-center gap-1.5 text-lg font-bold tracking-tight text-(--ui-text-highlighted)"
         >
           <UIcon
             name="i-lucide-sparkles"
-            class="size-5 text-primary"
+            class="size-5 shrink-0 text-primary"
           />
-          AISpankWorld
+          <!-- 极窄屏(≤340px,老 iPhone SE/小屏安卓)仅保留图标,避免挤压右侧按钮组 -->
+          <span class="hidden min-[341px]:inline">AISpankWorld</span>
         </NuxtLink>
       </template>
 
       <template #right>
+        <!-- 主题色切换(主色/中性色),选择持久化到 localStorage -->
+        <ThemeColorPopover />
+
         <UColorModeButton />
 
-        <UButton
-          to="/works"
-          icon="i-lucide-library"
-          color="neutral"
-          variant="soft"
-          size="sm"
-          aria-label="我的书架"
-        >
-          <span class="hidden sm:inline">我的书架</span>
-        </UButton>
+        <!-- 窄屏(<lg)隐藏:入口已收进用户菜单,避免与右侧按钮群挤压溢出 -->
+        <div class="hidden lg:block">
+          <UButton
+            to="/works"
+            icon="i-lucide-library"
+            color="neutral"
+            variant="soft"
+            size="sm"
+            aria-label="我的书架"
+          >
+            <span class="hidden sm:inline">我的书架</span>
+          </UButton>
+        </div>
 
         <UButton
           color="primary"

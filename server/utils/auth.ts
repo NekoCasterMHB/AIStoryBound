@@ -42,7 +42,11 @@ function createAuth(db: D1Database, cfg: AuthEnvConfig, emailCtx: ReturnType<typ
   return betterAuth({
     appName: 'AI SpankWorld',
     secret: cfg.secret,
-    baseURL: cfg.baseUrl,
+    // 未显式配置 BETTER_AUTH_URL 时用动态 baseURL:从请求 Host 自动推断,
+    // 显式声明 allowedHosts 以消除 better-auth 的 "Base URL is not set" 警告
+    // (放行任意 host 与原来的推断行为等价,真正的域名校验靠登录/验证码流程本身)
+    // protocol: 'auto' 同时放行 http/https,否则 http 开发环境(localhost)会被判非法来源
+    baseURL: cfg.baseUrl ?? { allowedHosts: ['*'], protocol: 'auto' },
     database: drizzleAdapter(orm, { provider: 'sqlite' }),
     emailAndPassword: {
       enabled: true,

@@ -354,7 +354,7 @@ const steps = [
 
 /** 底部特性卡片数据 */
 const features = [
-  { icon: 'i-lucide-gauge', title: '实时消耗', desc: '生成全程显示 token 实时消耗与速度,完成后写入作品卡' },
+  { icon: 'i-lucide-gauge', title: '实时消耗', desc: '生成全程显示 token 实时消耗,完成后写入作品卡' },
   { icon: 'i-lucide-search-check', title: '引用校验', desc: '每条设定带原文引用并与正文比对,未通过校验的会标记告警' },
   { icon: 'i-lucide-cloud-upload', title: '云端同步', desc: '生成结果可手动同步到云端,换设备恢复继续游玩' }
 ]
@@ -368,38 +368,39 @@ const features = [
       class="pointer-events-none absolute inset-0"
     >
       <div class="bg-grid absolute inset-0" />
-      <div class="absolute -top-36 left-1/2 h-72 w-[680px] -translate-x-1/2 rounded-full bg-green-400/10 blur-3xl dark:bg-green-500/[0.07]" />
-      <div class="absolute right-[6%] top-56 size-44 rounded-full bg-teal-400/[0.07] blur-3xl dark:bg-teal-500/10" />
+      <div class="absolute -top-40 left-1/2 h-[480px] w-[760px] -translate-x-1/2 rounded-full bg-green-400/20 blur-3xl dark:bg-green-500/10" />
+      <div class="animate-drift absolute left-[6%] top-44 size-40 rounded-full bg-teal-400/20 blur-3xl dark:bg-teal-500/10" />
+      <div
+        class="animate-drift absolute right-[4%] top-72 size-56 rounded-full bg-cyan-400/15 blur-3xl dark:bg-cyan-500/10"
+        style="animation-delay: -4s"
+      />
     </div>
 
-    <div class="relative mx-auto max-w-4xl px-4 pb-16 pt-12 sm:pt-16">
+    <div class="relative mx-auto max-w-6xl px-4 pb-20 pt-16 sm:pt-24">
       <!-- Hero:徽章 + 渐变标题 + 副标题 + CTA -->
       <div class="text-center">
-        <p class="mx-auto inline-flex items-center gap-1.5 rounded-full border border-green-500/25 bg-green-500/[0.07] px-3.5 py-1.5 text-xs font-medium text-green-700 dark:border-green-400/20 dark:bg-green-400/10 dark:text-green-400">
+        <p class="mx-auto inline-flex items-center gap-1.5 rounded-full border border-primary-500/30 bg-primary-500/10 px-3.5 py-1.5 text-xs text-primary-600 dark:text-primary-400">
           <UIcon
             name="i-lucide-wand-sparkles"
             class="size-3.5"
           />
           AI 驱动 · 本地优先 · 世界观一致
         </p>
-        <h1 class="mt-6 text-3xl font-bold leading-tight tracking-tight text-(--ui-text-highlighted) sm:text-4xl">
+        <h1 class="mx-auto mt-6 max-w-3xl text-4xl font-bold leading-tight tracking-tight text-(--ui-text-highlighted) sm:text-5xl">
           把一本小说,变成<br class="hidden sm:block"><span class="text-gradient">可走进的世界</span>
         </h1>
-        <p class="mx-auto mt-4 max-w-xl text-sm leading-relaxed text-neutral-500 dark:text-neutral-400 sm:text-base">
+        <p class="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-neutral-600 dark:text-neutral-400 sm:text-lg">
           上传整本 TXT,AI 分章提取人物、地点、势力、规则与伏笔,自动合并校验后生成完整世界观——选择一个角色,真正走进故事。
         </p>
         <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
-          <button
-            type="button"
-            class="btn-gradient !px-7 !py-3 text-base"
+          <UButton
+            color="primary"
+            size="lg"
+            icon="i-lucide-sparkles"
             @click="onHeroStart"
           >
-            <UIcon
-              name="i-lucide-sparkles"
-              class="size-4.5"
-            />
             {{ loggedIn ? '开始新世界' : '登录后生成' }}
-          </button>
+          </UButton>
           <UButton
             label="返回首页"
             icon="i-lucide-arrow-left"
@@ -414,7 +415,7 @@ const features = [
       <!-- 主卡片:未登录引导 / 上传 / 生成中 / 完成 / 失败 -->
       <div
         ref="uploadCard"
-        class="mt-12 scroll-mt-6 rounded-3xl border border-neutral-200/70 bg-white/80 p-6 shadow-xl shadow-neutral-900/[0.04] backdrop-blur transition-colors dark:border-neutral-800 dark:bg-neutral-900/60 dark:shadow-black/20 sm:p-10"
+        class="mx-auto mt-14 max-w-4xl scroll-mt-6 rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm shadow-neutral-900/[0.03] dark:border-neutral-800 dark:bg-neutral-900/60 sm:p-10"
       >
         <input
           ref="fileInput"
@@ -435,24 +436,21 @@ const features = [
               class="size-6"
             />
           </div>
-          <p class="mt-5 text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+          <p class="mt-5 text-lg font-semibold text-(--ui-text-highlighted)">
             登录后即可生成世界
           </p>
-          <p class="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-neutral-500">
+          <p class="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
             上传整本小说,由 AI 生成人物卡与完整世界观;生成结果可同步云端,换设备继续游玩。
           </p>
           <div class="mt-7 flex justify-center">
-            <button
-              type="button"
-              class="btn-gradient !px-7 !py-3"
+            <UButton
+              color="primary"
+              size="lg"
+              icon="i-lucide-log-in"
               @click="requireLogin"
             >
-              <UIcon
-                name="i-lucide-log-in"
-                class="size-4"
-              />
               登录 / 注册
-            </button>
+            </UButton>
           </div>
         </div>
 
@@ -461,37 +459,34 @@ const features = [
           v-else-if="genState.phase === 'idle'"
           class="rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-200 sm:p-14"
           :class="isDragging
-            ? 'border-green-500 bg-green-500/[0.04]'
+            ? 'border-primary-500 bg-primary-500/[0.04]'
             : 'border-neutral-300/80 bg-neutral-50/50 dark:border-neutral-700/80 dark:bg-neutral-950/30'"
           @dragover.prevent="isDragging = true"
           @dragleave.prevent="isDragging = false"
           @drop.prevent="onDrop"
         >
-          <div class="mx-auto flex size-16 items-center justify-center rounded-2xl bg-gradient-to-br from-green-500 to-teal-500 text-white shadow-lg shadow-green-500/25">
+          <div class="mx-auto flex size-12 items-center justify-center rounded-xl bg-gradient-to-br from-green-500/15 to-teal-500/15 text-primary-600 dark:text-primary-400">
             <UIcon
               name="i-lucide-upload"
-              class="size-7"
+              class="size-6"
             />
           </div>
-          <p class="mt-5 text-base font-semibold text-neutral-900 dark:text-neutral-100">
+          <p class="mt-5 text-base font-semibold text-(--ui-text-highlighted)">
             拖入整本 TXT,或点击选择文件
           </p>
-          <p class="mx-auto mt-1.5 max-w-sm text-sm leading-relaxed text-neutral-500">
+          <p class="mx-auto mt-1.5 max-w-sm text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
             AI 分章提取人物、地点、势力、规则与伏笔,自动合并校验后生成可玩的世界观
           </p>
           <div class="mt-7 flex justify-center">
-            <button
-              type="button"
-              class="btn-gradient !px-7 !py-3"
+            <UButton
+              color="primary"
+              size="lg"
+              icon="i-lucide-folder-open"
               :disabled="picking"
               @click="onPickFile"
             >
-              <UIcon
-                name="i-lucide-folder-open"
-                class="size-4"
-              />
               {{ picking ? '正在读取…' : '选择 TXT 文件' }}
-            </button>
+            </UButton>
           </div>
           <div class="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-neutral-400 dark:text-neutral-500">
             <span class="inline-flex items-center gap-1.5">
@@ -533,7 +528,7 @@ const features = [
           />
 
           <div class="flex items-center gap-3.5">
-            <div class="flex size-11 shrink-0 items-center justify-center rounded-xl bg-green-500/10 text-green-600 dark:bg-green-400/10 dark:text-green-400">
+            <div class="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary-500/10 text-primary-600 dark:bg-primary-400/10 dark:text-primary-400">
               <UIcon
                 name="i-lucide-file-text"
                 class="size-5"
@@ -541,7 +536,7 @@ const features = [
             </div>
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
-                <p class="truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                <p class="truncate text-sm font-semibold text-(--ui-text-highlighted)">
                   {{ pendingGen?.title }}
                 </p>
                 <UBadge
@@ -578,7 +573,7 @@ const features = [
                 type="button"
                 class="inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-semibold transition-colors"
                 :class="!ecoMode
-                  ? 'bg-gradient-to-r from-green-600 to-teal-500 text-white shadow-sm shadow-green-500/30'
+                  ? 'bg-primary-500 text-white shadow-sm shadow-primary-500/30'
                   : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'"
                 @click="ecoMode = false"
               >
@@ -592,7 +587,7 @@ const features = [
                 type="button"
                 class="inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-semibold transition-colors"
                 :class="ecoMode
-                  ? 'bg-gradient-to-r from-green-600 to-teal-500 text-white shadow-sm shadow-green-500/30'
+                  ? 'bg-primary-500 text-white shadow-sm shadow-primary-500/30'
                   : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'"
                 @click="ecoMode = true"
               >
@@ -622,17 +617,14 @@ const features = [
             >
               重新选择
             </UButton>
-            <button
-              type="button"
-              class="btn-gradient !px-7 !py-2.5"
+            <UButton
+              color="primary"
+              size="lg"
+              icon="i-lucide-wand-sparkles"
               @click="startGenerationFromConfirm"
             >
-              <UIcon
-                name="i-lucide-wand-sparkles"
-                class="size-4"
-              />
               开始生成
-            </button>
+            </UButton>
           </div>
         </div>
 
@@ -652,14 +644,14 @@ const features = [
 
           <!-- 书名 + 实时消耗 -->
           <div class="flex items-center gap-3.5">
-            <div class="flex size-11 shrink-0 items-center justify-center rounded-xl bg-green-500/10 text-green-600 dark:bg-green-400/10 dark:text-green-400">
+            <div class="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary-500/10 text-primary-600 dark:bg-primary-400/10 dark:text-primary-400">
               <UIcon
                 name="i-lucide-file-text"
                 class="size-5"
               />
             </div>
             <div class="min-w-0 flex-1">
-              <p class="truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+              <p class="truncate text-sm font-semibold text-(--ui-text-highlighted)">
                 {{ genState.title }}
               </p>
               <p class="mt-0.5 text-xs text-neutral-500">
@@ -670,15 +662,9 @@ const features = [
               </p>
             </div>
             <div class="shrink-0 text-right">
-              <p class="text-sm font-semibold text-green-600 tabular-nums dark:text-green-400">
+              <p class="text-sm font-semibold text-primary-600 tabular-nums dark:text-primary-400">
                 {{ liveShown.toLocaleString() }}
                 <span class="text-xs font-normal text-neutral-400">tokens</span>
-              </p>
-              <p
-                v-if="genState.progress?.liveSpeed"
-                class="text-xs text-neutral-400 tabular-nums"
-              >
-                {{ genState.progress.liveSpeed }}/s
               </p>
             </div>
           </div>
@@ -693,9 +679,9 @@ const features = [
                 <div
                   class="flex size-7 items-center justify-center rounded-full text-[11px] transition-all duration-300"
                   :class="i < stageIndex
-                    ? 'bg-green-500 text-white shadow-sm shadow-green-500/40'
+                    ? 'bg-primary-500 text-white shadow-sm shadow-primary-500/40'
                     : i === stageIndex
-                      ? 'bg-green-500/10 text-green-600 ring-1 ring-green-500/40 animate-pulse dark:bg-green-400/10 dark:text-green-400'
+                      ? 'bg-primary-500/10 text-primary-600 ring-1 ring-primary-500/40 animate-pulse dark:bg-primary-400/10 dark:text-primary-400'
                       : 'bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-600'"
                 >
                   <UIcon
@@ -712,7 +698,7 @@ const features = [
                 <span
                   class="text-[11px] leading-tight"
                   :class="i === stageIndex
-                    ? 'font-semibold text-green-600 dark:text-green-400'
+                    ? 'font-semibold text-primary-600 dark:text-primary-400'
                     : i < stageIndex
                       ? 'text-neutral-700 dark:text-neutral-300'
                       : 'text-neutral-400 dark:text-neutral-600'"
@@ -723,7 +709,7 @@ const features = [
               <div
                 v-if="i < stages.length - 1"
                 class="mt-3.5 h-px flex-1 rounded-full transition-colors duration-300"
-                :class="i < stageIndex ? 'bg-green-500/60' : 'bg-neutral-200 dark:bg-neutral-800'"
+                :class="i < stageIndex ? 'bg-primary-500/60' : 'bg-neutral-200 dark:bg-neutral-800'"
               />
             </template>
           </div>
@@ -732,7 +718,7 @@ const features = [
           <div class="flex items-center gap-3">
             <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800">
               <div
-                class="h-full rounded-full bg-gradient-to-r from-green-500 to-teal-400 transition-[width] duration-500 ease-out"
+                class="h-full rounded-full bg-gradient-to-r from-primary-500 to-teal-400 transition-[width] duration-500 ease-out"
                 :style="{ width: `${genPercent}%` }"
               />
             </div>
@@ -778,13 +764,13 @@ const features = [
           v-else-if="genState.phase === 'done'"
           class="py-6 text-center sm:py-8"
         >
-          <div class="mx-auto flex size-14 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-500 ring-1 ring-emerald-500/25">
+          <div class="mx-auto flex size-14 items-center justify-center rounded-full bg-primary-500/10 text-primary-500 ring-1 ring-primary-500/25">
             <UIcon
               name="i-lucide-circle-check"
               class="size-7"
             />
           </div>
-          <p class="mt-5 text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+          <p class="mt-5 text-lg font-semibold text-(--ui-text-highlighted)">
             《{{ genState.title }}》世界已生成
           </p>
           <div class="mt-3 flex flex-wrap items-center justify-center gap-2 text-xs">
@@ -810,7 +796,7 @@ const features = [
             </span>
             <span
               v-if="genState.tokensUsed"
-              class="inline-flex items-center gap-1 rounded-full bg-green-500/10 px-3 py-1 text-green-700 dark:bg-green-400/10 dark:text-green-400"
+              class="inline-flex items-center gap-1 rounded-full bg-primary-500/10 px-3 py-1 text-primary-700 dark:bg-primary-400/10 dark:text-primary-400"
             >
               <UIcon
                 name="i-lucide-coins"
@@ -820,17 +806,14 @@ const features = [
             </span>
           </div>
           <div class="mt-8 flex justify-center">
-            <button
-              type="button"
-              class="btn-gradient !px-8 !py-3.5 text-base"
+            <UButton
+              color="primary"
+              size="lg"
+              icon="i-lucide-arrow-right"
               @click="navigateTo(`/play/${genState.resultId}`)"
             >
-              <UIcon
-                name="i-lucide-arrow-right"
-                class="size-4"
-              />
               选择角色进入故事
-            </button>
+            </UButton>
           </div>
         </div>
 
@@ -845,24 +828,21 @@ const features = [
               class="size-6"
             />
           </div>
-          <p class="mt-5 text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+          <p class="mt-5 text-lg font-semibold text-(--ui-text-highlighted)">
             生成失败
           </p>
-          <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-neutral-500">
+          <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
             {{ genState.error }}
           </p>
           <div class="mt-7 flex justify-center">
-            <button
-              type="button"
-              class="btn-gradient !px-7 !py-3"
+            <UButton
+              color="primary"
+              size="lg"
+              icon="i-lucide-rotate-ccw"
               @click="onPickFile"
             >
-              <UIcon
-                name="i-lucide-rotate-ccw"
-                class="size-4"
-              />
               重新选择文件
-            </button>
+            </UButton>
           </div>
         </div>
       </div>
@@ -870,13 +850,16 @@ const features = [
       <!-- 四步流程 -->
       <section
         v-reveal
-        class="mt-16"
+        class="border-t border-neutral-200/70 pt-20 dark:border-neutral-800/70"
       >
-        <div class="mb-8 text-center">
-          <h2 class="text-lg font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
+        <div class="mb-10 text-center">
+          <p class="text-xs font-semibold tracking-widest text-primary-600 dark:text-primary-400">
+            流程
+          </p>
+          <h2 class="mt-2 text-2xl font-bold tracking-tight text-(--ui-text-highlighted) sm:text-3xl">
             从一本小说到可玩的世界
           </h2>
-          <p class="mt-1.5 text-sm text-neutral-500">
+          <p class="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
             四步完成,全程透明可查
           </p>
         </div>
@@ -884,23 +867,24 @@ const features = [
           <div
             v-for="(step, i) in steps"
             :key="step.title"
-            class="rounded-2xl border border-neutral-200/70 bg-white/70 p-5 shadow-sm shadow-neutral-900/[0.03] backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:shadow-neutral-900/[0.06] dark:border-neutral-800 dark:bg-neutral-900/50 dark:hover:shadow-black/20"
+            class="group relative overflow-hidden rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_rgb(0_193_106/0.3)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_rgb(0_220_130/0.15)]"
           >
-            <div class="flex items-start justify-between">
-              <div class="flex size-10 items-center justify-center rounded-xl bg-green-500/10 text-green-600 dark:bg-green-400/10 dark:text-green-400">
-                <UIcon
-                  :name="step.icon"
-                  class="size-5"
-                />
-              </div>
-              <span class="text-3xl font-bold leading-none text-neutral-100 dark:text-neutral-800">
-                {{ i + 1 }}
-              </span>
+            <span
+              class="absolute right-5 top-3 text-4xl font-bold text-neutral-100 transition-colors duration-300 group-hover:text-primary-500/20 dark:text-neutral-800 dark:group-hover:text-primary-400/15"
+              aria-hidden="true"
+            >
+              {{ `0${i + 1}` }}
+            </span>
+            <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-primary-500/15 text-primary-600 dark:text-primary-400">
+              <UIcon
+                :name="step.icon"
+                class="size-5"
+              />
             </div>
-            <p class="mt-4 text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+            <h3 class="font-semibold text-(--ui-text-highlighted)">
               {{ step.title }}
-            </p>
-            <p class="mt-1.5 text-xs leading-relaxed text-neutral-500">
+            </h3>
+            <p class="mt-2 text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
               {{ step.desc }}
             </p>
           </div>
@@ -910,21 +894,23 @@ const features = [
       <!-- 特性 -->
       <section
         v-reveal
-        class="mt-6 grid gap-4 sm:grid-cols-3"
+        class="mt-16 grid gap-4 sm:grid-cols-3"
       >
         <div
           v-for="f in features"
           :key="f.title"
-          class="rounded-2xl border border-neutral-200/70 bg-white/70 p-5 shadow-sm shadow-neutral-900/[0.03] backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:shadow-neutral-900/[0.06] dark:border-neutral-800 dark:bg-neutral-900/50 dark:hover:shadow-black/20"
+          class="group rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_rgb(0_193_106/0.3)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_rgb(0_220_130/0.15)]"
         >
-          <UIcon
-            :name="f.icon"
-            class="size-5 text-green-600 dark:text-green-400"
-          />
-          <p class="mt-3 text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-green-500/15 to-teal-500/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
+            <UIcon
+              :name="f.icon"
+              class="size-5"
+            />
+          </div>
+          <h3 class="font-semibold text-(--ui-text-highlighted)">
             {{ f.title }}
-          </p>
-          <p class="mt-1.5 text-xs leading-relaxed text-neutral-500">
+          </h3>
+          <p class="mt-2 text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
             {{ f.desc }}
           </p>
         </div>
@@ -932,38 +918,3 @@ const features = [
     </div>
   </div>
 </template>
-
-<style scoped>
-/* 主 CTA:品牌深绿 → 青 渐变,细腻投影 + 微浮起(登录引导 / 上传 / 完成 / 失败共用) */
-.btn-gradient {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  border-radius: 0.75rem;
-  padding: 0.75rem 1.5rem;
-  font-size: 0.875rem;
-  font-weight: 600;
-  line-height: 1.25rem;
-  color: white;
-  background-image: linear-gradient(120deg, var(--color-green-600) 0%, var(--color-teal-500) 100%);
-  box-shadow: 0 8px 20px -6px rgb(0 193 106 / 0.35);
-  transition: box-shadow 0.2s ease, transform 0.2s ease, filter 0.2s ease;
-}
-
-.btn-gradient:hover {
-  box-shadow: 0 12px 28px -6px rgb(0 193 106 / 0.45);
-  transform: translateY(-1px);
-  filter: brightness(1.04);
-}
-
-.btn-gradient:active {
-  transform: translateY(0);
-}
-
-.btn-gradient:disabled {
-  opacity: 0.6;
-  box-shadow: none;
-  pointer-events: none;
-}
-</style>

@@ -11,10 +11,15 @@ import { requireUser } from '../../utils/authz'
 import { getAiConfig } from '../../utils/ai'
 import { buildUpstreamRequest, relaySse } from '../../utils/ai-relay'
 import { isAiApiFormat } from '../../../shared/ai-config'
+import { RELAY_TIMEOUT_DEFAULT_MS, RELAY_TIMEOUT_MIN_MS, RELAY_TIMEOUT_MAX_MS } from '../../../shared/ai-config'
 import { user as usersTable } from '../../db/schema'
 
-/** 平台模式下请求超时(秒)— 单次中继请求为一次独立调用,远低于 Worker 墙钟 */
-const RELAY_TIMEOUT_MS = 240_000
+/** 请求体可携带单次调用超时(毫秒),由个人中心生成参数下发;缺失/越界用默认值,上限防止拖住上游连接 */
+function clampRelayTimeout(v: unknown): number {
+  const n = typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : NaN
+  if (Number.isNaN(n)) return RELAY_TIMEOUT_DEFAULT_MS
+  return Math.min(RELAY_TIMEOUT_MAX_MS, Math.max(RELAY_TIMEOUT_MIN_MS, n))
+}
 
 interface ChatRelayBody {
   messages?: { role: 'system' | 'user' | 'assistant', content: string }[]
@@ -22,6 +27,8 @@ interface ChatRelayBody {
   maxTokens?: number
   temperature?: number
   thinking?: boolean
+  /** 单次调用超时(毫秒);缺省用平台默认 600s */
+  timeoutMs?: number
   /** 用户浏览器本地保存的自建配置,仅本次请求使用、不落库 */
   config?: { format?: string, baseUrl?: string, apiKey?: string, model?: string }
 }
@@ -82,7 +89,7 @@ export default defineEventHandler(async (event) => {
       method: 'POST',
       headers: req.headers,
       body: JSON.stringify(req.body),
-      signal: AbortSignal.timeout(RELAY_TIMEOUT_MS)
+      signal: AbortSignal.timeout(clampRelayTimeout(body.timeoutMs))
     })
   } catch (e) {
     throw createError({ statusCode: 502, statusMessage: `AI 上游请求失败: ${(e as Error).message}` })

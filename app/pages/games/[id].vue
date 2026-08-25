@@ -7,6 +7,7 @@ import { buildTurnPrompt, mergeState, TURN_OPTIONS_SCHEMA } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
 import { getLocalGame, saveLocalGame, syncGameToCloud } from '../../utils/gameStore'
+import { isCloudSaveEnabled } from '../../utils/cloudSave'
 import { getWork, touchWork, addWorkTokens } from '../../utils/worldGen'
 import { saveGamePoint, listGamePoints, pruneGamePoints } from '../../utils/gameSaveStore'
 
@@ -23,10 +24,13 @@ const currentChapter = ref<string | null>(null)
 const options = ref<{ idx: number, text: string }[]>([])
 const loadError = ref<string | null>(null)
 
+/** 「本地存档上云」开关(个人中心设置,默认关闭):关闭时不上传任何云端数据 */
+const cloudSaveEnabled = isCloudSaveEnabled()
+
 onMounted(async () => {
   const g = await getLocalGame(gameId)
   if (!g) {
-    loadError.value = '本地未找到该游戏会话(可能已在新设备上;请从首页云端恢复)'
+    loadError.value = '本地未找到该游戏会话(可能已在新设备上;请到书架「云端游戏」恢复)'
     return
   }
   game.value = g
@@ -39,6 +43,8 @@ onMounted(async () => {
   options.value = last ? (g.optionsByMessage?.[last.id] ?? []) : []
   // 初始存档点:保证第一轮行动也有回滚目标
   await savePointNow()
+  // 开启上云时,进入游戏先把最新进度推到云端
+  if (cloudSaveEnabled) void syncGameToCloud(game.value)
 })
 
 const playerName = computed(() => game.value?.playerName ?? '玩家')
@@ -157,6 +163,8 @@ async function sendTurn(choice?: string) {
     turnUsage.value = `本回合 ${total.toLocaleString()} tokens`
     persist()
     await savePointNow()
+    // 开启「本地存档上云」时,每回合结束自动同步(未登录或失败静默跳过)
+    if (cloudSaveEnabled) void syncGameToCloud(game.value)
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
     // 叙事已上屏而收尾失败:保留剧情,下次重试只补选项
@@ -225,6 +233,7 @@ async function rollbackAction() {
   persist()
   await pruneGamePoints(gameId, msg.idx)
   await savePointNow()
+  if (cloudSaveEnabled && game.value) void syncGameToCloud(game.value)
 }
 
 // ---- 云端同步 ----
@@ -282,6 +291,7 @@ watch([messages, streamText], async () => {
             class="text-xs text-neutral-400"
           >{{ turnUsage }}</span>
           <UButton
+            v-if="cloudSaveEnabled"
             label="同步"
             icon="i-lucide-cloud-upload"
             color="neutral"

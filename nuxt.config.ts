@@ -32,10 +32,20 @@ modules: [
     workbox: {
       // txt 是 public 下的预设小说,预缓存后离线也能读
       globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,txt}'],
+      // 图标.png 是 scripts/generate-pwa-icons.mjs 的 1.7MB 源图,不应进 SW 预缓存
+      globIgnores: ['**/图标.png'],
       cleanupOutdatedCaches: true
     },
     devOptions: {
       enabled: false
+    }
+  },
+
+  // 图标:构建时扫描源码中用到的图标并打进客户端 bundle,避免运行时回退请求在线
+  // Iconify API(离线/弱网下会失败并报 [Icon] failed to load icon,图标也不渲染)
+  icon: {
+    clientBundle: {
+      scan: true
     }
   },
 

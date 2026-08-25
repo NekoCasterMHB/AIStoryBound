@@ -15,7 +15,41 @@
   --color-green-800: #016538;
   --color-green-900: #0A5331;
   --color-green-950: #052E16;
+
+  /* 主题色可选"黑色":Tailwind 默认 --color-black 是单值无色阶,
+     这里补一套全黑色阶,使黑也能走 colors 插件的 50~950 语义色链 */
+  --color-black-50: #000000;
+  --color-black-100: #000000;
+  --color-black-200: #000000;
+  --color-black-300: #000000;
+  --color-black-400: #000000;
+  --color-black-500: #000000;
+  --color-black-600: #000000;
+  --color-black-700: #000000;
+  --color-black-800: #000000;
+  --color-black-900: #000000;
+  --color-black-950: #000000;
 }
+
+/* 夜间模式下黑色主题反转为浅色梯度:纯黑在深色背景上不可见,
+   覆盖后的值作用于主色链(dark 用 400 号)与调色盘色块(dark:bg-<色>-400),保证清晰可见 */
+.dark {
+  --color-black-50: #ffffff;
+  --color-black-100: #fafafa;
+  --color-black-200: #f4f4f5;
+  --color-black-300: #e4e4e7;
+  --color-black-400: #ffffff;
+  --color-black-500: #f4f4f5;
+  --color-black-600: #e4e4e7;
+  --color-black-700: #d4d4d8;
+  --color-black-800: #a1a1aa;
+  --color-black-900: #71717a;
+  --color-black-950: #52525b;
+}
+
+/* 主题色切换调色盘 safelist:Tailwind v4 对主题变量按需输出(未被静态 utility 引用的颜色变量会被摇掉),
+   色块通过动态类 bg-<色>-500 / dark:bg-<色>-400 引用,故在此强制生成这些类及其变量 */
+@source inline("bg-red-500 dark:bg-red-400 bg-orange-500 dark:bg-orange-400 bg-amber-500 dark:bg-amber-400 bg-yellow-500 dark:bg-yellow-400 bg-lime-500 dark:bg-lime-400 bg-green-500 dark:bg-green-400 bg-emerald-500 dark:bg-emerald-400 bg-teal-500 dark:bg-teal-400 bg-cyan-500 dark:bg-cyan-400 bg-sky-500 dark:bg-sky-400 bg-blue-500 dark:bg-blue-400 bg-indigo-500 dark:bg-indigo-400 bg-violet-500 dark:bg-violet-400 bg-purple-500 dark:bg-purple-400 bg-fuchsia-500 dark:bg-fuchsia-400 bg-pink-500 dark:bg-pink-400 bg-rose-500 dark:bg-rose-400 bg-black-500 dark:bg-black-400 bg-slate-500 dark:bg-slate-400 bg-gray-500 dark:bg-gray-400 bg-zinc-500 dark:bg-zinc-400 bg-stone-500 dark:bg-stone-400");
 
 /* 隐藏 Edge 浏览器自带的密码明文切换按钮(避免与自定义眼睛按钮重叠) */
 ::-ms-reveal {

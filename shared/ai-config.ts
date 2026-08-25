@@ -3,6 +3,14 @@
 // 当前主流三种:Chat Completions(/chat/completions)、Anthropic Messages(/v1/messages)、Responses(/responses)。
 export type AiApiFormat = 'chat' | 'anthropic' | 'responses'
 
+// ---- AI 中继超时(客户端生成参数与服务端 /api/ai/chat 共用,避免两侧常量漂移) ----
+/** 默认单次中继超时(毫秒):覆盖 32K tokens 输出在常见速度(50~60 tok/s)下的耗时 */
+export const RELAY_TIMEOUT_DEFAULT_MS = 600_000
+/** 中继超时可配置下限(毫秒) */
+export const RELAY_TIMEOUT_MIN_MS = 30_000
+/** 中继超时可配置上限(毫秒):太大拖住上游连接,Worker 侧也易被掐断 */
+export const RELAY_TIMEOUT_MAX_MS = 900_000
+
 export interface AiApiFormatMeta {
   value: AiApiFormat
   /** 展示名 */

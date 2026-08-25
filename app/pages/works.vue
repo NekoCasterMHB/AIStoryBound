@@ -2,19 +2,19 @@
 // /works — 我的书架(登录后):官方书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
 import type { TabsItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, parseChaptersFromText } from '../utils/worldGen'
-import { listLocalGames } from '../utils/gameStore'
+import { listLocalGames, saveLocalGame } from '../utils/gameStore'
 import { listReadingProgress } from '../utils/readingStore'
-import { useAuthSession } from '../utils/auth-client'
-import { type LocalWork, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
+import { type LocalWork, type LocalGame, type GameState, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
 
 useHead({ title: 'AI SpankWorld · 我的书架' })
-
-const { data: session } = await useAuthSession()
 
 const works = ref<LocalWork[]>([])
 const games = ref<Awaited<ReturnType<typeof listLocalGames>>>([])
 const cloudWorks = ref<{ id: string, title: string, chapter_count: number, created_at: string }[]>([])
 const cloudLoaded = ref(false)
+/** 云端游戏会话(跨设备续玩:在个人中心开启「本地存档上云」后自动上传) */
+const cloudGames = ref<{ id: string, player_character_name: string | null, current_chapter: string | null, status: string | null, updated_at: string | null }[]>([])
+const cloudGamesLoaded = ref(false)
 
 // ---- 阅读进度(沉浸式阅读页写入,key = src:id) ----
 const readingProgress = ref<Record<string, ReadingProgress>>({})
@@ -70,6 +70,7 @@ onMounted(() => {
   void refreshLocal()
   void loadOfficialWorks()
   void loadReadingProgress()
+  void loadCloudGames()
 })
 
 // ---- 云端同步(手动) ----
@@ -116,9 +117,84 @@ async function restoreFromCloud(id: string) {
   await refreshLocal()
 }
 
+async function loadCloudGames() {
+  cloudGames.value = await $fetch('/api/games').catch(() => [])
+  cloudGamesLoaded.value = true
+}
+
+/** 从云端恢复游戏会话到本机(新设备续玩);作品未在本地时,用云端世界观兜底重建(章节正文不上云) */
+async function restoreCloudGame(id: string) {
+  const data = await $fetch<{
+    id: string
+    novel_id: string | null
+    player_character_name: string | null
+    player_character_id: string | null
+    current_chapter: string | null
+    status: string | null
+    summary: string | null
+    state: GameState | null
+    world: LocalWork['overlay'] | null
+    messages: LocalGame['messages']
+    optionsByMessage: Record<string, { idx: number, text: string }[]>
+  }>(`/api/games/${id}`).catch(() => null)
+  if (!data) return
+
+  if (data.novel_id && data.world && !(await getWork(data.novel_id))) {
+    await saveWork({
+      id: data.novel_id,
+      title: data.world.title ?? '未命名作品',
+      createdAt: new Date().toISOString(),
+      chapters: [],
+      syncStatus: 'synced',
+      overlay: data.world
+    })
+  }
+
+  let summary: LocalGame['summary'] = null
+  if (data.summary) {
+    try {
+      summary = JSON.parse(data.summary)
+    } catch {
+      summary = null
+    }
+  }
+
+  await saveLocalGame({
+    id: data.id,
+    workId: data.novel_id ?? '',
+    playerName: data.player_character_name ?? '玩家',
+    characterName: data.player_character_id ?? '',
+    state: data.state ?? {},
+    messages: data.messages ?? [],
+    optionsByMessage: data.optionsByMessage,
+    currentChapter: data.current_chapter,
+    summary,
+    status: data.status === 'ended' ? 'ended' : 'active',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    syncStatus: 'synced'
+  })
+  await refreshLocal()
+  toast.add({ title: '已恢复到本机,可在「继续游戏」中进入' })
+}
+
 async function onDeleteWork(work: LocalWork) {
   await deleteWork(work.id)
   await refreshLocal()
+}
+
+// ---- 编辑角色卡(操作本地作品 overlay.characters) ----
+const charEditWorkId = ref('')
+const charEditorOpen = ref(false)
+
+function openCharEditor(id: string) {
+  charEditWorkId.value = id
+  charEditorOpen.value = true
+}
+
+async function onCardsSaved() {
+  await refreshLocal()
+  toast.add({ title: '角色卡已更新', color: 'success' })
 }
 
 function fmtTime(iso: string) {
@@ -422,6 +498,14 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     :to="`/edit/${w.id}`"
                   />
                   <UButton
+                    label="角色卡"
+                    icon="i-lucide-users"
+                    color="neutral"
+                    variant="soft"
+                    size="sm"
+                    @click="openCharEditor(w.id)"
+                  />
+                  <UButton
                     v-if="w.overlay?.characters?.length"
                     label="选择角色"
                     icon="i-lucide-play"
@@ -485,6 +569,46 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                   variant="outline"
                   size="sm"
                   @click="restoreFromCloud(cw.id)"
+                />
+              </UCard>
+            </div>
+          </div>
+
+          <!-- 云端游戏(跨设备恢复续玩) -->
+          <div
+            v-if="cloudGamesLoaded"
+            class="mb-6"
+          >
+            <h2 class="mb-3 font-semibold">
+              云端游戏
+            </h2>
+            <div
+              v-if="cloudGames.length === 0"
+              class="text-sm text-neutral-500"
+            >
+              云端暂无游戏(在个人中心开启「本地存档上云」后,游戏进度会自动上传)
+            </div>
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <UCard
+                v-for="g in cloudGames"
+                :key="g.id"
+                class="flex items-center justify-between gap-2"
+              >
+                <div class="min-w-0">
+                  <p class="truncate text-sm font-semibold">
+                    你是「{{ g.player_character_name || '玩家' }}」
+                  </p>
+                  <p class="truncate text-xs text-neutral-500">
+                    {{ g.current_chapter || '进行中' }} · {{ g.updated_at ? fmtTime(g.updated_at) : '—' }}
+                  </p>
+                </div>
+                <UButton
+                  label="恢复到本机"
+                  icon="i-lucide-download"
+                  color="neutral"
+                  variant="outline"
+                  size="sm"
+                  @click="restoreCloudGame(g.id)"
                 />
               </UCard>
             </div>
@@ -585,5 +709,12 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
         </div>
       </template>
     </UModal>
+
+    <!-- 编辑角色卡 -->
+    <CharacterCardsModal
+      v-model:open="charEditorOpen"
+      :work-id="charEditWorkId"
+      @saved="onCardsSaved"
+    />
   </div>
 </template>

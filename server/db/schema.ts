@@ -28,7 +28,14 @@ export const user = sqliteTable('user', {
   aiConfigEnabled: integer('ai_config_enabled').notNull().default(0),
   /** AES-GCM 加密后的 AI 配置 JSON(baseUrl/apiKey/model/thinking) */
   aiConfigCiphertext: text('ai_config_ciphertext'),
-  aiConfigIv: text('ai_config_iv')
+  aiConfigIv: text('ai_config_iv'),
+  // ---- 生成参数(个人中心「生成参数」卡片;null=未设置,运行时取默认值,见 shared/gen-limits) ----
+  genUnitMaxChars: integer('gen_unit_max_chars'),
+  genUnitOverlapChars: integer('gen_unit_overlap_chars'),
+  genExtractMaxTokens: integer('gen_extract_max_tokens'),
+  genCheckMaxTokens: integer('gen_check_max_tokens'),
+  genSynthMaxTokens: integer('gen_synth_max_tokens'),
+  genRelayTimeoutSec: integer('gen_relay_timeout_sec')
 }, t => [index('idx_user_email').on(t.email)])
 
 export const session = sqliteTable('session', {

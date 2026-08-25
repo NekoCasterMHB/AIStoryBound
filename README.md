@@ -74,25 +74,29 @@ Install [Renovate GitHub app](https://github.com/apps/renovate/installations/sel
 ```bash
 pnpm install
 pnpm dev            # http://localhost:4569(环境变量模板见 .env.example,复制为 .dev.vars 并填写 AI_API_KEY 等)
-pnpm db:migrate:local   # 应用 drizzle 迁移到本地 D1(幂等,可重复执行)
+pnpm db:migrate:remote   # 应用 drizzle/init.sql 初始化脚本到云端 D1(幂等,可重复执行)
 ```
+
+> ⚠️ 本地 dev 默认**直连云端真实 D1**(见 `wrangler.toml` 中 `[[d1_databases]]` 的 `remote = true`,Cloudflare Remote Bindings),需要 wrangler 登录态(`npx wrangler whoami` 确认)。`pnpm dev` 启动时日志出现 `Establishing remote connection...` 即表示直连生效;云端库结构变更后执行 `pnpm db:migrate:remote` 同步。
 
 ### 预置小说（首页推荐列表）
 
 - 小说 TXT 放 `public/txt/`（随站点静态部署，部署后可直接访问 `/txt/<书名>.txt`），元数据放 `public/txt/index.json`（可选，按文件名覆盖题材/推荐语/封面等；不填则自动从首行解析《标题》与作者、首段作推荐语）。
 - 运行种子脚本把元数据写入 D1（正文无需上传，由 wrangler `[assets]` 托管、下载接口经 ASSETS binding 直读）：
   ```bash
-  pnpm seed:presets:local    # 本地 miniflare D1
-  pnpm seed:presets:remote   # 云端 D1(wrangler 需已登录)
+  pnpm seed:presets:remote   # 云端 D1(wrangler 需已登录;dev 直连云端,改完 presets 后跑这个)
+  pnpm seed:presets:local    # 本地 miniflare D1(仅当临时去掉 remote=true 退回本地模拟时用)
   ```
 - 重复执行会幂等更新（下载计数保留）。
 
 ### 常用命令
 
 ```bash
-pnpm db:generate       # schema 变更后生成 drizzle 迁移
-pnpm db:migrate:remote # 应用到云端 D1
+pnpm db:migrate:remote # 应用 drizzle/init.sql 初始化脚本到云端 D1(幂等)
+pnpm db:migrate:local  # 应用到本地 miniflare D1
 pnpm build:cf          # cloudflare_module 构建
 pnpm deploy:cf         # 构建 + wrangler deploy
 pnpm lint / pnpm typecheck
 ```
+
+> 数据库迁移已统一为单个 `drizzle/init.sql`(全量 schema,所有语句 `IF NOT EXISTS` 幂等,可重复执行)。schema 变更时同步维护该文件,见文件头部注释;请勿再运行 `pnpm db:generate`。

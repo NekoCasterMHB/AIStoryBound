@@ -10,8 +10,10 @@ import type {
 
 // ---- 常量 ----
 
-/** 单个提取单元的正文上限(字符);超长章节/未切块按段落边界切段 */
-export const UNIT_MAX_CHARS = 8000
+/** 单个提取单元的正文上限(字符,≈12K tokens);超长章节/未切块按段落边界切段 */
+export const UNIT_MAX_CHARS = 20000
+/** 超限长章切段时的相邻段重叠区(字符,≈590 tokens):减少切段边界处实体/关系的遗漏;个人中心高级设置可调,0=关闭 */
+export const UNIT_OVERLAP_CHARS = 1000
 /** 成书时进入人物卡的角色数上限(按 mentionCount 取前 N) */
 export const TOP_CHARACTERS = 12
 /** 引用摘录上限(字符) */
@@ -22,6 +24,10 @@ export const ECO_EXTRACT_MAX_TOKENS = 3800
 export const ECO_QUOTE_MAX_CHARS = 40
 /** 节约模式:成书输出上限(只出标题/简介/角色定位,人物卡本地直拼) */
 export const ECO_SYNTH_MAX_TOKENS = 800
+/** 一致性检查单次输出上限(tokens);个人中心「生成参数-高级设置」可调 */
+export const CHECK_MAX_TOKENS = 20000
+/** 成书单次输出上限(tokens);个人中心「生成参数-高级设置」可调 */
+export const SYNTH_MAX_TOKENS = 32768
 
 // ---- 分块 ----
 
@@ -33,8 +39,10 @@ export interface ExtractUnit {
   content: string
 }
 
-/** 章节 → 提取单元:超长章在段落边界切成 ≤maxChars 的段(上限可配,默认 UNIT_MAX_CHARS) */
-export function splitUnits(chapters: ChapterSegment[], maxChars = UNIT_MAX_CHARS): ExtractUnit[] {
+/** 章节 → 提取单元:超长章在段落边界切成 ≤maxChars 的段,相邻段保留 overlapChars 重叠(上限可配,默认 UNIT_MAX_CHARS;0=关闭重叠) */
+export function splitUnits(chapters: ChapterSegment[], maxChars = UNIT_MAX_CHARS, overlapChars = UNIT_OVERLAP_CHARS): ExtractUnit[] {
+  // 重叠区不超过上限一半,保证每次切段都有进展
+  const overlap = Math.min(Math.max(0, Math.round(overlapChars)), Math.floor(maxChars / 2))
   const units: ExtractUnit[] = []
   chapters.forEach((ch, i) => {
     const chapterNo = i + 1
@@ -43,14 +51,14 @@ export function splitUnits(chapters: ChapterSegment[], maxChars = UNIT_MAX_CHARS
       units.push({ chapter: chapterNo, label: base, content: ch.content })
       return
     }
-    // 按 '\n' 边界切段(尽量靠近上限,避免把段落切断)
+    // 按 '\n' 边界切段(尽量靠近上限,避免把段落切断);下一段从 cut 回退重叠区起,覆盖切点两侧的上下文
     let rest = ch.content
     let part = 1
     while (rest.length > maxChars) {
       let cut = rest.lastIndexOf('\n', maxChars)
       if (cut < maxChars * 0.5) cut = maxChars // 段落过长,硬切
       units.push({ chapter: chapterNo, label: `${base}(段${part})`, content: rest.slice(0, cut).trim() })
-      rest = rest.slice(cut).trim()
+      rest = rest.slice(Math.max(0, cut - overlap)).trim()
       part++
     }
     if (rest) units.push({ chapter: chapterNo, label: `${base}(段${part})`, content: rest })
