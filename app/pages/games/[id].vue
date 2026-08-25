@@ -2,7 +2,8 @@
 // 游戏页(浏览器驱动回合):本地游戏会话 + 本地作品(人物卡) → /api/ai/chat 中继
 // 叙事流式(打字机)→ 选项结构化 → mergeState 本地应用 → 落 IndexedDB + 本地存档点
 // 回滚完全本地(存盘点恢复);登录用户可一键同步云端(跨设备续玩)。
-import { aiChat, aiChatJson, estimateTokens } from '../../utils/aiRelay'
+import { aiChat, aiChatJson } from '../../utils/aiRelay'
+import { estimateTextTokens } from '#shared/token-estimate'
 import { buildTurnPrompt, mergeState, TURN_OPTIONS_SCHEMA } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
@@ -118,9 +119,9 @@ async function sendTurn(choice?: string) {
     const narr = await aiChat(prompt, { maxTokens: 2400, temperature: 0.9, thinking: false }, {
       onDelta: (d) => {
         streamText.value += d
-        // 实时消耗估算(与生成页一致:字符 → token,含速度)
+        // 实时消耗估算(与生成页一致:CJK 感知字符 → token,含速度)
         const elapsed = Date.now() - liveStartedAt
-        const tokens = estimateTokens(streamText.value.length)
+        const tokens = estimateTextTokens(streamText.value)
         liveTokens.value = tokens
         liveSpeed.value = elapsed > 0 ? Math.round((tokens / elapsed) * 1000) : 0
       }

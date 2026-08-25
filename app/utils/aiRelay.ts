@@ -3,6 +3,7 @@
 // - aiChat: 流式(回合叙事等),onDelta 逐片回调,返回总 usage
 // - aiChatJson: 请求 json:true,累积所有 delta 后抽取 JSON(生成管线/选项结构化用)
 import { extractJson } from '#shared/json'
+import { estimateMessagesTokens, estimateTextTokens } from '#shared/token-estimate'
 import { getActiveRelayConfig } from './aiConfigStore'
 
 export interface RelayedUsage {
@@ -13,16 +14,11 @@ export interface RelayedUsage {
 
 /** 实时估算信息(字符 → token,含速度;用于生成/回合期间实时消耗展示) */
 export interface LiveTokenInfo {
-  /** 当前这轮流式调用的估算 token 数(不含已入账的真实用量) */
+  /** 当前这轮流式调用的估算 token 数 = 本次调用的 prompt 输入 + 已流出的输出(不含已入账的真实用量) */
   tokens: number
-  /** tokens/秒(当前流) */
+  /** tokens/秒(当前流,含输入基数) */
   speed: number
   elapsedMs: number
-}
-
-/** 粗略 token 估算(CJK 混排按 字符数/1.7;与旧版服务器估算一致,收尾以真实 usage 为准) */
-export function estimateTokens(chars: number): number {
-  return Math.max(1, Math.round(chars / 1.7))
 }
 
 /** 调用被 AbortSignal 取消时抛出(生成取消/页面卸载等),调用方可据此区分"取消"与"失败" */
@@ -149,6 +145,9 @@ export async function aiChatJson<T = unknown>(
   let buffer = ''
   const startedAt = Date.now()
   let lastEmit = 0
+  // 输入在整个流式过程中固定不变:调用前一次性估算 prompt,实时展示 = 输入 + 已流出输出。
+  // 只算输出的话,提取这类"大输入小输出"的调用会远低于真实消耗。
+  const promptTokens = estimateMessagesTokens(messages)
   const res = await aiChat(messages, { ...opts, json: true }, {
     onDelta: (d) => {
       buffer += d
@@ -157,9 +156,10 @@ export async function aiChatJson<T = unknown>(
       if (handlers.onLive && now - lastEmit >= 150) {
         lastEmit = now
         const elapsedMs = now - startedAt
+        const tokens = promptTokens + estimateTextTokens(buffer)
         handlers.onLive({
-          tokens: estimateTokens(buffer.length),
-          speed: elapsedMs > 0 ? Math.round((estimateTokens(buffer.length) / elapsedMs) * 1000) : 0,
+          tokens,
+          speed: elapsedMs > 0 ? Math.round((tokens / elapsedMs) * 1000) : 0,
           elapsedMs
         })
       }

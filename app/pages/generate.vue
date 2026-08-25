@@ -50,7 +50,7 @@ const totalChars = computed(() =>
   pendingGen.value?.chapters.reduce((sum, c) => sum + c.content.length, 0) ?? 0
 )
 
-/** 预估本次生成消耗:字数 × 系数(完整 ×1.5 / 节约 ×1.2,与平台额度预检同一公式) */
+/** 预估本次生成消耗(按流水线分阶段建模,与平台额度预检同一函数;缺省生成参数) */
 const estimatedTokens = computed(() => estimateWorldGenTokens(totalChars.value, ecoMode.value))
 
 /** 切换生成模式后刷新额度预检(估算系数随模式变化) */
@@ -524,7 +524,7 @@ const features = [
             variant="soft"
             icon="i-lucide-triangle-alert"
             title="Token 额度不足,可能生成失败"
-            :description="`当前余额 ${quotaWarn.balance.toLocaleString()} tokens,预计至少需要 ${quotaWarn.needed.toLocaleString()} tokens(小说字数 × ${quotaWarn.multiplier})。建议切换节约模式,或到个人中心购买加油包、配置自己的 API Key。`"
+            :description="`当前余额 ${quotaWarn.balance.toLocaleString()} tokens,预计至少需要 ${quotaWarn.needed.toLocaleString()} tokens(按全书字数与生成流水线估算)。建议切换节约模式,或到个人中心购买加油包、配置自己的 API Key。`"
           />
 
           <div class="flex items-center gap-3.5">
@@ -639,7 +639,7 @@ const features = [
             variant="soft"
             icon="i-lucide-triangle-alert"
             title="Token 额度不足,可能生成失败"
-            :description="`当前余额 ${quotaWarn.balance.toLocaleString()} tokens,预计至少需要 ${quotaWarn.needed.toLocaleString()} tokens(小说字数 × ${quotaWarn.multiplier})。建议先到个人中心购买加油包,或配置自己的 API Key。`"
+            :description="`当前余额 ${quotaWarn.balance.toLocaleString()} tokens,预计至少需要 ${quotaWarn.needed.toLocaleString()} tokens(按全书字数与生成流水线估算)。建议先到个人中心购买加油包,或配置自己的 API Key。`"
           />
 
           <!-- 书名 + 实时消耗 -->
