@@ -54,9 +54,9 @@ const features = [
           v-for="f in features"
           :key="f.title"
           v-reveal
-          class="group rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_rgb(0_193_106/0.3)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_rgb(0_220_130/0.15)]"
+          class="group rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-500)_30%,transparent)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-400)_15%,transparent)]"
         >
-          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-green-500/15 to-teal-500/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
+          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500/15 to-primary-400/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
             <UIcon
               :name="f.icon"
               class="size-5"

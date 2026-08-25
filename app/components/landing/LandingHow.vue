@@ -42,7 +42,7 @@ const steps = [
           v-for="(s, i) in steps"
           :key="s.title"
           v-reveal
-          class="group relative overflow-hidden rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_rgb(0_193_106/0.3)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_rgb(0_220_130/0.15)]"
+          class="group relative overflow-hidden rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-500)_30%,transparent)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-400)_15%,transparent)]"
         >
           <span
             class="absolute right-5 top-3 text-4xl font-bold text-neutral-100 transition-colors duration-300 group-hover:text-primary-500/20 dark:text-neutral-800 dark:group-hover:text-primary-400/15"

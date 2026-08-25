@@ -19,10 +19,10 @@ async function onStartGenerate() {
       class="pointer-events-none absolute inset-0"
     >
       <div class="bg-grid absolute inset-0" />
-      <div class="absolute -top-40 left-1/2 h-[480px] w-[760px] -translate-x-1/2 rounded-full bg-green-400/20 blur-3xl dark:bg-green-500/10" />
-      <div class="animate-drift absolute left-[6%] top-44 size-40 rounded-full bg-teal-400/20 blur-3xl dark:bg-teal-500/10" />
+      <div class="absolute -top-40 left-1/2 h-[480px] w-[760px] -translate-x-1/2 rounded-full bg-primary-400/20 blur-3xl dark:bg-primary-500/10" />
+      <div class="animate-drift absolute left-[6%] top-44 size-40 rounded-full bg-primary-300/20 blur-3xl dark:bg-primary-600/10" />
       <div
-        class="animate-drift absolute right-[4%] top-72 size-56 rounded-full bg-cyan-400/15 blur-3xl dark:bg-cyan-500/10"
+        class="animate-drift absolute right-[4%] top-72 size-56 rounded-full bg-primary-500/15 blur-3xl dark:bg-primary-700/10"
         style="animation-delay: -4s"
       />
     </div>

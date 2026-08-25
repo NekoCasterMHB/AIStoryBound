@@ -15,7 +15,7 @@ async function onStartGenerate() {
     <div class="mx-auto max-w-6xl px-4 py-20">
       <div
         v-reveal
-        class="relative overflow-hidden rounded-3xl border border-primary-500/25 bg-gradient-to-br from-green-500/10 via-transparent to-teal-500/10 px-6 py-16 text-center dark:border-primary-500/20 dark:from-green-500/12 dark:to-teal-500/8"
+        class="relative overflow-hidden rounded-3xl border border-primary-500/25 bg-gradient-to-br from-primary-500/10 via-transparent to-primary-400/10 px-6 py-16 text-center dark:border-primary-500/20 dark:from-primary-500/12 dark:to-primary-400/8"
       >
         <!-- 装饰光斑 -->
         <div
@@ -23,9 +23,9 @@ async function onStartGenerate() {
           class="pointer-events-none absolute inset-0"
         >
           <div class="bg-grid absolute inset-0 opacity-60" />
-          <div class="animate-drift absolute -left-16 -top-16 size-48 rounded-full bg-green-400/20 blur-3xl dark:bg-green-500/12" />
+          <div class="animate-drift absolute -left-16 -top-16 size-48 rounded-full bg-primary-400/20 blur-3xl dark:bg-primary-500/12" />
           <div
-            class="animate-drift absolute -bottom-20 -right-10 size-56 rounded-full bg-teal-400/20 blur-3xl dark:bg-teal-500/12"
+            class="animate-drift absolute -bottom-20 -right-10 size-56 rounded-full bg-primary-300/20 blur-3xl dark:bg-primary-600/12"
             style="animation-delay: -5s"
           />
         </div>

@@ -9,7 +9,7 @@
   >
     <!-- 底部光晕,把"屏幕"托起来 -->
     <div
-      class="absolute -inset-x-6 -bottom-8 top-16 rounded-[3rem] bg-gradient-to-r from-green-400/25 via-teal-400/20 to-cyan-400/25 blur-3xl dark:from-green-500/15 dark:via-teal-500/12 dark:to-cyan-500/15"
+      class="absolute -inset-x-6 -bottom-8 top-16 rounded-[3rem] bg-gradient-to-r from-primary-400/25 via-primary-300/20 to-primary-500/25 blur-3xl dark:from-primary-500/15 dark:via-primary-600/12 dark:to-primary-700/15"
     />
 
     <div class="relative overflow-hidden rounded-2xl border border-neutral-800/70 bg-neutral-950 shadow-[0_32px_80px_-32px_rgb(0_0_0/0.45)] ring-1 ring-black/5 dark:border-white/10 dark:ring-white/10">
@@ -24,7 +24,7 @@
         <span class="ml-auto hidden items-center gap-1.5 text-[11px] text-neutral-500 sm:flex">
           <UIcon
             name="i-lucide-zap"
-            class="size-3 text-green-400"
+            class="size-3 text-primary-400"
           />
           本回合 128 tokens
         </span>
@@ -58,7 +58,7 @@
 
         <!-- 角色卡 -->
         <div class="mb-4 flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-3">
-          <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-green-400/40 to-teal-500/40 text-xl">
+          <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary-400/40 to-primary-500/40 text-xl">
             🧙
           </div>
           <div class="min-w-0 flex-1">
@@ -70,7 +70,7 @@
               <span>耐心 <span class="font-mono text-neutral-300">72</span></span>
               <span>心软 <span class="font-mono text-neutral-300">58</span></span>
               <span>警惕 <span class="font-mono text-neutral-300">81</span></span>
-              <span class="text-green-400/90">⦿ 正派阵营</span>
+              <span class="text-primary-400/90">⦿ 正派阵营</span>
             </div>
           </div>
           <UIcon
@@ -81,16 +81,16 @@
 
         <!-- 叙事气泡 -->
         <div class="rounded-xl rounded-tl-sm border border-white/10 bg-white/5 px-4 py-3 text-sm leading-relaxed text-neutral-200">
-          掌柜压低了声音:「三更之后,码头东边会有一艘不发一灯的船。」他看了看你,把热酒轻轻推到你面前,<span class="text-green-300">等待你的回答</span>。
+          掌柜压低了声音:「三更之后,码头东边会有一艘不发一灯的船。」他看了看你,把热酒轻轻推到你面前,<span class="text-primary-300">等待你的回答</span>。
         </div>
 
         <!-- 选项 -->
         <div class="mt-3 space-y-2">
-          <div class="flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg border border-green-400/30 bg-green-400/10 px-4 py-2.5 text-left text-sm text-green-100 transition hover:border-green-400/60 hover:bg-green-400/15">
+          <div class="flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg border border-primary-400/30 bg-primary-400/10 px-4 py-2.5 text-left text-sm text-primary-100 transition hover:border-primary-400/60 hover:bg-primary-400/15">
             <span>对他点点头,决定今夜去码头一看究竟。</span>
             <UIcon
               name="i-lucide-arrow-right"
-              class="size-4 shrink-0 text-green-400"
+              class="size-4 shrink-0 text-primary-400"
             />
           </div>
           <div class="flex w-full items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/5 px-4 py-2.5 text-left text-sm text-neutral-200">

@@ -2,11 +2,15 @@
 // dev 下 manifest.webmanifest 仅 build 生成,不存在于 public;不渲染链接,避免浏览器请求 302/解析报错
 const isDev = import.meta.dev
 
+const appConfig = useAppConfig()
+
+// 地址栏/状态栏颜色跟随主色调色盘;manifest.theme_color 保持静态 #00DC82
+const themeColor = computed(() => PRIMARY_HEX[appConfig.ui.colors.primary] ?? '#00DC82')
+
 useHead({
   meta: [
     { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-    // 与 manifest.theme_color 保持一致:Android 地址栏/状态栏着色
-    { name: 'theme-color', content: '#00DC82' }
+    { name: 'theme-color', content: themeColor }
   ],
   link: [
     { rel: 'icon', href: '/favicon.ico' },

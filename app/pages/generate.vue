@@ -368,10 +368,10 @@ const features = [
       class="pointer-events-none absolute inset-0"
     >
       <div class="bg-grid absolute inset-0" />
-      <div class="absolute -top-40 left-1/2 h-[480px] w-[760px] -translate-x-1/2 rounded-full bg-green-400/20 blur-3xl dark:bg-green-500/10" />
-      <div class="animate-drift absolute left-[6%] top-44 size-40 rounded-full bg-teal-400/20 blur-3xl dark:bg-teal-500/10" />
+      <div class="absolute -top-40 left-1/2 h-[480px] w-[760px] -translate-x-1/2 rounded-full bg-primary-400/20 blur-3xl dark:bg-primary-500/10" />
+      <div class="animate-drift absolute left-[6%] top-44 size-40 rounded-full bg-primary-300/20 blur-3xl dark:bg-primary-600/10" />
       <div
-        class="animate-drift absolute right-[4%] top-72 size-56 rounded-full bg-cyan-400/15 blur-3xl dark:bg-cyan-500/10"
+        class="animate-drift absolute right-[4%] top-72 size-56 rounded-full bg-primary-500/15 blur-3xl dark:bg-primary-700/10"
         style="animation-delay: -4s"
       />
     </div>
@@ -867,7 +867,7 @@ const features = [
           <div
             v-for="(step, i) in steps"
             :key="step.title"
-            class="group relative overflow-hidden rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_rgb(0_193_106/0.3)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_rgb(0_220_130/0.15)]"
+            class="group relative overflow-hidden rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-500)_30%,transparent)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-400)_15%,transparent)]"
           >
             <span
               class="absolute right-5 top-3 text-4xl font-bold text-neutral-100 transition-colors duration-300 group-hover:text-primary-500/20 dark:text-neutral-800 dark:group-hover:text-primary-400/15"
@@ -899,9 +899,9 @@ const features = [
         <div
           v-for="f in features"
           :key="f.title"
-          class="group rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_rgb(0_193_106/0.3)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_rgb(0_220_130/0.15)]"
+          class="group rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-500)_30%,transparent)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-400)_15%,transparent)]"
         >
-          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-green-500/15 to-teal-500/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
+          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500/15 to-primary-400/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
             <UIcon
               :name="f.icon"
               class="size-5"
