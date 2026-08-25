@@ -3,6 +3,7 @@
 import type { TabsItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, parseChaptersFromText } from '../utils/worldGen'
 import { listLocalGames, saveLocalGame } from '../utils/gameStore'
+import { downloadGameAsTxt } from '../utils/exportStory'
 import { listReadingProgress } from '../utils/readingStore'
 import { type LocalWork, type LocalGame, type GameState, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
 
@@ -206,6 +207,17 @@ function fmtChars(n?: number) {
   if (n >= 10000) return `${(n / 10000).toFixed(1)} 万字`
   if (n >= 1000) return `${(n / 1000).toFixed(1)} 千字`
   return `${n} 字`
+}
+
+/** 导出游戏剧情为 TXT(剔除玩家行动与选项,仅保留旁白原文) */
+function exportGameTxt(g: LocalGame) {
+  const ok = downloadGameAsTxt({
+    title: works.value.find(w => w.id === g.workId)?.title,
+    playerName: g.playerName,
+    chapter: g.currentChapter,
+    messages: g.messages
+  })
+  if (!ok) toast.add({ title: '该会话还没有剧情可导出', description: '进入游戏开始故事后再导出', color: 'warning' })
 }
 
 const shelfTabs = ref<TabsItem[]>([
@@ -633,14 +645,24 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     {{ g.currentChapter || '进行中' }} · {{ fmtTime(g.updatedAt) }}
                   </p>
                 </div>
-                <UButton
-                  label="继续"
-                  icon="i-lucide-play"
-                  color="primary"
-                  variant="soft"
-                  size="sm"
-                  :to="`/games/${g.id}`"
-                />
+                <div class="flex flex-wrap gap-1.5">
+                  <UButton
+                    label="继续"
+                    icon="i-lucide-play"
+                    color="primary"
+                    variant="soft"
+                    size="sm"
+                    :to="`/games/${g.id}`"
+                  />
+                  <UButton
+                    label="导出 TXT"
+                    icon="i-lucide-file-down"
+                    color="neutral"
+                    variant="outline"
+                    size="sm"
+                    @click="exportGameTxt(g)"
+                  />
+                </div>
               </UCard>
             </div>
           </div>

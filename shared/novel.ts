@@ -59,6 +59,32 @@ export interface CachedPreset {
  * 人物卡(规划 §5.1 Characters + §6 Character Card)。
  * 由 LLM 在小说解析阶段生成,存于 novels.world_state 的 characters 数组。
  */
+/** 成人性爱向人物属性(虚构角色设定;每项均可空) */
+export interface SexAttrs {
+  /** 偏好体位 */
+  positions?: string | null
+  /** 床笫习惯/癖好 */
+  habits?: string | null
+  /** 语言挑逗风格(床上说话方式) */
+  tease?: string | null
+  /** 性能力/技巧 */
+  skill?: string | null
+  /** 性器官大小形状 */
+  member?: string | null
+  /** 持久能力 */
+  stamina?: string | null
+  /** 身材曲线 */
+  figure?: string | null
+  /** 手指粗细 */
+  fingers?: string | null
+  /** 是否戴套:true=戴,false=不戴,null=未知 */
+  condom?: boolean | null
+}
+
+/** SexAttrs 中文本字段的键(condom 为布尔三态,单独处理) */
+export const SEX_TEXT_KEYS = ['positions', 'habits', 'tease', 'skill', 'member', 'stamina', 'figure', 'fingers'] as const
+export type SexTextField = (typeof SEX_TEXT_KEYS)[number]
+
 export interface CharacterCard {
   name: string
   /** 主角 / 配角 / 反派 */
@@ -92,6 +118,28 @@ export interface CharacterCard {
   patience?: number | null
   /** 心软程度,0-100 整数(数值越大越容易心软妥协) */
   softness?: number | null
+  /** 性欲强度,0-100 整数(数值越大欲望越强、理智越弱;影响 AI 演绎的互动分寸) */
+  desire?: number | null
+  /** 成人题材玩法喜好(theme=玩法,view=喜好态度,role=承受/施予/双方,detail=具体表现与敏感度) */
+  kinks?: { theme: string, view: string | null, role: string | null, detail: string | null }[]
+  /** 成人性爱向属性(体位/语言挑逗/尺寸/持久等,影响叙事细节演绎) */
+  sex?: SexAttrs
+}
+
+/** 性欲强度 0-100 的五档位(展示与提示词共用;区间 0-19 / 20-39 / 40-59 / 60-79 / 80-100) */
+export const DESIRE_TIERS: { max: number, label: string, desc: string }[] = [
+  { max: 19, label: '懵懂无知', desc: '对情感与欲望缺乏认知,单纯青涩' },
+  { max: 39, label: '腼腆娇羞', desc: '开始意识到暧昧,容易害羞、躲闪' },
+  { max: 59, label: '情动意乱', desc: '情感和欲望逐渐萌发,开始主动产生期待' },
+  { max: 79, label: '欲念难抑', desc: '欲望明显增强,理智与克制逐渐减弱' },
+  { max: 100, label: '兽欲大发', desc: '欲望彻底压过理性,进入强烈失控状态' }
+]
+
+/** 数值 → 档位名;缺失/越界返回 null */
+export function desireTierName(v: number | null | undefined): string | null {
+  if (v == null) return null
+  const tier = DESIRE_TIERS.find(t => v <= t.max)
+  return tier?.label ?? null
 }
 
 /** 世界观速览(规划 §5),整体存于 novels.world_state */
@@ -128,6 +176,12 @@ export interface ExtractedCharacter {
   secrets?: string[]
   relationships?: { name: string, type: string }[]
   dead?: boolean | null
+  /** 性欲强度,0-100 整数(提取时按原文行为推断) */
+  desire?: number | null
+  /** 成人题材玩法喜好(theme=玩法,view=喜欢/厌恶/接受,role=承受/施予/双方;按原文行为与对话推断) */
+  kinks?: { theme: string, view?: string | null, role?: string | null, quote?: string | null }[]
+  /** 成人性爱向属性(按原文行为与对话推断,可部分填写) */
+  sex?: SexAttrs
   quote?: string | null
 }
 

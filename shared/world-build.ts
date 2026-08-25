@@ -2,7 +2,7 @@
 // 世界观生成流水线的纯函数与提示词(浏览器与服务器共用,零框架依赖):
 //   分块 → 提取提示词 → 代码合并(Reduce) → 引用校验 → 一致性检查 → 成书
 // 提取/检查/成书的 LLM 调用由浏览器编排,经服务器 /api/ai/chat 中继执行。
-import { uuid } from './novel'
+import { SEX_TEXT_KEYS, uuid } from './novel'
 import type {
   ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, EntitySource,
   MergedCharacter, WorldEntities
@@ -28,6 +28,8 @@ export const ECO_SYNTH_MAX_TOKENS = 800
 export const CHECK_MAX_TOKENS = 20000
 /** 成书单次输出上限(tokens);个人中心「生成参数-高级设置」可调 */
 export const SYNTH_MAX_TOKENS = 32768
+/** 平台题材标签:写入生成作品的 overlay.genre,叙事引擎据此知晓题材边界(成人向虚构) */
+export const ADULT_GENRE = '成人向'
 
 // ---- 分块 ----
 
@@ -68,9 +70,12 @@ export function splitUnits(chapters: ChapterSegment[], maxChars = UNIT_MAX_CHARS
 
 // ---- 提示词 ----
 
+/** 性爱属性 schema 片段(提取用;condom 为布尔三态) */
+const SEX_SCHEMA_EXTRACT = '"sex": {"positions": "偏好体位|null","habits": "床笫习惯|null","tease": "语言挑逗风格|null","skill": "性能力技巧|null","member": "性器官大小形状|null","stamina": "持久能力|null","figure": "身材曲线|null","fingers": "手指粗细|null","condom": true|false|null}'
+
 /** 7 类实体提取的 JSON schema(引用逐字、必填字段带 quote) */
 export const EXTRACT_SCHEMA_HINT = `{
-  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄,null 可","identity": "身份职业|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标动机"],"fears": ["恐惧弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"quote": "本段最能代表该人物的原文句"}],
+  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄,null 可","identity": "身份职业|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标动机"],"fears": ["恐惧弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"desire": "性欲强度 0-100 整数,按原文行为推断,null 可","kinks": [{"theme": "成人题材玩法,如 打屁股/捆绑/训诫/SM/强制高潮 等","view": "喜欢|厌恶|接受|null","role": "承受|施予|双方|null","quote": "支持该喜好的原文句|null"}],${SEX_SCHEMA_EXTRACT},"quote": "本段最能代表该人物的原文句"}],
   "locations": [{"name": "地点名","type": "类别|null","description": "描述|null","notable": ["标志性的人/事/物"],"quote": "原文句"}],
   "factions": [{"name": "势力名","description": "描述|null","goal": "目标|null","members": ["成员名"],"quote": "原文句"}],
   "timeline_events": [{"time": "时间/先后|null","event": "事件概述","characters_involved": ["人物名"],"quote": "原文句"}],
@@ -83,7 +88,7 @@ export const JSON_ONLY_SYSTEM = `你必须只输出一个合法的 JSON 对象,�
 
 /** 节约模式:只提取 5 类核心实体(去掉 items/foreshadowing),字段说明从简 */
 export const EXTRACT_SCHEMA_HINT_ECO = `{
-  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄|null","identity": "身份|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标"],"fears": ["弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"quote": "最能代表该人物的原文句"}],
+  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄|null","identity": "身份|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标"],"fears": ["弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"desire": "性欲强度 0-100 整数,null 可","kinks": [{"theme": "成人题材玩法,如 打屁股/捆绑/训诫/SM/强制高潮 等","view": "喜欢|厌恶|接受|null","role": "承受|施予|双方|null","quote": "支持该喜好的原文句|null"}],${SEX_SCHEMA_EXTRACT},"quote": "最能代表该人物的原文句"}],
   "locations": [{"name": "地点名","type": "类别|null","description": "描述|null","notable": ["标志性的人/事/物"],"quote": "原文句"}],
   "factions": [{"name": "势力名","description": "描述|null","goal": "目标|null","members": ["成员名"],"quote": "原文句"}],
   "timeline_events": [{"time": "时间/先后|null","event": "事件概述","characters_involved": ["人物名"],"quote": "原文句"}],
@@ -159,6 +164,9 @@ export function buildSynthesizeMessages(title: string, entities: WorldEntities, 
       abilities: (c.abilities ?? []).slice(0, 8),
       goals: (c.goals ?? []).slice(0, 8),
       relationships: c.relationships,
+      desire: c.desire,
+      kinks: (c.kinks ?? []).slice(0, 8),
+      sex: c.sex && Object.keys(c.sex).length ? c.sex : undefined,
       chapters: [...new Set(c.sources.map(s => s.chapter))],
       mentionCount: c.mentionCount
     }))
@@ -198,7 +206,10 @@ export function buildSynthesizeMessages(title: string, entities: WorldEntities, 
     "first_appearance": "首次出现章节,如 第3章(string|null)",
     "dead": true,
     "patience": "耐心 0-100,越小越急躁,null=信息不足",
-    "softness": "心软 0-100,越大越心软,null=信息不足"
+    "softness": "心软 0-100,越大越心软,null=信息不足",
+    "desire": "性欲强度 0-100,越大欲望越强理智越弱,null=信息不足",
+    "kinks": [{"theme": "成人题材玩法:打屁股/捆绑/训诫/SM/强制高潮 等(string)","view": "喜欢/厌恶/接受/无感(string|null)","role": "承受/施予/双方(string|null)","detail": "具体表现、反应与敏感度,如 「打屁股反应强烈,轻打即红」(string|null)"}],
+    "sex": {"positions": "偏好体位,如 后入/骑乘(string|null)","habits": "床笫习惯/癖好(string|null)","tease": "语言挑逗风格,如 骚话(string|null)","skill": "性能力/技巧(string|null)","member": "性器官大小形状(string|null)","stamina": "持久能力,如 半小时/很快(string|null)","figure": "身材曲线,如 前凸后翘 S 曲线(string|null)","fingers": "手指粗细,如 修长/粗壮(string|null)","condom": "是否戴套 true/false(null=未知)"}
   }]
 }`
   return [
@@ -289,7 +300,15 @@ export function buildLocalCards(entities: WorldEntities, roles?: { name?: string
         secrets: c.secrets ?? [],
         relationships: (c.relationships ?? []).map(rel => ({ name: rel.name, type: rel.type, value: 0 })),
         first_appearance: firstChapter ? `第${firstChapter}章` : null,
-        dead: c.dead ?? null
+        dead: c.dead ?? null,
+        desire: c.desire ?? null,
+        kinks: (c.kinks ?? []).slice(0, 8).map(k => ({
+          theme: k.theme,
+          view: k.view ?? null,
+          role: k.role ?? null,
+          detail: k.quote ? truncate(k.quote, 60) : null
+        })),
+        sex: c.sex && Object.keys(c.sex).length ? { ...c.sex } : undefined
       }
     })
 }
@@ -420,6 +439,34 @@ export function mergeExtractions(units: { chapter: number, extract: ChapterExtra
       mergeScalar(acc, 'appearance', c.appearance, src, 'character')
       mergeScalar(acc, 'background', c.background, src, 'character')
       mergeScalar(acc, 'dead', c.dead, src, 'character')
+      // 性欲强度随剧情推进会自然变化(成长线),按"后文为准"覆盖但不算设定冲突,避免刷爆冲突列表
+      if (c.desire !== undefined && c.desire !== null) {
+        const d = Number(c.desire)
+        if (Number.isFinite(d)) acc.entity.desire = Math.min(100, Math.max(0, Math.round(d)))
+      }
+      // 题材喜好按 theme 去重并集;同题材视好感随剧情变化,后文覆盖
+      for (const k of c.kinks ?? []) {
+        if (!k || !k.theme) continue
+        const cur = (acc.entity.kinks ?? []) as { theme: string, view?: string | null, role?: string | null, quote?: string | null }[]
+        const idx = cur.findIndex(x => norm(x.theme) === norm(k.theme))
+        const existing = cur[idx]
+        if (existing) {
+          cur[idx] = { theme: k.theme, view: k.view ?? existing.view, role: k.role ?? existing.role, quote: k.quote ?? existing.quote }
+        } else {
+          cur.push({ theme: k.theme, view: k.view ?? null, role: k.role ?? null, quote: k.quote ?? null })
+        }
+        acc.entity.kinks = cur
+      }
+      // 性爱属性:逐字段按"后文为准"合并,缺失字段保留旧值(与性欲/喜好一致,不算设定冲突)
+      if (c.sex && typeof c.sex === 'object') {
+        const accSex = (acc.entity.sex ?? {}) as Record<string, unknown>
+        for (const k of [...SEX_TEXT_KEYS, 'condom'] as const) {
+          const v = c.sex[k]
+          if (v === undefined || v === null || v === '') continue
+          accSex[k] = v // condom=false 也是有效值,需保留
+        }
+        acc.entity.sex = accSex
+      }
       mergeArray(acc, 'alias', c.alias ?? [])
       mergeArray(acc, 'personality', c.personality ?? [])
       mergeArray(acc, 'speech_style', c.speech_style ?? [])

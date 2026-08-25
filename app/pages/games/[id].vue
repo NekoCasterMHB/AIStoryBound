@@ -4,6 +4,9 @@
 // 回滚完全本地(存盘点恢复);登录用户可一键同步云端(跨设备续玩)。
 import { aiChat, aiChatJson } from '../../utils/aiRelay'
 import { estimateTextTokens } from '#shared/token-estimate'
+import { isAdultModeEnabled } from '../../utils/adultMode'
+import { loadScenePrefs } from '../../utils/scenePrefs'
+import { loadEnabledAiSkillObjects } from '../../utils/aiSkills'
 import { buildTurnPrompt, mergeState, TURN_OPTIONS_SCHEMA } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
@@ -11,6 +14,7 @@ import { getLocalGame, saveLocalGame, syncGameToCloud } from '../../utils/gameSt
 import { isCloudSaveEnabled } from '../../utils/cloudSave'
 import { getWork, touchWork, addWorkTokens } from '../../utils/worldGen'
 import { saveGamePoint, listGamePoints, pruneGamePoints } from '../../utils/gameSaveStore'
+import { downloadGameAsTxt } from '../../utils/exportStory'
 
 useHead({ title: 'AI SpankWorld · 游戏' })
 
@@ -27,6 +31,15 @@ const loadError = ref<string | null>(null)
 
 /** 「本地存档上云」开关(个人中心设置,默认关闭):关闭时不上传任何云端数据 */
 const cloudSaveEnabled = isCloudSaveEnabled()
+/** 「成人模式」开关(选角页/个人中心设置,默认关闭):开启后成人内容频率大幅上升 */
+const adultMode = isAdultModeEnabled()
+/** 用户偏好/避免场景(个人中心设置,优先级低于系统规则),回合开始时读入 */
+const scenePrefs = loadScenePrefs()
+/** AI Skill 玩法库(个人中心逐项开关 + 链接导入):本轮成人互动可用的玩法菜单(含详细设定) */
+const activeSkills = ref<Awaited<ReturnType<typeof loadEnabledAiSkillObjects>>>([])
+void loadEnabledAiSkillObjects().then((list) => {
+  activeSkills.value = list
+})
 
 onMounted(async () => {
   const g = await getLocalGame(gameId)
@@ -61,6 +74,7 @@ const turnUsage = ref<string | null>(null)
 const error = ref<string | null>(null)
 const input = ref('')
 const chatRef = ref<HTMLElement | null>(null)
+const toast = useToast()
 
 const started = computed(() => messages.value.length > 0 || streaming.value)
 
@@ -114,7 +128,11 @@ async function sendTurn(choice?: string) {
       state: state.value,
       history: messages.value,
       choice,
-      summaryText: game.value.summary?.text
+      summaryText: game.value.summary?.text,
+      adultMode,
+      activeSkills: activeSkills.value,
+      preferScenes: scenePrefs.prefer ?? undefined,
+      avoidScenes: scenePrefs.avoid ?? undefined
     })
     const narr = await aiChat(prompt, { maxTokens: 2400, temperature: 0.9, thinking: false }, {
       onDelta: (d) => {
@@ -237,6 +255,19 @@ async function rollbackAction() {
   if (cloudSaveEnabled && game.value) void syncGameToCloud(game.value)
 }
 
+// ---- 导出 TXT(剔除玩家行动与选项,仅保留旁白原文) ----
+
+function onExportTxt() {
+  if (streaming.value) return
+  const ok = downloadGameAsTxt({
+    title: work.value?.overlay?.title,
+    playerName: playerName.value,
+    chapter: currentChapter.value,
+    messages: messages.value
+  })
+  if (!ok) toast.add({ title: '还没有剧情可导出', description: '先开始故事,产生一段旁白后再导出', color: 'warning' })
+}
+
 // ---- 云端同步 ----
 
 const syncing = ref(false)
@@ -300,6 +331,15 @@ watch([messages, streamText], async () => {
             size="sm"
             :loading="syncing"
             @click="onSyncCloud"
+          />
+          <UButton
+            label="导出"
+            icon="i-lucide-file-down"
+            color="neutral"
+            variant="outline"
+            size="sm"
+            :disabled="!started"
+            @click="onExportTxt"
           />
           <UButton
             label="返回"

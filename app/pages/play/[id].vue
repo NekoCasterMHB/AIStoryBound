@@ -2,6 +2,7 @@
 // /play/[id] — 选角页(本地作品):展示人物卡 → 选择身份 → 创建本地游戏会话 → 进入游戏
 import { getWork, touchWork } from '../../utils/worldGen'
 import { createLocalGame } from '../../utils/gameStore'
+import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
 import { uuid } from '#shared/novel'
 import type { GameState } from '#shared/novel'
 
@@ -22,6 +23,10 @@ onMounted(async () => {
 })
 
 const cards = computed(() => work.value?.overlay?.characters ?? [])
+
+/** 成人模式开关(本地偏好,默认关闭):开启后本场游玩的成人内容频率大幅上升 */
+const adultOn = ref(isAdultModeEnabled())
+watch(adultOn, v => setAdultModeEnabled(v))
 
 async function startAs(characterName: string) {
   if (creating.value) return
@@ -82,6 +87,20 @@ function roleColor(role: string | undefined) {
       title="该作品还没有人物卡"
       description="请先在首页重新生成世界。"
     />
+
+    <UCard class="mb-4">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p class="font-semibold">
+            成人模式
+          </p>
+          <p class="text-xs text-neutral-500">
+            开启后,本场游玩中成人内容出现频率大幅上升,并明显偏向训诫、BDSM、打屁股、捆绑、强制等亚文化题材,按角色性欲强度档位推进;可在个人中心随时调整
+          </p>
+        </div>
+        <USwitch v-model="adultOn" />
+      </div>
+    </UCard>
 
     <div
       v-if="cards.length"

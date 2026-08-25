@@ -2,7 +2,8 @@
 // 编辑角色卡弹窗:修改/新增/删除本地作品 overlay.characters,保存回 IndexedDB works
 // 入口:书架「本地作品」卡片上的「角色卡」按钮;保存后由父组件刷新列表
 import { getWork, saveWork } from '../utils/worldGen'
-import type { CharacterCard } from '#shared/novel'
+import { desireTierName, DESIRE_TIERS, SEX_TEXT_KEYS } from '#shared/novel'
+import type { CharacterCard, SexAttrs, SexTextField } from '#shared/novel'
 
 const props = defineProps<{ workId: string }>()
 const emit = defineEmits<{ saved: [] }>()
@@ -75,6 +76,60 @@ function removeRel(i: number) {
   sel.value?.relationships?.splice(i, 1)
 }
 
+// ---- 题材喜好(亚文化玩法)编辑 ----
+const KINK_VIEWS = ['喜欢', '厌恶', '接受', '无感', '未知']
+const KINK_ROLES = ['承受', '施予', '双方', '未知']
+function addKink() {
+  if (!sel.value) return
+  ;(sel.value.kinks ??= []).push({ theme: '', view: null, role: null, detail: null })
+}
+
+function removeKink(i: number) {
+  sel.value?.kinks?.splice(i, 1)
+}
+
+// ---- 性爱属性编辑(文本字段与 condom 三态) ----
+const CONDOM_OPTS: string[] = ['是', '否', '未知']
+function sexField(key: SexTextField) {
+  return computed({
+    get: () => sel.value?.sex?.[key] ?? '',
+    set: (v: string) => {
+      if (!sel.value) return
+      const cur: Partial<SexAttrs> = { ...(sel.value.sex ?? {}) }
+      const t = v.trim()
+      cur[key] = t || undefined
+      // 存储前剔除空值,只保留实际填写字段(condom 布尔三态单独保留)
+      const cleaned: Partial<SexAttrs> = {}
+      for (const k of SEX_TEXT_KEYS) {
+        const val = cur[k]
+        if (val) cleaned[k] = val
+      }
+      if (cur.condom === true || cur.condom === false) cleaned.condom = cur.condom
+      sel.value.sex = Object.keys(cleaned).length ? cleaned : undefined
+    }
+  })
+}
+const positionsModel = sexField('positions')
+const habitsModel = sexField('habits')
+const teaseModel = sexField('tease')
+const skillModel = sexField('skill')
+const memberModel = sexField('member')
+const staminaModel = sexField('stamina')
+const figureModel = sexField('figure')
+const fingersModel = sexField('fingers')
+const condomModel = computed(() => {
+  const v = sel.value?.sex?.condom
+  return v == null ? '未知' : v ? '是' : '否'
+})
+function setCondom(v: unknown) {
+  if (!sel.value) return
+  const cur = { ...(sel.value.sex ?? {}) }
+  if (v === '是') cur.condom = true
+  else if (v === '否') cur.condom = false
+  else delete cur.condom
+  sel.value.sex = Object.keys(cur).length ? cur : undefined
+}
+
 // ---- 数值字段(空视为未知,null) ----
 function numOrNull(v: string | number | null | undefined): number | null {
   if (v === '' || v == null || Number.isNaN(Number(v))) return null
@@ -112,6 +167,20 @@ const softnessModel = computed({
   set: (v: string) => { if (sel.value) sel.value.softness = numOrNull(v) }
 })
 
+const desireModel = computed({
+  get: () => sel.value?.desire == null ? '' : String(sel.value.desire),
+  set: (v: string) => { if (sel.value) sel.value.desire = numOrNull(v) }
+})
+
+/** 性欲档位说明(输入框 description:空值时给五档总览,有值时给当前档位) */
+const desireDesc = computed(() => {
+  const v = sel.value?.desire
+  if (v == null) return '0-100 分五档:懵懂无知/腼腆娇羞/情动意乱/欲念难抑/兽欲大发'
+  const tier = desireTierName(v)
+  const desc = DESIRE_TIERS.find(t => t.label === tier)?.desc ?? ''
+  return tier ? `${tier}:${desc}` : '0-100'
+})
+
 // ---- 保存 ----
 function normalizeCards(): CharacterCard[] {
   return draft.value.map((c) => {
@@ -136,6 +205,18 @@ function normalizeCards(): CharacterCard[] {
     if (c.dead) patch.dead = true
     if (c.patience != null) patch.patience = numOrNull(c.patience)
     if (c.softness != null) patch.softness = numOrNull(c.softness)
+    if (c.desire != null) patch.desire = numOrNull(c.desire)
+    const kinks = (c.kinks ?? [])
+      .filter(k => (k.theme ?? '').trim())
+      .map(k => ({ theme: k.theme.trim(), view: k.view ?? null, role: k.role ?? null, detail: k.detail ?? null }))
+    if (kinks.length) patch.kinks = kinks
+    const sex: Partial<SexAttrs> = {}
+    for (const k of SEX_TEXT_KEYS) {
+      const v = c.sex?.[k]
+      if (v && v.trim()) sex[k] = v.trim()
+    }
+    if (c.sex?.condom === true || c.sex?.condom === false) sex.condom = c.sex.condom
+    if (Object.keys(sex).length) patch.sex = sex
     return patch
   })
 }
@@ -442,6 +523,132 @@ async function onSave() {
                   />
                 </div>
               </UFormField>
+              <UFormField
+                label="题材喜好(亚文化玩法)"
+                description="如 打屁股/捆绑/训诫/SM/强制高潮;态度与承受/施予定位影响叙事演绎"
+              >
+                <div class="space-y-2">
+                  <div
+                    v-for="(k, i) in sel.kinks ?? []"
+                    :key="i"
+                    class="flex items-center gap-2"
+                  >
+                    <UInput
+                      v-model="k.theme"
+                      placeholder="玩法,如 打屁股"
+                      class="min-w-0 flex-1"
+                    />
+                    <USelectMenu
+                      :model-value="k.view ?? undefined"
+                      :items="KINK_VIEWS"
+                      :search-input="false"
+                      class="w-28 shrink-0"
+                      @update:model-value="v => (k.view = v ?? null)"
+                    />
+                    <USelectMenu
+                      :model-value="k.role ?? undefined"
+                      :items="KINK_ROLES"
+                      :search-input="false"
+                      class="w-24 shrink-0"
+                      @update:model-value="v => (k.role = v ?? null)"
+                    />
+                    <UButton
+                      icon="i-lucide-x"
+                      color="error"
+                      variant="ghost"
+                      size="xs"
+                      aria-label="删除喜好"
+                      @click="removeKink(i)"
+                    />
+                  </div>
+                  <div
+                    v-if="!(sel.kinks ?? []).length"
+                    class="text-xs text-neutral-400"
+                  >
+                    暂无喜好,点击下方按钮添加
+                  </div>
+                  <UButton
+                    label="添加喜好"
+                    icon="i-lucide-plus"
+                    color="neutral"
+                    variant="soft"
+                    size="xs"
+                    @click="addKink"
+                  />
+                </div>
+              </UFormField>
+              <UFormField
+                label="性爱属性"
+                description="偏好体位/语言挑逗/尺寸/持久/身材等,按原著设定填写,留空为未知"
+              >
+                <div class="grid grid-cols-2 gap-3">
+                  <UFormField label="偏好体位">
+                    <UInput
+                      v-model="positionsModel"
+                      placeholder="如 后入/骑乘"
+                      class="w-full"
+                    />
+                  </UFormField>
+                  <UFormField label="床笫习惯">
+                    <UInput
+                      v-model="habitsModel"
+                      placeholder="习惯/癖好"
+                      class="w-full"
+                    />
+                  </UFormField>
+                  <UFormField label="语言挑逗">
+                    <UInput
+                      v-model="teaseModel"
+                      placeholder="如 骚话/闷骚"
+                      class="w-full"
+                    />
+                  </UFormField>
+                  <UFormField label="性能力 / 技巧">
+                    <UInput
+                      v-model="skillModel"
+                      placeholder="如 熟练/生涩"
+                      class="w-full"
+                    />
+                  </UFormField>
+                  <UFormField label="性器官大小形状">
+                    <UInput
+                      v-model="memberModel"
+                      placeholder="尺寸/形状"
+                      class="w-full"
+                    />
+                  </UFormField>
+                  <UFormField label="持久能力">
+                    <UInput
+                      v-model="staminaModel"
+                      placeholder="如 半小时"
+                      class="w-full"
+                    />
+                  </UFormField>
+                  <UFormField label="身材曲线">
+                    <UInput
+                      v-model="figureModel"
+                      placeholder="如 前凸后翘"
+                      class="w-full"
+                    />
+                  </UFormField>
+                  <UFormField label="手指粗细">
+                    <UInput
+                      v-model="fingersModel"
+                      placeholder="如 修长/粗壮"
+                      class="w-full"
+                    />
+                  </UFormField>
+                  <UFormField label="是否戴套">
+                    <USelectMenu
+                      :model-value="condomModel"
+                      :items="CONDOM_OPTS"
+                      :search-input="false"
+                      class="w-full"
+                      @update:model-value="setCondom"
+                    />
+                  </UFormField>
+                </div>
+              </UFormField>
               <div class="grid grid-cols-2 gap-3">
                 <UFormField
                   label="耐心(0-100)"
@@ -470,6 +677,19 @@ async function onSave() {
                   />
                 </UFormField>
               </div>
+              <UFormField
+                label="性欲强度(0-100)"
+                :description="desireDesc"
+              >
+                <UInput
+                  v-model="desireModel"
+                  type="number"
+                  min="0"
+                  max="100"
+                  placeholder="未知"
+                  class="w-full"
+                />
+              </UFormField>
             </section>
           </div>
 

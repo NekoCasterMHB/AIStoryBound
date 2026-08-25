@@ -9,7 +9,7 @@ import type {
 import {
   buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
   buildSynthesizeMessages, mergeExtractions, splitUnits, verifyQuotes,
-  ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS
+  ADULT_GENRE, ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS
 } from '#shared/world-build'
 import { aiChatJson, CancelledError } from './aiRelay'
 import type { LiveTokenInfo } from './aiRelay'
@@ -357,7 +357,7 @@ export async function generateWorld(
   // ---- 5) 成书 ----
   // 完整模式:前 TOP_CHARACTERS 的完整人物卡 + 题材/简介(失败退避重试 1 次);
   // 节约模式:AI 只出标题/简介/角色定位(失败不中止,人物卡直接由实体素材本地拼出)。
-  let overlay: { title: string, summary?: string, characters: CharacterCard[] }
+  let overlay: { title: string, genre?: string, summary?: string, characters: CharacterCard[] }
   if (eco) {
     const synthAttempt = async (): Promise<{ title?: string, summary?: string, roles?: { name?: string, role?: string }[] }> => {
       const res = await aiChatJson<{
@@ -399,6 +399,7 @@ export async function generateWorld(
     liveCalls.delete('synth')
     overlay = {
       title: ecoSynth?.title?.trim() || title,
+      genre: ADULT_GENRE,
       summary: ecoSynth?.summary?.trim() || undefined,
       characters: buildLocalCards(entities, ecoSynth?.roles)
     }
@@ -452,15 +453,37 @@ export async function generateWorld(
       .filter(c => c?.name && topNames.has(c.name))
       .map((c) => {
         const ent = nameToEntity.get(normKey(c.name))
-        if (!c.first_appearance && ent && ent.sources.length > 0) {
+        let patched = c
+        if (!patched.first_appearance && ent && ent.sources.length > 0) {
           const ch = Math.min(...ent.sources.map(s => s.chapter))
-          return { ...c, first_appearance: `第${ch}章` }
+          patched = { ...patched, first_appearance: `第${ch}章` }
         }
-        return c
+        // 成书模型漏填 desire 时,用提取实体里按原文推断的值兜底(比模型自估更贴原文)
+        if (patched.desire == null && ent && ent.desire != null) {
+          patched = { ...patched, desire: ent.desire }
+        }
+        // 成书漏填题材喜好时,从提取实体回填原文依据的玩法喜好
+        if (!(patched.kinks ?? []).length && ent && (ent.kinks ?? []).length) {
+          patched = {
+            ...patched,
+            kinks: (ent.kinks ?? []).slice(0, 8).map(k => ({
+              theme: k.theme,
+              view: k.view ?? null,
+              role: k.role ?? null,
+              detail: k.quote ?? null
+            }))
+          }
+        }
+        // 成书漏填性爱属性时,用提取实体里按原文推断的值兜底
+        if (!patched.sex && ent && ent.sex && Object.keys(ent.sex).length) {
+          patched = { ...patched, sex: { ...ent.sex } }
+        }
+        return patched
       })
 
     overlay = {
       title: overlayRaw.title || title,
+      genre: ADULT_GENRE,
       summary: overlayRaw.summary || undefined,
       characters
     }

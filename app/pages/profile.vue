@@ -7,6 +7,11 @@ import { AI_API_FORMATS, aiFormatMeta } from '#shared/ai-config'
 import type { AiApiFormat } from '#shared/ai-config'
 import { useAuthSession } from '../utils/auth-client'
 import { isCloudSaveEnabled, setCloudSaveEnabled } from '../utils/cloudSave'
+import { isAdultModeEnabled, setAdultModeEnabled } from '../utils/adultMode'
+import { loadScenePrefs, saveScenePrefs } from '../utils/scenePrefs'
+import { loadEnabledAiSkills, saveEnabledAiSkills, getUserSkills, saveUserSkill, deleteUserSkill } from '../utils/aiSkills'
+import { AI_SKILLS, normalizeSkill } from '#shared/ai-skills'
+import type { AiSkill } from '#shared/ai-skills'
 import { ensureAiConfigLoaded, getAiConfigStateSync, saveAiConfigState } from '../utils/aiConfigStore'
 import type { LocalAiConfig } from '../utils/aiConfigStore'
 import {
@@ -465,6 +470,85 @@ async function submitGenLimits() {
 // ---- 云端同步(本地偏好):本地存档是否上云,默认关闭 ----
 const cloudSaveOn = ref(isCloudSaveEnabled())
 watch(cloudSaveOn, v => setCloudSaveEnabled(v))
+
+/** 成人模式(本地偏好,默认关闭):开启后游玩时成人内容出现频率大幅上升 */
+const adultModeOn = ref(isAdultModeEnabled())
+watch(adultModeOn, v => setAdultModeEnabled(v))
+
+/** 游玩偏好场景(本地偏好):偏好/避免场景提示词,注入叙事,优先级低于系统规则 */
+const scenePrefs = reactive(loadScenePrefs())
+const sceneMsg = ref<{ kind: 'ok' | 'err', text: string } | null>(null)
+function submitScenePrefs() {
+  saveScenePrefs({ prefer: scenePrefs.prefer, avoid: scenePrefs.avoid })
+  sceneMsg.value = { kind: 'ok', text: '已保存,新回合生效' }
+}
+
+/** AI Skill 玩法库(本地偏好):内置玩法 + 链接导入的自定义玩法,逐项开关 */
+const userSkills = ref<AiSkill[]>([])
+const allSkills = computed(() => [...AI_SKILLS, ...userSkills.value])
+const isBuiltinSkill = (key: string) => AI_SKILLS.some(s => s.key === key)
+const aiSkillOn = reactive<Record<string, boolean>>(
+  Object.fromEntries(AI_SKILLS.map(s => [s.key, loadEnabledAiSkills().includes(s.key)]))
+)
+const aiSkillCount = computed(() => allSkills.value.filter(s => aiSkillOn[s.key]).length)
+function toggleAiSkill(key: string, v: boolean) {
+  aiSkillOn[key] = v
+  saveEnabledAiSkills(allSkills.value.filter(s => aiSkillOn[s.key]).map(s => s.key))
+}
+function setAllAiSkills(v: boolean) {
+  for (const s of allSkills.value) aiSkillOn[s.key] = v
+  saveEnabledAiSkills(v ? allSkills.value.map(s => s.key) : [])
+}
+async function refreshUserSkills() {
+  userSkills.value = await getUserSkills()
+  // 新出现的用户技能(刚导入)补进开关状态:已设置过开关就按存储,否则按 defaultOn
+  const enabled = loadEnabledAiSkills()
+  for (const s of userSkills.value) {
+    if (aiSkillOn[s.key] === undefined) aiSkillOn[s.key] = enabled.includes(s.key) || s.defaultOn !== false
+  }
+}
+
+// ---- 链接导入 / 删除自定义技能 ----
+const importUrl = ref('')
+const importing = ref(false)
+const importMsg = ref<{ kind: 'ok' | 'err', text: string } | null>(null)
+async function importSkillFromUrl() {
+  const url = importUrl.value.trim()
+  if (!url) return
+  importing.value = true
+  importMsg.value = null
+  try {
+    const raw = await $fetch<unknown>('/api/ai/skill-import', { method: 'POST', body: { url } })
+    const skill = normalizeSkill(raw)
+    if (isBuiltinSkill(skill.key)) {
+      throw new Error(`key「${skill.key}」与内置玩法冲突,请修改文件中的 key 后重试`)
+    }
+    const existed = userSkills.value.some(s => s.key === skill.key)
+    await saveUserSkill(skill)
+    await refreshUserSkills()
+    // 导入后自动开启(自定义技能默认可用,可在列表里关掉)
+    if (!aiSkillOn[skill.key]) {
+      aiSkillOn[skill.key] = true
+      saveEnabledAiSkills(allSkills.value.filter(s => aiSkillOn[s.key]).map(s => s.key))
+    }
+    importMsg.value = { kind: 'ok', text: `已${existed ? '更新' : '导入'}「${skill.name}」并默认开启` }
+    importUrl.value = ''
+  } catch (e) {
+    importMsg.value = { kind: 'err', text: e instanceof Error ? e.message : String(e) }
+  } finally {
+    importing.value = false
+  }
+}
+async function removeUserSkill(key: string) {
+  await deleteUserSkill(key)
+  await refreshUserSkills()
+  importMsg.value = { kind: 'ok', text: '已删除该自定义玩法' }
+}
+
+// 进入个人中心时加载用户导入的玩法(不影响其它 onMounted 的独立逻辑)
+onMounted(() => {
+  void refreshUserSkills()
+})
 </script>
 
 <template>
@@ -918,6 +1002,174 @@ watch(cloudSaveOn, v => setCloudSaveEnabled(v))
           :class="genMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
         >
           {{ genMsg.text }}
+        </p>
+      </div>
+    </UCard>
+
+    <!-- 成人模式:游玩时成人内容频率开关(本地偏好,默认关闭) -->
+    <UCard class="mb-6">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p class="font-semibold">
+            成人模式
+          </p>
+          <p class="text-xs text-neutral-500">
+            开启后,游玩时成人内容出现频率大幅上升,并明显偏向训诫、BDSM、打屁股、捆绑、强制等亚文化题材,按角色性欲强度档位推进;默认关闭,开启后对所有游戏生效,也可在选角页单独调整
+          </p>
+        </div>
+        <USwitch v-model="adultModeOn" />
+      </div>
+    </UCard>
+
+    <!-- AI Skill 玩法库:逐项开关成人题材玩法技能(注入游玩叙事) -->
+    <UCard class="mb-6">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div class="flex flex-col gap-1">
+          <p class="font-semibold">
+            AI Skill 玩法库
+          </p>
+          <p class="text-xs text-neutral-500">
+            逐项开启可用的成人题材玩法,开启的玩法会注入游玩叙事(未开启尽量不出现);已开启 {{ aiSkillCount }}/{{ allSkills.length }}
+          </p>
+        </div>
+        <div class="flex gap-2">
+          <UButton
+            size="xs"
+            color="neutral"
+            variant="soft"
+            @click="setAllAiSkills(true)"
+          >
+            全部开启
+          </UButton>
+          <UButton
+            size="xs"
+            color="neutral"
+            variant="soft"
+            @click="setAllAiSkills(false)"
+          >
+            全部关闭
+          </UButton>
+        </div>
+      </div>
+
+      <!-- 链接导入自定义玩法(标准 skill JSON,经服务器下载绕开 CORS) -->
+      <div class="mb-3 space-y-2 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-900">
+        <p class="text-xs text-neutral-500">
+          通过链接导入自定义玩法(Skill 文件,agent skill 三层结构:触发/执行步骤/规则/参考,直链如 GitHub raw / jsdelivr),导入后存本地:
+          <code class="text-[11px]">{"key":"my-skill","name":"玩法名","desc":"说明","trigger":"触发条件","steps":["步骤1","步骤2"],"rules":["规则"],"references":["参考"],"defaultOn":true}</code>
+        </p>
+        <div class="flex gap-2">
+          <UInput
+            v-model="importUrl"
+            placeholder="https://…/skill.json"
+            class="flex-1"
+          />
+          <UButton
+            label="导入"
+            icon="i-lucide-download"
+            color="primary"
+            :loading="importing"
+            @click="importSkillFromUrl"
+          />
+        </div>
+        <p
+          v-if="importMsg"
+          class="text-xs"
+          :class="importMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
+        >
+          {{ importMsg.text }}
+        </p>
+      </div>
+
+      <div class="grid gap-1.5 sm:grid-cols-2">
+        <div
+          v-for="s in allSkills"
+          :key="s.key"
+          class="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 px-3 py-2 dark:border-neutral-800"
+        >
+          <div class="min-w-0">
+            <p class="text-sm font-medium">
+              {{ s.name }}
+              <UBadge
+                v-if="!isBuiltinSkill(s.key)"
+                color="info"
+                variant="subtle"
+                size="xs"
+              >
+                自定义
+              </UBadge>
+            </p>
+            <p class="truncate text-xs text-neutral-500">
+              {{ s.desc || ((s.steps?.length || s.trigger) ? '含详细玩法设定(触发/步骤/规则)' : '') }}
+            </p>
+          </div>
+          <div class="flex shrink-0 items-center gap-1">
+            <UButton
+              v-if="!isBuiltinSkill(s.key)"
+              icon="i-lucide-trash-2"
+              color="error"
+              variant="ghost"
+              size="xs"
+              aria-label="删除自定义玩法"
+              @click="removeUserSkill(s.key)"
+            />
+            <USwitch
+              :model-value="aiSkillOn[s.key]"
+              @update:model-value="v => toggleAiSkill(s.key, v)"
+            />
+          </div>
+        </div>
+      </div>
+    </UCard>
+
+    <!-- 游玩偏好场景:用户自定义偏好/避免场景提示词(优先级低于系统规则) -->
+    <UCard class="mb-6">
+      <div class="mb-3 flex flex-col gap-1">
+        <p class="font-semibold">
+          游玩偏好场景
+        </p>
+        <p class="text-xs text-neutral-500">
+          自定义叙事提示词:「偏好场景」会适度增加相关内容,「避免场景」尽量不出现。优先级低于系统规则,与系统规则/人物卡设置冲突时以系统规则为准;保存后新回合生效
+        </p>
+      </div>
+      <div class="space-y-4">
+        <UFormField
+          label="偏好场景"
+          description="例如:训诫、捆绑、主从支配、当众羞耻"
+        >
+          <UTextarea
+            v-model="scenePrefs.prefer"
+            :rows="3"
+            placeholder="留空不生效,可填写多个场景,用逗号分隔"
+            class="w-full"
+          />
+        </UFormField>
+        <UFormField
+          label="避免出现的场景"
+          description="例如:流血、永久伤害、多人"
+        >
+          <UTextarea
+            v-model="scenePrefs.avoid"
+            :rows="3"
+            placeholder="留空不生效,可填写多个场景,用逗号分隔"
+            class="w-full"
+          />
+        </UFormField>
+      </div>
+      <div class="mt-4 flex items-center gap-3">
+        <UButton
+          color="primary"
+          icon="i-lucide-save"
+          @click="submitScenePrefs"
+        >
+          保存偏好
+        </UButton>
+        <p
+          v-if="sceneMsg"
+          class="text-xs"
+          :class="sceneMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
+        >
+          {{ sceneMsg.text }}
         </p>
       </div>
     </UCard>
