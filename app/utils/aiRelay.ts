@@ -25,6 +25,14 @@ export function estimateTokens(chars: number): number {
   return Math.max(1, Math.round(chars / 1.7))
 }
 
+/** 调用被 AbortSignal 取消时抛出(生成取消/页面卸载等),调用方可据此区分"取消"与"失败" */
+export class CancelledError extends Error {
+  constructor() {
+    super('已取消')
+    this.name = 'CancelledError'
+  }
+}
+
 export interface AiChatOptions {
   json?: boolean
   maxTokens?: number
@@ -51,7 +59,7 @@ function makeDataLineParser(onData: (json: string) => void) {
 
 /**
  * 调用 AI 中继。返回 { usage } 与 { ok:false, message } 失败信息(402/502 等);
- * 网络层异常抛 Error。
+ * 网络层异常抛 Error;signal 触发取消时抛 CancelledError。
  */
 export async function aiChat(
   messages: { role: 'system' | 'user' | 'assistant', content: string }[],
@@ -59,14 +67,22 @@ export async function aiChat(
   handlers: {
     onDelta?: (delta: string) => void
     onUsage?: (usage: RelayedUsage) => void
-  } = {}
+  } = {},
+  signal?: AbortSignal
 ): Promise<{ usage?: RelayedUsage, ok: true } | { ok: false, status: number, message: string }> {
-  const res = await fetch('/api/ai/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    // 浏览器本地自建配置随请求临时携带(不落库);未启用自建时为 undefined,平台模式
-    body: JSON.stringify({ messages, ...opts, config: await getActiveRelayConfig() ?? undefined })
-  })
+  let res: Response
+  try {
+    res = await fetch('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      // 浏览器本地自建配置随请求临时携带(不落库);未启用自建时为 undefined,平台模式
+      body: JSON.stringify({ messages, ...opts, config: await getActiveRelayConfig() ?? undefined })
+    })
+  } catch (e) {
+    if (signal?.aborted) throw new CancelledError()
+    throw e
+  }
   if (!res.ok) {
     let message = `请求失败 (${res.status})`
     try {
@@ -79,26 +95,31 @@ export async function aiChat(
   }
 
   let usage: RelayedUsage | undefined
-  await readSseDataLines(res, (json) => {
-    try {
-      const d = JSON.parse(json) as {
-        choices?: { delta?: { content?: string } }[]
-        usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
-      }
-      const delta = d.choices?.[0]?.delta?.content
-      if (delta) handlers.onDelta?.(delta)
-      if (d.usage) {
-        usage = {
-          promptTokens: d.usage.prompt_tokens,
-          completionTokens: d.usage.completion_tokens,
-          totalTokens: d.usage.total_tokens
+  try {
+    await readSseDataLines(res, (json) => {
+      try {
+        const d = JSON.parse(json) as {
+          choices?: { delta?: { content?: string } }[]
+          usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
         }
-        handlers.onUsage?.(usage)
+        const delta = d.choices?.[0]?.delta?.content
+        if (delta) handlers.onDelta?.(delta)
+        if (d.usage) {
+          usage = {
+            promptTokens: d.usage.prompt_tokens,
+            completionTokens: d.usage.completion_tokens,
+            totalTokens: d.usage.total_tokens
+          }
+          handlers.onUsage?.(usage)
+        }
+      } catch {
+        // 忽略非 JSON 分片
       }
-    } catch {
-      // 忽略非 JSON 分片
-    }
-  })
+    })
+  } catch (e) {
+    if (signal?.aborted) throw new CancelledError()
+    throw e
+  }
   return { usage, ok: true }
 }
 
@@ -116,12 +137,13 @@ export async function readSseDataLines(res: Response, onData: (json: string) => 
   feed(decoder.decode()) // 尾部残留
 }
 
-/** JSON 模式调用:累积内容并抽取 JSON。失败返回 {ok:false};解析失败返回 {ok:false, 502} */
+/** JSON 模式调用:累积内容并抽取 JSON。失败返回 {ok:false};解析失败返回 {ok:false, 502}。
+ *  失败响应也带 usage(502 非 JSON 时输出已产生,调用方需如实入账) */
 export async function aiChatJson<T = unknown>(
   messages: { role: 'system' | 'user' | 'assistant', content: string }[],
   opts: Omit<AiChatOptions, 'json'> = {},
-  handlers: { onLive?: (info: LiveTokenInfo) => void } = {}
-): Promise<{ ok: true, data: T, usage?: RelayedUsage } | { ok: false, status: number, message: string }> {
+  handlers: { onLive?: (info: LiveTokenInfo) => void, signal?: AbortSignal } = {}
+): Promise<{ ok: true, data: T, usage?: RelayedUsage } | { ok: false, status: number, message: string, usage?: RelayedUsage }> {
   let buffer = ''
   const startedAt = Date.now()
   let lastEmit = 0
@@ -140,11 +162,11 @@ export async function aiChatJson<T = unknown>(
         })
       }
     }
-  })
-  if (!res.ok) return res
+  }, handlers.signal)
+  if (!res.ok) return { ok: false, status: res.status, message: res.message }
   const data = extractJson<T>(buffer)
   if (data === null) {
-    return { ok: false, status: 502, message: 'AI 输出不是合法 JSON,请重试' }
+    return { ok: false, status: 502, message: 'AI 输出不是合法 JSON,请重试', usage: res.usage }
   }
   return { ok: true, data, usage: res.usage }
 }

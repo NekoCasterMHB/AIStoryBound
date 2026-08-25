@@ -2,13 +2,9 @@
 // 预置小说预览/阅读页:
 // - 挂载时先查 IndexedDB 缓存,未命中则从 /api/presets/[id]/download 下载全文并写入 IndexedDB(持久化,可离线阅读)
 // - 章节切分复用 shared/novel 的 segmentChapters(浏览器端可用)
-// - "用这本小说生成世界" → 本地编排生成(经 /api/ai/chat 中继)→ 完成后跳转本地选角页
+// - "用这本小说生成世界" → 跳转 /generate?from=preset&id=xxx:由生成页自动加载本小说为附件,进入确认页由用户确认
 import { segmentChapters } from '../../utils/chapters'
 import type { PresetNovelRow, ChapterSegment } from '#shared/novel'
-import { generateWorld as runWorldGeneration } from '../../utils/worldGen'
-import { checkWorldGenQuota } from '../../utils/tokenQuota'
-import type { GenerateProgress } from '../../utils/worldGen'
-import type { TokenQuotaInfo } from '../../utils/tokenQuota'
 import { useAuthModal } from '~/composables/useAuthModal'
 
 const { requireLogin } = useAuthModal()
@@ -72,49 +68,18 @@ async function loadText() {
 
 onMounted(loadText)
 
-// ---- 用这本小说生成世界(本地编排) ----
-const generating = ref(false)
-const genProgress = ref<GenerateProgress | null>(null)
-const genDone = ref<{ workId: string, tokensUsed: number } | null>(null)
-const genError = ref<string | null>(null)
-/** 平台 token 额度预检结果(不足时提示,不阻断生成) */
-const quotaWarn = ref<TokenQuotaInfo | null>(null)
+// ---- 用这本小说生成世界:跳转生成页自动带上本小说,由用户确认后再生成 ----
+/** 生成模式:false=完整(默认),true=节约(跳过一致性检查与人物卡润色,省约 15%~25% token);随跳转带到生成页 */
+const ecoMode = ref(false)
 
-const genStageLabel: Record<string, string> = {
-  parse: '解析文本…',
-  author: '识别作者…',
-  extract: '提取世界观元素…',
-  merge: '合并实体与校验引用…',
-  check: '一致性检查…',
-  synthesize: '生成人物卡与简介…',
-  done: '完成'
-}
-
-async function generateWorld() {
-  if (generating.value || textState.value !== 'ready') return
+async function goGenerateWithNovel() {
+  if (textState.value !== 'ready') return // 全文未就绪(加载中/失败)时不跳转
   // 生成需要登录:未登录弹出全局登录模态框,登录成功后继续
   const ok = await requireLogin()
   if (!ok) return
-  // 生成前预检平台 token 额度(不足时提示,不阻断)
-  quotaWarn.value = await checkWorldGenQuota(
-    chapters.value.reduce((sum, c) => sum + c.content.length, 0)
-  )
-  generating.value = true
-  genError.value = null
-  genDone.value = null
-  genProgress.value = null
-  try {
-    const title = meta.value?.title || id
-    // 复用已加载的章节(与上传一致的本地生成管线);预置小说元数据自带作者,直接采用
-    const { work } = await runWorldGeneration(title, chapters.value, (p) => {
-      genProgress.value = { ...p }
-    }, { knownAuthor: meta.value?.author ?? undefined })
-    genDone.value = { workId: work.id, tokensUsed: work.tokensUsed ?? 0 }
-  } catch (e) {
-    genError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    generating.value = false
-  }
+  // 小说全文由生成页按同一来源加载(IndexedDB 缓存优先,未命中下载),这里只传来源与模式
+  const q = new URLSearchParams({ from: 'preset', id, eco: ecoMode.value ? '1' : '0' })
+  await navigateTo(`/generate?${q.toString()}`)
 }
 
 function fmtChars(n?: number) {
@@ -123,17 +88,6 @@ function fmtChars(n?: number) {
   if (n >= 1000) return `${(n / 1000).toFixed(1)} 千字`
   return `${n} 字`
 }
-
-/** 生成进度条:提取按单元进度,其余阶段固定在完成度区间(防止条退回) */
-const genPercent = computed(() => {
-  const p = genProgress.value
-  if (!p) return 30
-  if (p.stage === 'extract') {
-    return p.totalUnits ? Math.round(p.doneUnits / p.totalUnits * 100) : 0
-  }
-  const stageBase: Record<string, number> = { author: 20, merge: 85, check: 92, synthesize: 96, done: 100 }
-  return stageBase[p.stage] ?? 30
-})
 </script>
 
 <template>
@@ -214,11 +168,22 @@ const genPercent = computed(() => {
               label="用这本小说生成世界"
               color="primary"
               icon="i-lucide-sparkles"
-              :loading="generating"
-              :disabled="generating"
-              @click="generateWorld"
+              :disabled="textState !== 'ready'"
+              @click="goGenerateWithNovel"
             />
           </div>
+          <label class="mt-3 inline-flex cursor-pointer items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+            <input
+              v-model="ecoMode"
+              type="checkbox"
+              class="size-3.5 accent-green-600"
+            >
+            <UIcon
+              :name="ecoMode ? 'i-lucide-leaf' : 'i-lucide-sparkles'"
+              class="size-3.5"
+            />
+            节约模式(跳过一致性检查与人物卡润色,约省 15%~25% token,人物卡更朴素;将沿用至生成页)
+          </label>
         </div>
 
         <p
@@ -227,85 +192,6 @@ const genPercent = computed(() => {
         >
           {{ meta.description }}
         </p>
-
-        <UAlert
-          v-if="genError"
-          color="error"
-          variant="soft"
-          icon="i-lucide-triangle-alert"
-          :title="`生成失败：${genError}`"
-        />
-
-        <!-- 生成中(本地编排进度) -->
-        <div
-          v-if="generating"
-          class="space-y-4 rounded-2xl border border-neutral-200 p-5 dark:border-neutral-700"
-        >
-          <UAlert
-            v-if="quotaWarn?.insufficient"
-            color="warning"
-            variant="soft"
-            icon="i-lucide-triangle-alert"
-            title="Token 额度不足,可能生成失败"
-            :description="`当前余额 ${quotaWarn.balance.toLocaleString()} tokens,预计至少需要 ${quotaWarn.needed.toLocaleString()} tokens(小说字数 × 1.5)。建议先到个人中心购买加油包,或配置自己的 API Key。`"
-          />
-          <div class="flex items-center justify-between gap-3 text-sm">
-            <div class="flex items-center gap-2 text-neutral-600 dark:text-neutral-300">
-              <UIcon
-                name="i-lucide-loader-circle"
-                class="size-4 animate-spin"
-              />
-              <span>正在以《{{ meta.title }}》生成世界观与人物卡…</span>
-            </div>
-            <span class="text-xs text-neutral-400">{{ genStageLabel[genProgress?.stage ?? 'extract'] }}</span>
-          </div>
-          <UProgress
-            :value="genPercent"
-            class="w-full"
-          />
-          <p class="text-xs text-neutral-500 dark:text-neutral-400">
-            <template v-if="genProgress?.stage === 'extract'">
-              {{ genProgress.doneUnits }}/{{ genProgress.totalUnits }} 单元 ·
-            </template>
-            已消耗
-            <b class="tabular-nums font-semibold">
-              {{ ((genProgress?.liveTokens ?? genProgress?.tokensUsed) ?? 0).toLocaleString() }}
-            </b>
-            tokens
-            <template v-if="genProgress?.liveSpeed">
-              · {{ genProgress.liveSpeed }}/s
-            </template>
-          </p>
-          <ul
-            v-if="genProgress?.warnings?.length"
-            class="space-y-0.5"
-          >
-            <li
-              v-for="(w, i) in genProgress.warnings.slice(0, 3)"
-              :key="i"
-              class="text-xs text-amber-500"
-            >
-              ⚠ {{ w }}
-            </li>
-          </ul>
-        </div>
-
-        <!-- 生成完成 -->
-        <div
-          v-if="genDone"
-          class="flex items-center justify-between gap-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4"
-        >
-          <p class="text-sm text-emerald-600 dark:text-emerald-400">
-            ✔ 世界生成完成<span v-if="genDone.tokensUsed">(消耗 {{ genDone.tokensUsed.toLocaleString() }} tokens)</span>
-          </p>
-          <UButton
-            label="选择角色进入故事"
-            color="primary"
-            size="sm"
-            icon="i-lucide-arrow-right"
-            :to="`/play/${genDone.workId}`"
-          />
-        </div>
 
         <!-- 阅读区 -->
         <div

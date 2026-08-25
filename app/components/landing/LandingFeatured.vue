@@ -1,27 +1,24 @@
 <script setup lang="ts">
 // 推荐作品:拉取官方预置小说(/api/presets,featured=1),公开接口。
-// 封面无图片素材,用 emoji + 渐变底做视觉化处理;接口失败/为空时优雅降级。
+// 双行反向 Marquee 跑马灯(参考官方 testimonials 示例),只展示作品名与作者;接口失败/为空时优雅降级。
 import type { PresetNovelRow } from '#shared/novel'
-
-// 与 works.vue 相同的字数格式化
-function fmtChars(n?: number) {
-  if (!n || n <= 0) return '—'
-  if (n >= 10000) return `${(n / 10000).toFixed(1)} 万字`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)} 千字`
-  return `${n} 字`
-}
 
 const { data: presets, status } = await useAsyncData('landing-featured', () =>
   $fetch<PresetNovelRow[]>('/api/presets').catch(() => [])
 )
 
-// emoji 封面衬底的渐变,按顺序循环
-const coverGradients = [
-  'from-green-500/20 to-teal-500/20',
-  'from-teal-500/20 to-cyan-500/20',
-  'from-emerald-500/20 to-green-500/20',
-  'from-cyan-500/20 to-sky-500/20'
-]
+// 作品拆成上下两行,避免同一作品在两条跑马灯里重复出现;过滤掉可能的空行
+const rows = computed(() =>
+  [
+    (presets.value ?? []).filter((_, i) => i % 2 === 0),
+    (presets.value ?? []).filter((_, i) => i % 2 === 1)
+  ].filter((row) => row.length > 0)
+)
+
+// 作品名:有的标题带括号标注(如「救命索(年上 强制 调教 H)」),只取括号前的部分并加书名号
+function bookTitle(title: string) {
+  return `《${(title.split(/[（(]/)[0] ?? '').trim()}》`
+}
 </script>
 
 <template>
@@ -52,20 +49,10 @@ const coverGradients = [
       <!-- 加载中骨架 -->
       <div
         v-if="status === 'pending'"
-        class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
+        class="space-y-4"
       >
-        <div
-          v-for="i in 3"
-          :key="i"
-          class="animate-pulse overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-800"
-        >
-          <div class="h-28 bg-neutral-100 dark:bg-neutral-800" />
-          <div class="space-y-2 p-5">
-            <div class="h-4 w-2/3 rounded bg-neutral-100 dark:bg-neutral-800" />
-            <div class="h-3 w-1/3 rounded bg-neutral-100 dark:bg-neutral-800" />
-            <div class="h-3 w-full rounded bg-neutral-100 dark:bg-neutral-800" />
-          </div>
-        </div>
+        <div class="h-8 animate-pulse rounded-lg bg-neutral-200/60 dark:bg-neutral-800/60" />
+        <div class="h-8 animate-pulse rounded-lg bg-neutral-200/60 dark:bg-neutral-800/60" />
       </div>
 
       <!-- 数据为空:占位提示 -->
@@ -73,75 +60,41 @@ const coverGradients = [
         v-else-if="!presets?.length"
         class="rounded-2xl border border-dashed border-neutral-300 px-6 py-14 text-center dark:border-neutral-700"
       >
-        <UIcon
-          name="i-lucide-book-open"
-          class="mx-auto size-8 text-neutral-400"
-        />
-        <p class="mt-3 text-sm text-neutral-600 dark:text-neutral-400">
+        <p class="text-sm text-neutral-600 dark:text-neutral-400">
           官方预置小说正在上架中——先上传一本你最喜欢的书,马上就能开始玩。
         </p>
       </div>
 
-      <!-- 作品卡片 -->
+      <!-- 双行反向跑马灯:只展示作品名与作者,点击进入作品页 -->
       <div
         v-else
-        class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
+        class="flex flex-col gap-4"
       >
-        <NuxtLink
-          v-for="(p, i) in presets"
-          :key="p.id"
-          v-reveal
-          :to="`/presets/${p.id}`"
-          class="group overflow-hidden rounded-2xl border border-neutral-200 bg-white transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_rgb(0_193_106/0.3)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_rgb(0_220_130/0.15)]"
+        <UMarquee
+          v-for="(row, r) in rows"
+          :key="r"
+          pause-on-hover
+          :reverse="r === 1"
+          :overlay="false"
+          :ui="{ root: '[--gap:--spacing(6)]', content: 'w-auto py-1' }"
         >
-          <div
-            class="flex h-28 items-center justify-center bg-gradient-to-br"
-            :class="coverGradients[i % coverGradients.length]"
+          <NuxtLink
+            v-for="p in row"
+            :key="p.id"
+            :to="`/presets/${p.id}`"
+            class="flex w-48 shrink-0 flex-col rounded-xl border border-neutral-200 bg-white px-4 py-3 transition-colors hover:border-primary-500/40 dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30"
           >
-            <span
-              class="text-5xl drop-shadow-sm transition-transform duration-300 group-hover:scale-110"
-              aria-hidden="true"
-            >
-              {{ p.cover_emoji || '📖' }}
+            <span class="truncate font-semibold text-(--ui-text-highlighted)">
+              {{ bookTitle(p.title) }}
             </span>
-          </div>
-          <div class="p-5">
-            <div class="flex items-center gap-2">
-              <h3 class="min-w-0 flex-1 truncate font-semibold text-(--ui-text-highlighted)">
-                {{ p.title }}
-              </h3>
-              <UBadge
-                v-if="p.genre"
-                color="neutral"
-                variant="soft"
-              >
-                {{ p.genre }}
-              </UBadge>
-            </div>
-            <p
+            <span
               v-if="p.author"
-              class="mt-1 text-xs text-neutral-500 dark:text-neutral-400"
+              class="mt-1 truncate text-xs text-neutral-500 dark:text-neutral-400"
             >
               {{ p.author }}
-            </p>
-            <p
-              v-if="p.description"
-              class="mt-2 line-clamp-2 text-sm leading-relaxed text-neutral-600 dark:text-neutral-400"
-            >
-              {{ p.description }}
-            </p>
-            <div class="mt-4 flex items-center justify-between border-t border-neutral-100 pt-3 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-500">
-              <span>{{ p.chapter_count ?? 0 }} 章 · {{ fmtChars(p.char_count) }}</span>
-              <span class="flex items-center gap-1">
-                <UIcon
-                  name="i-lucide-download"
-                  class="size-3.5"
-                />
-                {{ p.download_count ?? 0 }}
-              </span>
-            </div>
-          </div>
-        </NuxtLink>
+            </span>
+          </NuxtLink>
+        </UMarquee>
       </div>
     </div>
   </section>

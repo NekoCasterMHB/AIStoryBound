@@ -81,8 +81,8 @@ async function onLogout() {
           <UDropdownMenu
             :items="[
               [{ label: `你好, ${user.name || ''}`, disabled: true }],
-              [{ label: '我的书架', icon: 'i-lucide-library-big', onSelect: () => navigateTo('/works') }],
               [{ label: '个人中心', icon: 'i-lucide-user-round', onSelect: () => navigateTo('/profile') }],
+              [{ label: '我的书架', icon: 'i-lucide-library-big', onSelect: () => navigateTo('/works') }],
               [{ label: '退出登录', icon: 'i-lucide-log-out', onSelect: onLogout }]
             ]"
           >

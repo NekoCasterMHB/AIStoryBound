@@ -31,7 +31,7 @@ async function startAs(characterName: string) {
     for (const c of cards.value) {
       if (c.name !== characterName) relationships[c.name] = 0
     }
-    const state: GameState = { location: '', time: '', hp: 100, money: 100, relationships, quests: [], flags: {} }
+    const state: GameState = { location: '', time: '', health: '良好', mood: '平静', relationships, quests: [], flags: {} }
     const gameId = uuid()
     await createLocalGame({ id: gameId, workId, playerName: characterName, characterName, state })
     router.push(`/games/${gameId}`)

@@ -4,7 +4,7 @@
 // 提取/检查/成书的 LLM 调用由浏览器编排,经服务器 /api/ai/chat 中继执行。
 import { uuid } from './novel'
 import type {
-  ChapterExtraction, ChapterSegment, EntityConflict, EntitySource,
+  ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, EntitySource,
   MergedCharacter, WorldEntities
 } from './novel'
 
@@ -16,6 +16,12 @@ export const UNIT_MAX_CHARS = 8000
 export const TOP_CHARACTERS = 12
 /** 引用摘录上限(字符) */
 export const QUOTE_MAX_CHARS = 80
+/** 节约模式:单次提取输出上限(5 类核心实体,引用从简) */
+export const ECO_EXTRACT_MAX_TOKENS = 3800
+/** 节约模式:单次提取的引用摘录上限(字符) */
+export const ECO_QUOTE_MAX_CHARS = 40
+/** 节约模式:成书输出上限(只出标题/简介/角色定位,人物卡本地直拼) */
+export const ECO_SYNTH_MAX_TOKENS = 800
 
 // ---- 分块 ----
 
@@ -27,22 +33,22 @@ export interface ExtractUnit {
   content: string
 }
 
-/** 章节 → 提取单元:超长章在段落边界切成 ≤UNIT_MAX_CHARS 的段 */
-export function splitUnits(chapters: ChapterSegment[]): ExtractUnit[] {
+/** 章节 → 提取单元:超长章在段落边界切成 ≤maxChars 的段(上限可配,默认 UNIT_MAX_CHARS) */
+export function splitUnits(chapters: ChapterSegment[], maxChars = UNIT_MAX_CHARS): ExtractUnit[] {
   const units: ExtractUnit[] = []
   chapters.forEach((ch, i) => {
     const chapterNo = i + 1
     const base = ch.title || `第${chapterNo}部分`
-    if (ch.content.length <= UNIT_MAX_CHARS) {
+    if (ch.content.length <= maxChars) {
       units.push({ chapter: chapterNo, label: base, content: ch.content })
       return
     }
     // 按 '\n' 边界切段(尽量靠近上限,避免把段落切断)
     let rest = ch.content
     let part = 1
-    while (rest.length > UNIT_MAX_CHARS) {
-      let cut = rest.lastIndexOf('\n', UNIT_MAX_CHARS)
-      if (cut < UNIT_MAX_CHARS * 0.5) cut = UNIT_MAX_CHARS // 段落过长,硬切
+    while (rest.length > maxChars) {
+      let cut = rest.lastIndexOf('\n', maxChars)
+      if (cut < maxChars * 0.5) cut = maxChars // 段落过长,硬切
       units.push({ chapter: chapterNo, label: `${base}(段${part})`, content: rest.slice(0, cut).trim() })
       rest = rest.slice(cut).trim()
       part++
@@ -67,16 +73,27 @@ export const EXTRACT_SCHEMA_HINT = `{
 
 export const JSON_ONLY_SYSTEM = `你必须只输出一个合法的 JSON 对象,不要输出任何其他文字、注释或 Markdown 围栏。`
 
-/** 单单元提取请求消息 */
-export function buildExtractMessages(title: string, unit: ExtractUnit) {
+/** 节约模式:只提取 5 类核心实体(去掉 items/foreshadowing),字段说明从简 */
+export const EXTRACT_SCHEMA_HINT_ECO = `{
+  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄|null","identity": "身份|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标"],"fears": ["弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"quote": "最能代表该人物的原文句"}],
+  "locations": [{"name": "地点名","type": "类别|null","description": "描述|null","notable": ["标志性的人/事/物"],"quote": "原文句"}],
+  "factions": [{"name": "势力名","description": "描述|null","goal": "目标|null","members": ["成员名"],"quote": "原文句"}],
+  "timeline_events": [{"time": "时间/先后|null","event": "事件概述","characters_involved": ["人物名"],"quote": "原文句"}],
+  "world_rules": [{"category": "力量体系/科技/社会规则/自然法则|null","rule": "规则表述","quote": "原文句"}]
+}`
+
+/** 单单元提取请求消息;eco=true 时用精简 schema 与更短引用(节约模式) */
+export function buildExtractMessages(title: string, unit: ExtractUnit, eco = false) {
+  const quoteMax = eco ? ECO_QUOTE_MAX_CHARS : QUOTE_MAX_CHARS
+  const schemaHint = eco ? EXTRACT_SCHEMA_HINT_ECO : EXTRACT_SCHEMA_HINT
   return [
-    { role: 'system' as const, content: `${JSON_ONLY_SYSTEM}\n输出结构必须满足:\n${EXTRACT_SCHEMA_HINT}` },
+    { role: 'system' as const, content: `${JSON_ONLY_SYSTEM}\n输出结构必须满足:\n${schemaHint}` },
     {
       role: 'user' as const,
       content: `小说《${title}》${unit.label}原文如下(<chapter>...</chapter>)。\n`
-        + '请提取本段的世界观元素,只输出本段可以证实的信息,按 JSON schema 输出全部 7 类数组(没有则为空数组)。\n'
+        + `请提取本段的世界观元素,只输出本段可以证实的信息,按 JSON schema 输出全部 ${eco ? 5 : 7} 类数组(没有则为空数组)。\n`
         + '规则:\n'
-        + `1. quote 必须逐字摘录原文原句,最多 ${QUOTE_MAX_CHARS} 字;world_rules / timeline_events / foreshadowing / items / relationships 必须带 quote,其余字段尽量带。\n`
+        + `1. quote 必须逐字摘录原文原句,最多 ${quoteMax} 字;${eco ? 'characters 与 relationships 必须带 quote,其余尽量带' : 'world_rules / timeline_events / foreshadowing / items / relationships 必须带 quote,其余字段尽量带'}。\n`
         + '2. 只输出有新信息量的条目:仅一闪而过、没有任何可证实信息的角色不要列入;已有信息不要重复罗列。\n'
         + '3. 不确定的字段填 null 或省略,不要编造;人物名用原文用名,别名填 alias。\n'
         + `<chapter>${unit.content}</chapter>`
@@ -86,6 +103,7 @@ export function buildExtractMessages(title: string, unit: ExtractUnit) {
 
 /** 一致性检查:输入紧凑实体库 + 代码发现的冲突,输出批注 + 新冲突 */
 export function buildCheckMessages(title: string, entities: WorldEntities, conflicts: EntityConflict[]) {
+  const tr = truncate
   const compact = compactEntities(entities)
   const conflictView = conflicts.map(c => ({
     id: c.id,
@@ -93,8 +111,9 @@ export function buildCheckMessages(title: string, entities: WorldEntities, confl
     field: c.field,
     valueA: c.valueA,
     valueB: c.valueB,
-    evidenceA: c.evidenceA ? { chapter: c.evidenceA.chapter, quote: c.evidenceA.quote } : null,
-    evidenceB: c.evidenceB ? { chapter: c.evidenceB.chapter, quote: c.evidenceB.quote } : null
+    // 证据引用只留大意(60 字),裁决不依赖逐字全文
+    evidenceA: c.evidenceA ? { chapter: c.evidenceA.chapter, quote: tr(c.evidenceA.quote, 60) } : null,
+    evidenceB: c.evidenceB ? { chapter: c.evidenceB.chapter, quote: tr(c.evidenceB.quote, 60) } : null
   }))
   const schema = `{
   "reviewed": [{"conflict_id": "原冲突 id 原样拷贝","verdict": "later_wins|first_wins|uncertain|not_conflict","reason": "一句话理由"}],
@@ -190,7 +209,89 @@ export function buildSynthesizeMessages(title: string, entities: WorldEntities, 
   ]
 }
 
+// ---- 节约模式:轻量成书(标题/简介/角色定位)与本地人物卡 ----
+
+/** 节约模式成书:只出标题/简介/角色定位(主角/配角/反派),人物卡主体本地直拼 */
+export const ECO_SYNTH_SCHEMA = `{
+  "title": "小说标题(string)",
+  "summary": "两三句话的世界观简介(string)",
+  "roles": [{"name": "角色名(string,必须是下方列表中的名字)","role": "主角|配角|反派(string)"}]
+}`
+
+/** 节约模式成书请求:输入只给头部角色的轻量素材 + 其余实体统计,不带冲突/告警 */
+export function buildEcoSynthMessages(title: string, entities: WorldEntities) {
+  const tr = truncate
+  const top = [...entities.characters]
+    .sort((a, b) => b.mentionCount - a.mentionCount)
+    .slice(0, TOP_CHARACTERS)
+    .map(c => ({
+      name: c.name,
+      gender: c.gender,
+      age: c.age,
+      identity: c.identity,
+      personality: (c.personality ?? []).slice(0, 6),
+      background: tr(c.background, 100),
+      mentionCount: c.mentionCount
+    }))
+  const counts = {
+    characters: entities.characters.length,
+    locations: entities.locations.length,
+    factions: entities.factions.length,
+    timeline_events: entities.timeline_events.length,
+    world_rules: entities.world_rules.length
+  }
+  return [
+    { role: 'system' as const, content: `${JSON_ONLY_SYSTEM}\n输出结构必须满足:\n${ECO_SYNTH_SCHEMA}` },
+    {
+      role: 'user' as const,
+      content: `小说《${title}》的实体库(节选)如下。请给出小说标题、两三句话的世界观简介,并为下列每个角色标注定位:\n`
+        + '- roles.name 必须原样使用列表中的名字,不要改名、不要新增列表外人物;\n'
+        + '- role 依据出场比重与剧情作用:主角=主要视角人物,反派=与主角对立的主要人物,其余为配角;\n'
+        + '- summary 概括世界观特色(题材、舞台、核心矛盾),不要编造实体库外的设定。\n'
+        + `人物信息:\n${JSON.stringify(top)}\n`
+        + `其余实体统计:\n${JSON.stringify(counts)}`
+    }
+  ]
+}
+
+/** 节约模式人物卡:由合并实体直接拼卡(无 LLM 润色);roles 可按名字覆盖定位 */
+export function buildLocalCards(entities: WorldEntities, roles?: { name?: string, role?: string }[]): CharacterCard[] {
+  const roleMap = new Map((roles ?? []).map(r => [norm(r.name ?? ''), r.role ?? '']))
+  return [...entities.characters]
+    .sort((a, b) => b.mentionCount - a.mentionCount)
+    .slice(0, TOP_CHARACTERS)
+    .map((c, i) => {
+      const firstChapter = c.sources.length > 0 ? Math.min(...c.sources.map(s => s.chapter)) : null
+      const alias = (c.alias ?? []).slice(0, 3).join('、') || null
+      const r = roleMap.get(norm(c.name))
+      return {
+        name: c.name,
+        role: r && /^(主角|配角|反派)$/.test(r) ? r : (i === 0 ? '主角' : '配角'),
+        alias: alias || undefined,
+        gender: c.gender ?? null,
+        age: c.age ?? null,
+        identity: c.identity ?? null,
+        appearance: c.appearance ?? null,
+        personality: c.personality ?? [],
+        speech_style: c.speech_style ?? [],
+        background: c.background ?? null,
+        abilities: c.abilities ?? [],
+        goals: c.goals ?? [],
+        fears: c.fears ?? [],
+        secrets: c.secrets ?? [],
+        relationships: (c.relationships ?? []).map(rel => ({ name: rel.name, type: rel.type, value: 0 })),
+        first_appearance: firstChapter ? `第${firstChapter}章` : null,
+        dead: c.dead ?? null
+      }
+    })
+}
+
 // ---- Reduce:代码合并(无 LLM) ----
+
+/** 字符串截断(检查/成书输入压缩用) */
+function truncate(s: string | null | undefined, n = 120): string | null {
+  return s && s.length > n ? `${s.slice(0, n)}…` : (s ?? null)
+}
 
 function norm(s: string): string {
   return (s ?? '').replace(/\s+/g, '').trim()
@@ -433,7 +534,7 @@ export function verifyQuotes(entities: WorldEntities, chapters: ChapterSegment[]
 
 /** 紧凑序列化实体库(值截断 + 章节号列表;不带 quote,控制检查调用输入体积) */
 export function compactEntities(entities: WorldEntities) {
-  const tr = (s: string | null | undefined, n = 120) => (s && s.length > n ? s.slice(0, n) + '…' : (s ?? null))
+  const tr = truncate
   const chaptersOf = (sources: EntitySource[]) => [...new Set(sources.map(s => s.chapter))].sort((a, b) => a - b)
   return {
     characters: entities.characters.map(c => ({

@@ -364,12 +364,14 @@ export interface TokenUsage {
 /** 游戏模式 */
 export type GameMode = 'canonical'
 
-/** 游戏状态(规划 §10/§33:地点/时间/HP/金钱/关系/任务/Flag;内部状态不进回复文本) */
+/** 游戏状态(规划 §10/§33:地点/时间/身体状况/心情/关系/任务/Flag;内部状态不进回复文本) */
 export interface GameState {
   location?: string
   time?: string
-  hp?: number
-  money?: number
+  /** 身体状况描述(如「精力充沛」「疲惫不堪」) */
+  health?: string
+  /** 心情描述(如「平静」「忐忑不安」) */
+  mood?: string
   /** 角色名 -> 好感度(-100..100) */
   relationships?: Record<string, number>
   quests?: string[]
@@ -426,10 +428,10 @@ export interface TurnStructured {
   state_delta: {
     location?: string
     time?: string
-    /** 相对当前值的增量(可为负) */
-    hp?: number
-    /** 相对当前值的增量(可为负) */
-    money?: number
+    /** 身体状况描述(绝对覆盖) */
+    health?: string
+    /** 心情描述(绝对覆盖) */
+    mood?: string
     quests?: string[]
     flags?: Record<string, boolean | string | number>
     /** 角色名 -> 相对当前好感度的增量(-100..100 区间内) */

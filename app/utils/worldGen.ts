@@ -7,16 +7,33 @@ import type {
   ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, EntitySource, LocalWork, WorldEntities
 } from '#shared/novel'
 import {
-  buildCheckMessages, buildExtractMessages, buildSynthesizeMessages, mergeExtractions,
-  splitUnits, verifyQuotes, TOP_CHARACTERS
+  buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
+  buildSynthesizeMessages, mergeExtractions, splitUnits, verifyQuotes,
+  ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS
 } from '#shared/world-build'
-import { aiChatJson } from './aiRelay'
+import { aiChatJson, CancelledError } from './aiRelay'
+import type { LiveTokenInfo } from './aiRelay'
 import { detectAuthor } from './authorDetect'
+import { loadGenLimits } from './genSettings'
+import type { GenLimits } from './genSettings'
 import { db } from './localDb'
 
 const EXTRACT_CONCURRENCY = 4
 /** 单章失败>总数该比例则中止整本生成 */
 const MAX_FAIL_RATIO = 1 / 3
+
+/** 是否值得重试的瞬时错误:网络/解析异常、429 限流、5xx 上游错误;4xx 业务失败(如配额不足)重试无意义 */
+function isRetryable(e: unknown): boolean {
+  const status = (e as { status?: number })?.status
+  return status === undefined || status === 429 || status >= 500
+}
+
+/** AI 调用失败:附带 HTTP status 供重试判定(502 非 JSON 等已产生输出的失败自身带 usage,先入账再抛) */
+function toAiError(res: { status: number, message: string }): Error & { status?: number } {
+  const err = new Error(res.message) as Error & { status?: number }
+  err.status = res.status
+  return err
+}
 
 export interface GenerateProgress {
   stage: 'parse' | 'author' | 'extract' | 'merge' | 'check' | 'synthesize' | 'done'
@@ -25,8 +42,8 @@ export interface GenerateProgress {
   totalUnits: number
   /** 累计消耗 token(已完成调用的真实 usage) */
   tokensUsed: number
-  /** 实时估算:已完成真实用量 + 当前流估算(未完成调用),仅供 UI 实时展示 */
-  liveTokens?: number
+  /** 实时估算:已完成真实用量 + 流式进行中调用的估算合计(单调不减) */
+  liveTokens: number
   /** tokens/秒(当前流估算) */
   liveSpeed?: number
   warnings: string[]
@@ -35,6 +52,20 @@ export interface GenerateProgress {
 export interface GenerateResult {
   work: LocalWork
   usage: { tokensUsed: number }
+}
+
+/** 一致性检查的 AI 输出结构(reviewed: 批注既有冲突;new_conflicts: 新发现冲突) */
+interface CheckReview {
+  reviewed?: { conflict_id?: string, verdict?: string, reason?: string }[]
+  new_conflicts?: {
+    entity_type?: string
+    entity_name?: string
+    field?: string
+    evidence_a?: { chapter?: number }
+    evidence_b?: { chapter?: number }
+    verdict?: string
+    reason?: string
+  }[]
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -77,12 +108,14 @@ function normalizeExtraction(raw: unknown): ChapterExtraction {
   }
 }
 
-/** 并发池:fn 抛错则该项失败(由调用方决定跳过或中止);onDone 每项完成后回调(实时进度用) */
+/** 并发池:fn 抛错则该项失败(由调用方决定跳过或中止);onDone 每项完成后回调(实时进度用)。
+ *  signal 触发取消时:不再启动新任务,并抛 CancelledError 中止整个池 */
 async function pool<T, R>(
   items: T[],
   limit: number,
-  fn: (item: T) => Promise<R>,
-  onDone?: (index: number) => void
+  fn: (item: T, index: number) => Promise<R>,
+  onDone?: (index: number) => void,
+  signal?: AbortSignal
 ): Promise<(R | Error)[]> {
   const results: (R | Error)[] = new Array(items.length)
   let next = 0
@@ -90,10 +123,11 @@ async function pool<T, R>(
     for (;;) {
       const i = next++
       if (i >= items.length) return
+      if (signal?.aborted) throw new CancelledError()
       const item = items[i]
       if (item === undefined) return
       try {
-        results[i] = await fn(item)
+        results[i] = await fn(item, i)
       } catch (e) {
         results[i] = e as Error
       }
@@ -106,53 +140,84 @@ async function pool<T, R>(
 
 /**
  * 全流程生成:作者识别 → 提取 → 合并 → 引用校验 → 检查 → 成书。
- * @param onProgress 各阶段进度回调(UI 用)
+ * @param onProgress 各阶段进度回调(UI 用;liveTokens 单调不减)
  * @param opts.frontMatter 书名页/前言原文(作者识别用;上传流程由 parseLocalNovel 提供)
  * @param opts.knownAuthor 已知作者(预置小说有 meta.author 时直接采用,跳过识别)
+ * @param opts.signal 取消信号:触发后中止在途 AI 调用,抛 CancelledError
+ * @param opts.eco 节约模式:只提取 5 类核心实体、引用从简;跳过 AI 一致性检查;
+ *                 成书只让 AI 出标题/简介/角色定位,人物卡由提取素材本地直拼(约省一半 token)
+ * @param opts.limits 生成参数(单单元输入上限/单次输出上限);缺省读个人中心配置的本地偏好
  */
 export async function generateWorld(
   title: string,
   chapters: ChapterSegment[],
   onProgress: (p: GenerateProgress) => void,
-  opts: { frontMatter?: string, knownAuthor?: string } = {}
+  opts: { frontMatter?: string, knownAuthor?: string, signal?: AbortSignal, eco?: boolean, limits?: GenLimits } = {}
 ): Promise<GenerateResult> {
   const warnings: string[] = []
+  const { signal, eco = false } = opts
+  const genLimits = opts.limits ?? loadGenLimits()
+  const isAborted = () => signal?.aborted ?? false
   let tokensUsed = 0
 
   // ---- 1) Map:分块提取(并发 4,失败重试 1 次后跳过) ----
-  const units = splitUnits(chapters)
+  const units = splitUnits(chapters, genLimits.unitMaxChars)
+
+  /** 流式进行中调用的估算 token(按调用 key 登记,完成后删除并入真实用量) */
+  const liveCalls = new Map<string, number>()
+  /** 已展示的实时值下限:估算→真实回落时只增不减,保证 UI 数字单调 */
+  let displayFloor = 0
+  let lastLiveEmit = 0
+
   const progress = (stage: GenerateProgress['stage'], doneUnits = 0) => {
+    displayFloor = Math.max(displayFloor, tokensUsed)
     onProgress({
-      stage, doneUnits, totalUnits: units.length, tokensUsed, warnings: [...warnings]
+      stage, doneUnits, totalUnits: units.length, tokensUsed,
+      liveTokens: displayFloor, warnings: [...warnings]
     })
   }
 
   const extracts: (ChapterExtraction | null)[] = []
   let completedUnits = 0
-  let lastLiveEmit = 0
   /** 实时进度:单元完成时立即刷新;流式期间按节流刷新(实时 token 消耗,覆盖 author/extract/check/synthesize 全程) */
   const emitLive = (stage: GenerateProgress['stage'] = 'extract', live?: { tokens: number, speed: number }) => {
     const now = Date.now()
     if (live && now - lastLiveEmit < 200) return
     lastLiveEmit = now
+    if (live) {
+      // 并发流的估算合计,而非最后一次回调的单流值(避免数字来回跳)
+      let est = 0
+      for (const t of liveCalls.values()) est += t
+      displayFloor = Math.max(displayFloor, tokensUsed + est)
+    } else {
+      displayFloor = Math.max(displayFloor, tokensUsed)
+    }
     const unitDone = stage === 'extract' ? Math.min(completedUnits, units.length) : undefined
     onProgress({
       stage,
       doneUnits: unitDone ?? 0,
       totalUnits: units.length,
       tokensUsed,
-      liveTokens: live ? tokensUsed + live.tokens : undefined,
+      liveTokens: displayFloor,
       liveSpeed: live?.speed,
       warnings: [...warnings]
     })
+  }
+
+  /** 为单次 AI 调用登记实时估算(调用完成后需 delete 该 key) */
+  const liveHandler = (key: string, stage: GenerateProgress['stage']) => (info: LiveTokenInfo) => {
+    liveCalls.set(key, info.tokens)
+    emitLive(stage, info)
   }
 
   // ---- 0) 作者识别:正文(正则/AI)→ 未果按书名联网检索 ----
   let author: string | null = (opts.knownAuthor ?? '').trim() || null
   if (!author) {
     progress('author')
-    const det = await detectAuthor(title, opts.frontMatter ?? '', chapters, (info) => emitLive('author', info))
+    const det = await detectAuthor(title, opts.frontMatter ?? '', chapters, liveHandler('author', 'author'), signal)
+    if (isAborted()) throw new CancelledError()
     tokensUsed += det.tokensUsed
+    liveCalls.delete('author')
     author = det.author
     if (det.searched && !author) {
       warnings.push('正文未识别到作者,联网检索未能确认,可在编辑页手动补充')
@@ -160,34 +225,43 @@ export async function generateWorld(
   }
   progress('extract')
 
-  const results = await pool(units, EXTRACT_CONCURRENCY, async (unit) => {
+  const results = await pool(units, EXTRACT_CONCURRENCY, async (unit, index) => {
     const attempt = async (): Promise<ChapterExtraction> => {
-      const res = await aiChatJson<unknown>(buildExtractMessages(title, unit), {
-        maxTokens: 6000,
+      const res = await aiChatJson<unknown>(buildExtractMessages(title, unit, eco), {
+        // 输出上限取用户配置;节约模式再压到其自身上限(只会更小不会更大)
+        maxTokens: eco ? Math.min(ECO_EXTRACT_MAX_TOKENS, genLimits.extractMaxTokens) : genLimits.extractMaxTokens,
         temperature: 0.2,
         thinking: false
       }, {
-        onLive: info => emitLive('extract', info)
+        onLive: liveHandler(`u${index}`, 'extract'),
+        signal
       })
-      if (!res.ok) throw new Error(res.message)
+      // 失败(如 502 非 JSON)也已产生输出,如实入账
       tokensUsed += res.usage?.totalTokens ?? 0
+      if (!res.ok) throw toAiError(res)
       return normalizeExtraction(res.data)
     }
     try {
       return await attempt()
-    } catch {
-      // 自动重试一次(退避 1.5s,应对上游瞬时限流)
+    } catch (e) {
+      if (isAborted()) throw new CancelledError()
+      // 4xx 业务失败(配额/鉴权)重试无意义,直接记为本单元失败
+      if (!isRetryable(e)) throw e
+      // 自动重试一次(退避 1.5s,应对上游瞬时限流/偶发非 JSON 输出)
       await sleep(1500)
       try {
         return await attempt()
       } catch (e2) {
+        if (isAborted()) throw new CancelledError()
         return e2 as Error
       }
     }
-  }, () => {
+  }, (i) => {
     completedUnits++
+    liveCalls.delete(`u${i}`)
     emitLive()
-  })
+  }, signal)
+  if (isAborted()) throw new CancelledError()
 
   let okCount = 0
   results.forEach((r, i) => {
@@ -214,38 +288,54 @@ export async function generateWorld(
     warnings.push(`${unverified} 条原文引用未通过逐字校验(记录已保留,可人工复核)`)
   }
 
-  // ---- 4) 一致性检查:批注既有冲突 + 发现新冲突 ----
-  if (entities.characters.length + entities.locations.length + entities.world_rules.length > 0) {
-    const checkRes = await aiChatJson<{
-      reviewed?: { conflict_id?: string, verdict?: string, reason?: string }[]
-      new_conflicts?: {
-        entity_type?: string
-        entity_name?: string
-        field?: string
-        evidence_a?: { chapter?: number }
-        evidence_b?: { chapter?: number }
-        verdict?: string
-        reason?: string
-      }[]
-    }>(buildCheckMessages(title, entities, conflicts), {
-      maxTokens: 4000,
-      temperature: 0.2,
-      thinking: false
-    }, {
-      onLive: info => emitLive('check', info)
-    })
-    if (checkRes.ok && checkRes.data) {
-      tokensUsed += checkRes.usage?.totalTokens ?? 0
-      const d = checkRes.data
+  // ---- 4) 一致性检查:批注既有冲突 + 发现新冲突(失败退避重试 1 次)。节约模式跳过,保留代码冲突检测 ----
+  if (eco) {
+    warnings.push('节约模式:已跳过 AI 一致性检查,仅保留代码检测到的设定冲突(可在编辑页人工复核)')
+  } else if (entities.characters.length + entities.locations.length + entities.world_rules.length > 0) {
+    const checkAttempt = async (): Promise<CheckReview> => {
+      const res = await aiChatJson<CheckReview>(buildCheckMessages(title, entities, conflicts), {
+        maxTokens: 4000,
+        temperature: 0.2,
+        thinking: false
+      }, {
+        onLive: liveHandler('check', 'check'),
+        signal
+      })
+      if (isAborted()) throw new CancelledError()
+      tokensUsed += res.usage?.totalTokens ?? 0
+      if (!res.ok) throw toAiError(res)
+      return res.data
+    }
+    let checkData: CheckReview | null = null
+    try {
+      checkData = await checkAttempt()
+    } catch (e) {
+      if (isAborted()) throw new CancelledError()
+      // 4xx 业务失败(配额/鉴权)重试无意义,直接按检查失败降级
+      if (!isRetryable(e)) {
+        warnings.push(`一致性检查失败: ${(e as Error).message}`)
+      } else {
+        // 自动重试一次(退避 1.5s,应对上游瞬时限流/偶发非 JSON 输出)
+        await sleep(1500)
+        try {
+          checkData = await checkAttempt()
+        } catch (e2) {
+          if (isAborted()) throw new CancelledError()
+          warnings.push(`一致性检查失败: ${(e2 as Error).message}`)
+        }
+      }
+    }
+    liveCalls.delete('check')
+    if (checkData) {
       const byId = new Map(conflicts.map(c => [c.id, c]))
-      for (const r of d.reviewed ?? []) {
+      for (const r of checkData.reviewed ?? []) {
         const c = r.conflict_id ? byId.get(r.conflict_id) : undefined
         if (c && r.verdict) {
           c.verdict = r.verdict as EntityConflict['verdict']
           c.reason = r.reason ?? null
         }
       }
-      for (const n of d.new_conflicts ?? []) {
+      for (const n of checkData.new_conflicts ?? []) {
         if (!n.entity_type || !n.entity_name || !n.field) continue
         conflicts.push({
           id: uuid(),
@@ -259,52 +349,118 @@ export async function generateWorld(
           source: 'ai_check'
         })
       }
-    } else if (!checkRes.ok) {
-      warnings.push(`一致性检查失败: ${(checkRes as { message: string }).message}`)
     }
   }
   progress('synthesize')
 
-  // ---- 5) 成书:前 TOP_CHARACTERS 的完整人物卡 + 题材/简介 ----
-  const topNames = new Set(
-    [...entities.characters].sort((a, b) => b.mentionCount - a.mentionCount)
-      .slice(0, TOP_CHARACTERS)
-      .map(c => c.name)
-  )
-  const synthRes = await aiChatJson<{
-    title?: string
-    summary?: string
-    characters?: CharacterCard[]
-  }>(buildSynthesizeMessages(title, entities, conflicts, warnings), {
-    maxTokens: 16000,
-    temperature: 0.3,
-    thinking: false
-  }, {
-    onLive: info => emitLive('synthesize', info)
-  })
-  if (!synthRes.ok) {
-    throw new Error(`成书失败: ${synthRes.message}`)
-  }
-  tokensUsed += synthRes.usage?.totalTokens ?? 0
-  const overlayRaw = synthRes.data ?? {}
-
-  // 后处理:只保留实体库中的角色;first_appearance 缺失时按出现章节兜底
-  const nameToEntity = new Map(entities.characters.map(c => [normKey(c.name), c]))
-  const characters = (Array.isArray(overlayRaw.characters) ? overlayRaw.characters : [])
-    .filter(c => c?.name && topNames.has(c.name))
-    .map((c) => {
-      const ent = nameToEntity.get(normKey(c.name))
-      if (!c.first_appearance && ent && ent.sources.length > 0) {
-        const ch = Math.min(...ent.sources.map(s => s.chapter))
-        return { ...c, first_appearance: `第${ch}章` }
+  // ---- 5) 成书 ----
+  // 完整模式:前 TOP_CHARACTERS 的完整人物卡 + 题材/简介(失败退避重试 1 次);
+  // 节约模式:AI 只出标题/简介/角色定位(失败不中止,人物卡直接由实体素材本地拼出)。
+  let overlay: { title: string, summary?: string, characters: CharacterCard[] }
+  if (eco) {
+    const synthAttempt = async (): Promise<{ title?: string, summary?: string, roles?: { name?: string, role?: string }[] }> => {
+      const res = await aiChatJson<{
+        title?: string
+        summary?: string
+        roles?: { name?: string, role?: string }[]
+      }>(buildEcoSynthMessages(title, entities), {
+        maxTokens: ECO_SYNTH_MAX_TOKENS,
+        temperature: 0.3,
+        thinking: false
+      }, {
+        onLive: liveHandler('synth', 'synthesize'),
+        signal
+      })
+      if (isAborted()) throw new CancelledError()
+      tokensUsed += res.usage?.totalTokens ?? 0
+      if (!res.ok) throw toAiError(res)
+      return res.data ?? {}
+    }
+    let ecoSynth: { title?: string, summary?: string, roles?: { name?: string, role?: string }[] } | null = null
+    try {
+      ecoSynth = await synthAttempt()
+    } catch (e) {
+      if (isAborted()) throw new CancelledError()
+      // 4xx 业务失败(配额/鉴权)重试无意义,直接按降级处理
+      if (!isRetryable(e)) {
+        warnings.push(`节约模式:成书概览生成失败(${(e as Error).message}),人物卡已按提取素材直接生成`)
+      } else {
+        await sleep(1500)
+        try {
+          ecoSynth = await synthAttempt()
+        } catch (e2) {
+          if (isAborted()) throw new CancelledError()
+          warnings.push(`节约模式:成书概览生成失败(${(e2 as Error).message}),人物卡已按提取素材直接生成`)
+        }
       }
-      return c
-    })
+    }
+    liveCalls.delete('synth')
+    overlay = {
+      title: ecoSynth?.title?.trim() || title,
+      summary: ecoSynth?.summary?.trim() || undefined,
+      characters: buildLocalCards(entities, ecoSynth?.roles)
+    }
+  } else {
+    const topNames = new Set(
+      [...entities.characters].sort((a, b) => b.mentionCount - a.mentionCount)
+        .slice(0, TOP_CHARACTERS)
+        .map(c => c.name)
+    )
+    const synthAttempt = async (): Promise<{ title?: string, summary?: string, characters?: CharacterCard[] }> => {
+      const res = await aiChatJson<{
+        title?: string
+        summary?: string
+        characters?: CharacterCard[]
+      }>(buildSynthesizeMessages(title, entities, conflicts, warnings), {
+        maxTokens: 16000,
+        temperature: 0.3,
+        thinking: false
+      }, {
+        onLive: liveHandler('synth', 'synthesize'),
+        signal
+      })
+      if (isAborted()) throw new CancelledError()
+      tokensUsed += res.usage?.totalTokens ?? 0
+      if (!res.ok) throw toAiError(res)
+      return res.data ?? {}
+    }
+    let synthData: { title?: string, summary?: string, characters?: CharacterCard[] }
+    try {
+      synthData = await synthAttempt()
+    } catch (e) {
+      if (isAborted()) throw new CancelledError()
+      // 4xx 业务失败(配额/鉴权)重试无意义;其余瞬时错误退避重试一次
+      if (!isRetryable(e)) throw new Error(`成书失败: ${(e as Error).message}`, { cause: e })
+      // 自动重试一次(退避 1.5s,应对上游瞬时限流/偶发非 JSON 输出)
+      await sleep(1500)
+      try {
+        synthData = await synthAttempt()
+      } catch (e2) {
+        if (isAborted()) throw new CancelledError()
+        throw new Error(`成书失败: ${(e2 as Error).message}`, { cause: e2 })
+      }
+    }
+    liveCalls.delete('synth')
+    const overlayRaw = synthData
 
-  const overlay = {
-    title: overlayRaw.title || title,
-    summary: overlayRaw.summary || undefined,
-    characters
+    // 后处理:只保留实体库中的角色;first_appearance 缺失时按出现章节兜底
+    const nameToEntity = new Map(entities.characters.map(c => [normKey(c.name), c]))
+    const characters = (Array.isArray(overlayRaw.characters) ? overlayRaw.characters : [])
+      .filter(c => c?.name && topNames.has(c.name))
+      .map((c) => {
+        const ent = nameToEntity.get(normKey(c.name))
+        if (!c.first_appearance && ent && ent.sources.length > 0) {
+          const ch = Math.min(...ent.sources.map(s => s.chapter))
+          return { ...c, first_appearance: `第${ch}章` }
+        }
+        return c
+      })
+
+    overlay = {
+      title: overlayRaw.title || title,
+      summary: overlayRaw.summary || undefined,
+      characters
+    }
   }
 
   progress('done', units.length)

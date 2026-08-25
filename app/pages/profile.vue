@@ -8,6 +8,9 @@ import type { AiApiFormat } from '#shared/ai-config'
 import { useAuthSession } from '../utils/auth-client'
 import { ensureAiConfigLoaded, getAiConfigStateSync, saveAiConfigState } from '../utils/aiConfigStore'
 import type { LocalAiConfig } from '../utils/aiConfigStore'
+import {
+  DEFAULT_GEN_LIMITS, GEN_LIMIT_RANGE, loadGenLimits, resetGenLimits, saveGenLimits
+} from '../utils/genSettings'
 
 useHead({ title: 'AI SpankWorld · 个人中心' })
 
@@ -392,6 +395,40 @@ function aiFormatLabel(f: AiApiFormat) {
   return aiFormatMeta(f).label
 }
 
+// ---- 生成参数(本地偏好):单单元输入上限 / 单次输出上限 ----
+const loadedLimits = loadGenLimits()
+const genForm = reactive({
+  unitMaxChars: loadedLimits.unitMaxChars,
+  extractMaxTokens: loadedLimits.extractMaxTokens
+})
+const genMsg = ref<{ kind: 'ok' | 'error', text: string } | null>(null)
+
+function resetGenForm() {
+  resetGenLimits()
+  genForm.unitMaxChars = DEFAULT_GEN_LIMITS.unitMaxChars
+  genForm.extractMaxTokens = DEFAULT_GEN_LIMITS.extractMaxTokens
+  genMsg.value = null
+}
+
+function submitGenLimits() {
+  const unitMaxChars = Math.round(genForm.unitMaxChars)
+  const extractMaxTokens = Math.round(genForm.extractMaxTokens)
+  const unitRange = GEN_LIMIT_RANGE.unitMaxChars
+  const tokenRange = GEN_LIMIT_RANGE.extractMaxTokens
+  if (!Number.isFinite(unitMaxChars) || unitMaxChars < unitRange.min || unitMaxChars > unitRange.max) {
+    genMsg.value = { kind: 'error', text: `单单元输入上限需在 ${unitRange.min.toLocaleString()} ~ ${unitRange.max.toLocaleString()} 字符之间` }
+    return
+  }
+  if (!Number.isFinite(extractMaxTokens) || extractMaxTokens < tokenRange.min || extractMaxTokens > tokenRange.max) {
+    genMsg.value = { kind: 'error', text: `单次输出上限需在 ${tokenRange.min.toLocaleString()} ~ ${tokenRange.max.toLocaleString()} tokens 之间(上限参照 DeepSeek 官方单次输出 384K)` }
+    return
+  }
+  saveGenLimits({ unitMaxChars, extractMaxTokens })
+  genForm.unitMaxChars = unitMaxChars
+  genForm.extractMaxTokens = extractMaxTokens
+  genMsg.value = { kind: 'ok', text: '已保存,下次生成世界时生效' }
+}
+
 </script>
 
 <template>
@@ -636,6 +673,72 @@ function aiFormatLabel(f: AiApiFormat) {
       >
         还没有自建配置,点击右上角「新建配置」添加。
       </p>
+    </UCard>
+
+    <!-- 生成参数:单次调用的输入/输出上限(本地偏好) -->
+    <UCard class="mb-6">
+      <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p class="font-semibold">
+            生成参数
+          </p>
+          <p class="text-xs text-neutral-500">
+            世界生成时单次 AI 调用的输入/输出上限。调高可让单次提取覆盖更长正文、输出更全,消耗也更大;上限参照 DeepSeek 官方单次输出 384K
+          </p>
+        </div>
+        <UButton
+          color="neutral"
+          variant="outline"
+          icon="i-lucide-rotate-ccw"
+          @click="resetGenForm"
+        >
+          恢复默认
+        </UButton>
+      </div>
+      <div class="grid gap-4 sm:grid-cols-2">
+        <UFormField
+          label="单单元输入上限"
+          hint="每次提取调用放进模型的正文量;8,000 字符 ≈ 5K tokens"
+        >
+          <UInput
+            v-model.number="genForm.unitMaxChars"
+            type="number"
+            :min="GEN_LIMIT_RANGE.unitMaxChars.min"
+            :max="GEN_LIMIT_RANGE.unitMaxChars.max"
+            :step="GEN_LIMIT_RANGE.unitMaxChars.step"
+            :placeholder="String(DEFAULT_GEN_LIMITS.unitMaxChars)"
+          />
+        </UFormField>
+        <UFormField
+          label="单次输出上限"
+          hint="提取调用的输出封顶;当前默认 6,000"
+        >
+          <UInput
+            v-model.number="genForm.extractMaxTokens"
+            type="number"
+            :min="GEN_LIMIT_RANGE.extractMaxTokens.min"
+            :max="GEN_LIMIT_RANGE.extractMaxTokens.max"
+            :step="GEN_LIMIT_RANGE.extractMaxTokens.step"
+            :placeholder="String(DEFAULT_GEN_LIMITS.extractMaxTokens)"
+          />
+        </UFormField>
+      </div>
+      <div class="mt-4 flex items-center gap-3">
+        <UButton
+          color="primary"
+          icon="i-lucide-save"
+          @click="submitGenLimits"
+        >
+          保存
+        </UButton>
+        <p
+          v-if="genMsg"
+          class="text-xs"
+          :class="genMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
+        >
+          {{ genMsg.text }}
+        </p>
+      </div>
     </UCard>
 
     <!-- 购买弹窗 -->

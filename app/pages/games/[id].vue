@@ -183,23 +183,8 @@ function sendInput() {
 interface RollbackMenuState { x: number, y: number, msgId: string }
 
 const rollbackMenu = ref<RollbackMenuState | null>(null)
-let longPressTimer: ReturnType<typeof setTimeout> | null = null
 
-function startLongPress(e: PointerEvent, msg: LocalGame['messages'][number]) {
-  if (streaming.value || msg.role !== 'user') return
-  longPressTimer = setTimeout(() => {
-    void openRollbackMenu(e, msg)
-  }, 550)
-}
-
-function cancelLongPress() {
-  if (longPressTimer) {
-    clearTimeout(longPressTimer)
-    longPressTimer = null
-  }
-}
-
-async function openRollbackMenu(e: MouseEvent | PointerEvent, msg: LocalGame['messages'][number]) {
+async function openRollbackMenu(e: MouseEvent, msg: LocalGame['messages'][number]) {
   if (streaming.value || msg.role !== 'user') return
   const points = await listGamePoints(gameId)
   if (!points.some(p => p.idx < msg.idx)) return
@@ -349,18 +334,18 @@ watch([messages, streamText], async () => {
         </div>
         <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
           <p class="text-neutral-500">
-            HP
+            身体状况
           </p>
-          <p class="font-semibold tabular-nums">
-            {{ state.hp ?? '—' }}
+          <p class="truncate font-semibold">
+            {{ state.health || '—' }}
           </p>
         </div>
         <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
           <p class="text-neutral-500">
-            金钱
+            心情
           </p>
-          <p class="font-semibold tabular-nums">
-            {{ state.money ?? '—' }}
+          <p class="truncate font-semibold">
+            {{ state.mood || '—' }}
           </p>
         </div>
         <div class="col-span-2 rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800 sm:col-span-1">
@@ -424,12 +409,8 @@ watch([messages, streamText], async () => {
           >
             <div
               v-if="m.role === 'user'"
-              class="max-w-[85%] cursor-context-menu select-none rounded-2xl rounded-br-sm border border-primary-500/40 bg-primary-500/15 px-4 py-2.5"
-              @contextmenu.prevent="openRollbackMenu($event, m)"
-              @pointerdown="startLongPress($event, m)"
-              @pointerup="cancelLongPress"
-              @pointerleave="cancelLongPress"
-              @pointercancel="cancelLongPress"
+              class="max-w-[85%] cursor-pointer select-none rounded-2xl rounded-br-sm border border-primary-500/40 bg-primary-500/15 px-4 py-2.5"
+              @click="openRollbackMenu($event, m)"
             >
               <p class="flex items-center gap-1 text-xs font-semibold text-primary-500">
                 <UIcon
@@ -472,16 +453,23 @@ watch([messages, streamText], async () => {
             :key="o.idx"
             color="neutral"
             variant="soft"
-            class="h-auto py-2.5 text-left leading-snug option-fade-in"
+            class="h-auto py-2.5 leading-snug option-fade-in"
             :style="{ animationDelay: `${i * 120}ms` }"
             @click="pickOption(o.text)"
           >
-            <span class="min-w-0 whitespace-pre-line">{{ o.text }}</span>
+            <span class="flex w-full items-center gap-2">
+              <span class="shrink-0 font-semibold text-neutral-400">&gt;</span>
+              <span class="min-w-0 flex-1 whitespace-pre-line text-left">{{ o.text }}</span>
+              <UIcon
+                name="i-lucide-arrow-right"
+                class="size-4 shrink-0 text-neutral-400"
+              />
+            </span>
           </UButton>
         </div>
 
         <p class="text-xs text-neutral-500">
-          长按或右键自己的行动气泡，可回滚到该行动之前重新选择。
+          点击自己的行动气泡，可回滚到该行动之前重新选择。
         </p>
 
         <div class="flex gap-2">

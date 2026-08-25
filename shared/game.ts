@@ -29,8 +29,8 @@ export const TURN_OPTIONS_SCHEMA = `{
   "state_delta": {
     "location": "地点是否变化(string,无变化省略)",
     "time": "时间描述是否变化(string,无变化省略)",
-    "hp": "相对当前 HP 的整数增量,可为负(number,无变化省略)",
-    "money": "相对当前金钱的整数增量,可为负(number,无变化省略)",
+    "health": "玩家身体状况描述(string,如「精力充沛」「疲惫」「重伤」,无变化省略)",
+    "mood": "玩家心情描述(string,如「平静」「兴奋」「低落」,无变化省略)",
     "relationships": {"角色名": "相对当前好感度的整数增量,可为负,区间 -100~100 内(number,无变化省略)"},
     "quests": ["任务目标(string)"],
     "flags": {"flag名": true}
@@ -44,8 +44,8 @@ export function mergeState(prev: GameState, delta: TurnStructured['state_delta']
   if (!delta) return s
   if (delta.location !== undefined) s.location = delta.location
   if (delta.time !== undefined) s.time = delta.time
-  if (delta.hp !== undefined) s.hp = clamp((s.hp ?? 100) + delta.hp, 0, 999)
-  if (delta.money !== undefined) s.money = clamp((s.money ?? 100) + delta.money, 0, 999999)
+  if (delta.health !== undefined && delta.health.trim() !== '') s.health = delta.health.trim()
+  if (delta.mood !== undefined && delta.mood.trim() !== '') s.mood = delta.mood.trim()
   if (delta.quests !== undefined) s.quests = delta.quests
   if (delta.flags !== undefined) s.flags = { ...(s.flags ?? {}), ...delta.flags }
   if (delta.relationships) {
@@ -58,11 +58,11 @@ export function mergeState(prev: GameState, delta: TurnStructured['state_delta']
 }
 
 export function parseState(raw: string | null | undefined): GameState {
-  if (!raw) return { hp: 100, money: 100 }
+  if (!raw) return { health: '良好', mood: '平静' }
   try {
     return JSON.parse(raw) as GameState
   } catch {
-    return { hp: 100, money: 100 }
+    return { health: '良好', mood: '平静' }
   }
 }
 

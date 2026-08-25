@@ -4,7 +4,7 @@
 import { detectAuthorFromFrontMatter, isAnonymousAuthor } from '#shared/novel'
 import type { ChapterSegment } from '#shared/novel'
 import { JSON_ONLY_SYSTEM } from '#shared/world-build'
-import { aiChatJson } from './aiRelay'
+import { aiChatJson, CancelledError } from './aiRelay'
 import type { LiveTokenInfo } from './aiRelay'
 
 const AUTHOR_SCHEMA = `{"author": "作者名或笔名,无法确定填 null"}`
@@ -36,12 +36,14 @@ const WEB_SEARCH_SNIPPET_LIMIT = 6
  * 2. 未果 → AI 看前言 + 第一章开头判定;
  * 3. 仍未果 → 按书名联网检索 → AI 从检索结果片段确认(多在"不确定则不输出")。
  * 全程失败返回 author=null(书架显示"佚名",用户可在编辑页手动补充)。
+ * signal 触发取消时抛 CancelledError。
  */
 export async function detectAuthor(
   title: string,
   frontMatter: string,
   chapters: ChapterSegment[],
-  onLive?: (info: LiveTokenInfo) => void
+  onLive?: (info: LiveTokenInfo) => void,
+  signal?: AbortSignal
 ): Promise<AuthorDetectResult> {
   const out: AuthorDetectResult = { author: null, tokensUsed: 0, searched: false }
 
@@ -63,9 +65,11 @@ export async function detectAuthor(
         + '- 无法确定时输出 null;不要编造。\n'
         + `文本:\n${textSnip}`
     }
-  ], { maxTokens: 200, temperature: 0, thinking: false }, { onLive })
+  ], { maxTokens: 200, temperature: 0, thinking: false }, { onLive, signal })
+  if (signal?.aborted) throw new CancelledError()
+  // 失败(如 502 非 JSON)也已产生输出,如实入账
+  out.tokensUsed += aiRes.usage?.totalTokens ?? 0
   if (aiRes.ok && aiRes.data) {
-    out.tokensUsed += aiRes.usage?.totalTokens ?? 0
     out.author = authorFromAi(aiRes.data)
     if (out.author) return out
   }
@@ -76,8 +80,9 @@ export async function detectAuthor(
     out.searched = true
     const res = await $fetch<{ results: { source: string, title: string, snippet: string }[] }>(
       '/api/ai/search',
-      { query: { q } }
+      { query: { q }, signal }
     ).catch(() => null)
+    if (signal?.aborted) throw new CancelledError()
     const results = res?.results?.filter(r => r.snippet || r.title) ?? []
     if (results.length > 0) {
       const list = results.slice(0, WEB_SEARCH_SNIPPET_LIMIT)
@@ -92,9 +97,10 @@ export async function detectAuthor(
             + '- 结果与本书无关、署名相互矛盾或无法确定时输出 null;不要编造。\n'
             + `搜索结果:\n${list}`
         }
-      ], { maxTokens: 200, temperature: 0, thinking: false }, { onLive })
+      ], { maxTokens: 200, temperature: 0, thinking: false }, { onLive, signal })
+      if (signal?.aborted) throw new CancelledError()
+      out.tokensUsed += webRes.usage?.totalTokens ?? 0
       if (webRes.ok && webRes.data) {
-        out.tokensUsed += webRes.usage?.totalTokens ?? 0
         out.author = authorFromAi(webRes.data)
       }
     }
