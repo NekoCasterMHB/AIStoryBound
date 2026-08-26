@@ -130,15 +130,4 @@
 - 实践中务必遵循：事前充分协商（对照本表逐项勾选）、设定安全词、随时可中止、拒绝「绝不（N）」项。
 
 ---
-
-## 来源
-
-| 来源 | 链接 |
-|---|---|
-| 抖遇TA密《女M Puppy自评表》（26题版） | https://www.douyusm.cn/?id=281 |
-| Tumblr @qingdao-sm《女M自评报告》（经典类别表） | https://www.tumblr.com/qingdao-sm/174980224256/无码-女m自评表 |
-| bdsmtest.org（角色维度） | https://bdsmtest.org/info |
-| 字母圈交友网（评分制补充） | https://zmqjy.com/archives/31805/c5851275bd/ |
-| 暗室《字母圈归属感与女m自评表》（结构佐证） | https://www.anshism.com/902.html |
-| Submissive Guide BDSM Checklist | https://submissiveguide.com/articles/fundamentals/the-bdsm-checklist-that-will-really-help-you/ |
-| Kink Test：恋物类别清单 | https://www.kinktest.org/list-of-kinks-the-definitions-of-most-commonpopular-kinks.html |
+|

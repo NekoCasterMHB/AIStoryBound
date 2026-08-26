@@ -21,7 +21,7 @@ export function storyTextFromMessages(messages: LocalGame['messages']): string {
     .join('\n\n')
 }
 
-function sanitizeFilename(name: string): string {
+export function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_').trim() || '故事'
 }
 

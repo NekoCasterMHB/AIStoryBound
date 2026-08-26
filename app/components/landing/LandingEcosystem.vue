@@ -1,0 +1,90 @@
+<script setup lang="ts">
+// 「分享与生态」:两大新能力的双卡区块 —— 故事分享(TXT/ZIP)与 Skill 玩法商城。
+// 卡片文案基于产品真实行为:游戏页分享菜单、书架导入 ZIP 分享包、商城下载即装、发布分成 80%。
+const blocks = [
+  {
+    icon: 'i-lucide-share-2',
+    title: '分享你的故事',
+    desc: '游戏对话随时可分享:剧情 TXT,或包含完整作品与会话的 ZIP 分享包。\n对方在书架上导入分享包,校验通过后即还原为个人作品。',
+    points: [
+      '分享剧情 TXT:剔除玩家操作,只留纯旁白,方便阅读收藏',
+      '分享全部 ZIP:作品 + 会话 + 剧情一次打包,随时备份与迁移',
+      '书架导入 ZIP:格式校验后作为个人作品入库,立即开玩'
+    ],
+    cta: { label: '去书架逛逛', icon: 'i-lucide-library-big', to: '/works' }
+  },
+  {
+    icon: 'i-lucide-store',
+    title: 'Skill 玩法商城',
+    desc: '用 token 选购 agent skill 玩法,下载即自动安装并启用。\n游玩时 AI 按技能的 SOP 指引展开,玩法随买随用。',
+    points: [
+      '下载即装:校验后自动入技能库并启用,无需手动配置',
+      '技能管理:个人中心逐项开关,随时调整本场玩法',
+      '发布赚钱:上传你的 Skill 定价出售,实得售价的 80%'
+    ],
+    cta: { label: '逛逛商城', icon: 'i-lucide-store', to: '/store' }
+  }
+]
+</script>
+
+<template>
+  <section class="border-t border-neutral-200/70 dark:border-neutral-800/70">
+    <div class="mx-auto max-w-6xl px-4 py-20">
+      <div class="mb-10 text-center">
+        <p class="text-xs font-semibold tracking-widest text-primary-600 dark:text-primary-400">
+          分享与生态
+        </p>
+        <h2 class="mt-2 text-2xl font-bold tracking-tight text-(--ui-text-highlighted) sm:text-3xl">
+          故事可以分享,玩法可以生长
+        </h2>
+        <p class="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
+          把玩过的世界打包给朋友,也把心仪的玩法装进自己的故事。
+        </p>
+      </div>
+
+      <div class="grid gap-4 md:grid-cols-2">
+        <div
+          v-for="b in blocks"
+          :key="b.title"
+          v-reveal
+          class="group flex flex-col rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-500)_30%,transparent)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-400)_15%,transparent)]"
+        >
+          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500/15 to-primary-400/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
+            <UIcon
+              :name="b.icon"
+              class="size-5"
+            />
+          </div>
+          <h3 class="font-semibold text-(--ui-text-highlighted)">
+            {{ b.title }}
+          </h3>
+          <p class="mt-2 whitespace-pre-line text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
+            {{ b.desc }}
+          </p>
+          <ul class="mt-4 flex-1 space-y-2">
+            <li
+              v-for="p in b.points"
+              :key="p"
+              class="flex items-start gap-2 text-sm leading-relaxed text-neutral-600 dark:text-neutral-400"
+            >
+              <UIcon
+                name="i-lucide-circle-check"
+                class="mt-0.5 size-4 shrink-0 text-primary-600 dark:text-primary-400"
+              />
+              <span>{{ p }}</span>
+            </li>
+          </ul>
+          <UButton
+            class="mt-6 self-start"
+            color="primary"
+            variant="soft"
+            :icon="b.cta.icon"
+            :to="b.cta.to"
+          >
+            {{ b.cta.label }}
+          </UButton>
+        </div>
+      </div>
+    </div>
+  </section>
+</template>

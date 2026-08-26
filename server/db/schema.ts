@@ -155,10 +155,18 @@ export const skillProducts = sqliteTable('skill_products', {
   fileSize: integer('file_size').notNull(),
   /** JSON:zip 内文件清单(上传时解析,管理端预览) */
   fileEntries: text('file_entries'),
+  /** SKILL.md frontmatter 图标(emoji 字符串,商城卡片展示) */
+  icon: text('icon'),
+  /** SKILL.md frontmatter 标签(JSON 字符串数组,商城卡片展示) */
+  tags: text('tags'),
+  /** SKILL.md 正文摘要(商城卡片说明区展示,收录时截断 2000 字) */
+  readme: text('readme'),
   /** pending=待审核 | approved=已上架 | rejected=已拒绝 | removed=已下架 */
   status: text('status').notNull().default('pending'),
   /** 审核驳回原因 */
   rejectReason: text('reject_reason'),
+  /** 手动指定的主版本(商城展示快照来源版本);为空 = 最新已上架版本 */
+  mainVersion: integer('main_version'),
   /** 1=平台推荐(优质 skill 推荐标识) */
   featured: integer('featured').notNull().default(0),
   downloadCount: integer('download_count').notNull().default(0),
@@ -190,10 +198,18 @@ export const skillProductVersions = sqliteTable('skill_product_versions', {
   fileSize: integer('file_size').notNull(),
   /** JSON:zip 内文件清单(上传时解析,管理端预览) */
   fileEntries: text('file_entries'),
+  /** SKILL.md frontmatter 图标(emoji 字符串,商城卡片展示) */
+  icon: text('icon'),
+  /** SKILL.md frontmatter 标签(JSON 字符串数组,商城卡片展示) */
+  tags: text('tags'),
+  /** SKILL.md 正文摘要(商城卡片说明区展示,收录时截断 2000 字) */
+  readme: text('readme'),
   /** pending=待审核 | approved=已上架 | rejected=已拒绝(版本级状态) */
   status: text('status').notNull().default('pending'),
   /** 审核驳回原因 */
   rejectReason: text('reject_reason'),
+  /** 1=启用(用户侧版本菜单可见)| 0=禁用(卖家在版本管理中关闭,用户侧隐藏,已购者仍可下载锁定版本) */
+  enabled: integer('enabled').notNull().default(1),
   reviewedBy: text('reviewed_by').references(() => user.id),
   reviewedAt: integer('reviewed_at', { mode: 'timestamp_ms' }),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
@@ -339,3 +355,32 @@ export const jobs = sqliteTable('jobs', {
   createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
   updatedAt: text('updated_at')
 }, t => [index('idx_jobs_status').on(t.status)])
+
+// ---- 需求墙(用户提交功能需求并按点赞数排序,高赞优先实现) ----
+export const featureRequests = sqliteTable('feature_requests', {
+  id: text('id').primaryKey(),
+  /** 发起人 */
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  title: text('title').notNull(),
+  desc: text('desc').notNull(),
+  /** 点赞数(冗余计数,插入/取消点赞时原子增减) */
+  likeCount: integer('like_count').notNull().default(0),
+  /** open=待实现 | in_progress=开发中 | done=已实现 */
+  status: text('status').notNull().default('open'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  index('idx_fr_status_likes').on(t.status, t.likeCount),
+  index('idx_fr_user').on(t.userId)
+])
+
+// ---- 需求点赞记录(唯一(request, user)= 一人一赞,可取消) ----
+export const featureRequestLikes = sqliteTable('feature_request_likes', {
+  id: text('id').primaryKey(),
+  requestId: text('request_id').notNull().references(() => featureRequests.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  uniqueIndex('idx_frl_unique').on(t.requestId, t.userId),
+  index('idx_frl_user').on(t.userId)
+])

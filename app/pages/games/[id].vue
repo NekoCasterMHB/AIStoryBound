@@ -6,6 +6,7 @@ import { aiChat, aiChatJson } from '../../utils/aiRelay'
 import { estimateTextTokens } from '#shared/token-estimate'
 import { isAdultModeEnabled } from '../../utils/adultMode'
 import { loadScenePrefs } from '../../utils/scenePrefs'
+import { loadNarrTemp } from '../../utils/narrPrefs'
 import { loadEnabledAiSkillObjects } from '../../utils/aiSkills'
 import { buildTurnPrompt, mergeState, TURN_OPTIONS_SCHEMA } from '#shared/game'
 import { uuid } from '#shared/novel'
@@ -15,8 +16,9 @@ import { isCloudSaveEnabled } from '../../utils/cloudSave'
 import { getWork, touchWork, addWorkTokens } from '../../utils/worldGen'
 import { saveGamePoint, listGamePoints, pruneGamePoints } from '../../utils/gameSaveStore'
 import { downloadGameAsTxt } from '../../utils/exportStory'
+import { downloadGameAsZip } from '../../utils/shareZip'
 
-useHead({ title: 'AI SpankWorld · 游戏' })
+useHead({ title: 'AI Word2World · 游戏' })
 
 const route = useRoute()
 const gameId = route.params.id as string
@@ -35,6 +37,8 @@ const cloudSaveEnabled = isCloudSaveEnabled()
 const adultMode = isAdultModeEnabled()
 /** 用户偏好/避免场景(个人中心设置,优先级低于系统规则),回合开始时读入 */
 const scenePrefs = loadScenePrefs()
+/** 叙事温度(个人中心滑动条设置,默认 1.2):回合正文生成的随机性档位 */
+const narrTemp = loadNarrTemp()
 /** AI Skill 玩法库(个人中心逐项开关 + 链接导入):本轮成人互动可用的玩法菜单(含详细设定) */
 const activeSkills = ref<Awaited<ReturnType<typeof loadEnabledAiSkillObjects>>>([])
 void loadEnabledAiSkillObjects().then((list) => {
@@ -134,7 +138,7 @@ async function sendTurn(choice?: string) {
       preferScenes: scenePrefs.prefer ?? undefined,
       avoidScenes: scenePrefs.avoid ?? undefined
     })
-    const narr = await aiChat(prompt, { maxTokens: 2400, temperature: 0.9, thinking: false }, {
+    const narr = await aiChat(prompt, { maxTokens: 2400, temperature: narrTemp, thinking: false }, {
       onDelta: (d) => {
         streamText.value += d
         // 实时消耗估算(与生成页一致:CJK 感知字符 → token,含速度)
@@ -255,7 +259,25 @@ async function rollbackAction() {
   if (cloudSaveEnabled && game.value) void syncGameToCloud(game.value)
 }
 
-// ---- 导出 TXT(剔除玩家行动与选项,仅保留旁白原文) ----
+// ---- 分享(菜单:剧情 TXT / 全部 ZIP) ----
+
+/** 分享包内含完整作品 + 会话,与书架「导入 ZIP 分享包」配套 */
+function onExportZip() {
+  if (streaming.value || !game.value) return
+  downloadGameAsZip({
+    title: work.value?.overlay?.title,
+    playerName: playerName.value,
+    chapter: currentChapter.value,
+    work: work.value,
+    game: game.value,
+    messages: messages.value
+  })
+}
+
+const shareMenuItems = [
+  { label: '分享剧情 TXT', icon: 'i-lucide-file-text', onSelect: onExportTxt },
+  { label: '分享全部 ZIP', icon: 'i-lucide-file-archive', onSelect: onExportZip }
+]
 
 function onExportTxt() {
   if (streaming.value) return
@@ -332,15 +354,18 @@ watch([messages, streamText], async () => {
             :loading="syncing"
             @click="onSyncCloud"
           />
-          <UButton
-            label="导出"
-            icon="i-lucide-file-down"
-            color="neutral"
-            variant="outline"
-            size="sm"
-            :disabled="!started"
-            @click="onExportTxt"
-          />
+          <UDropdownMenu
+            :items="shareMenuItems"
+            :disabled="!started || streaming"
+          >
+            <UButton
+              label="分享"
+              icon="i-lucide-share-2"
+              color="neutral"
+              variant="outline"
+              size="sm"
+            />
+          </UDropdownMenu>
           <UButton
             label="返回"
             icon="i-lucide-arrow-left"

@@ -4,10 +4,11 @@ import type { TabsItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, parseChaptersFromText } from '../utils/worldGen'
 import { listLocalGames, saveLocalGame } from '../utils/gameStore'
 import { downloadGameAsTxt } from '../utils/exportStory'
+import { downloadGameAsZip, importWorkFromZip } from '../utils/shareZip'
 import { listReadingProgress } from '../utils/readingStore'
 import { type LocalWork, type LocalGame, type GameState, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
 
-useHead({ title: 'AI SpankWorld · 我的书架' })
+useHead({ title: 'AI Word2World · 我的书架' })
 
 const works = ref<LocalWork[]>([])
 const games = ref<Awaited<ReturnType<typeof listLocalGames>>>([])
@@ -220,6 +221,27 @@ function exportGameTxt(g: LocalGame) {
   if (!ok) toast.add({ title: '该会话还没有剧情可导出', description: '进入游戏开始故事后再导出', color: 'warning' })
 }
 
+/** 导出游戏会话为 ZIP 分享包(完整作品 + 会话 + 剧情,与游戏页「分享全部」一致) */
+function exportGameZip(g: LocalGame) {
+  const work = works.value.find(w => w.id === g.workId) ?? null
+  downloadGameAsZip({
+    title: work?.title,
+    playerName: g.playerName,
+    chapter: g.currentChapter,
+    work,
+    game: g,
+    messages: g.messages
+  })
+}
+
+/** 每局游戏的分享菜单(与游戏页顶栏一致:TXT 剧情 / 全部 ZIP) */
+function gameShareItems(g: LocalGame) {
+  return [
+    { label: '分享剧情 TXT', icon: 'i-lucide-file-text', onSelect: () => exportGameTxt(g) },
+    { label: '分享全部 ZIP', icon: 'i-lucide-file-archive', onSelect: () => exportGameZip(g) }
+  ]
+}
+
 const shelfTabs = ref<TabsItem[]>([
   { label: '个人书架', value: 'personal', slot: 'personal' },
   { label: '官方书架', value: 'official', slot: 'official' }
@@ -229,6 +251,7 @@ const activeTab = ref('personal')
 // ---- 导入小说:上传 TXT / 粘贴文本 → 解析后直接入库(本地作品),不走 AI 生成 ----
 const toast = useToast()
 const fileInput = ref<HTMLInputElement | null>(null)
+const zipInput = ref<HTMLInputElement | null>(null)
 const importing = ref(false)
 const pasteOpen = ref(false)
 const pasteTitle = ref('')
@@ -237,8 +260,33 @@ const pasteText = ref('')
 
 const importMenuItems = [
   { label: '上传 TXT', icon: 'i-lucide-file-text', onSelect: onPickFile },
-  { label: '粘贴文本', icon: 'i-lucide-clipboard-paste', onSelect: openPasteModal }
+  { label: '粘贴文本', icon: 'i-lucide-clipboard-paste', onSelect: openPasteModal },
+  { label: '导入 ZIP 分享包', icon: 'i-lucide-file-archive', onSelect: onPickZip }
 ]
+
+function onPickZip() {
+  zipInput.value?.click()
+}
+
+/** 导入 ZIP 分享包:校验格式与结构后作为个人作品入库(带新鲜 id,不与来源冲突) */
+async function onZipChosen(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  importing.value = true
+  try {
+    const work = await importWorkFromZip(file)
+    await saveWork(work)
+    activeTab.value = 'personal'
+    await refreshLocal()
+    toast.add({ title: '已导入', description: `《${work.title}》已作为个人作品加入书架`, color: 'success' })
+  } catch (err) {
+    toast.add({ title: '导入失败', description: err instanceof Error ? err.message : String(err), color: 'error' })
+  } finally {
+    importing.value = false
+  }
+}
 
 function onPickFile() {
   fileInput.value?.click()
@@ -308,6 +356,13 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       accept=".txt,.text"
       class="hidden"
       @change="onFileChosen"
+    >
+    <input
+      ref="zipInput"
+      type="file"
+      accept=".zip,application/zip"
+      class="hidden"
+      @change="onZipChosen"
     >
     <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
       <div>
@@ -654,14 +709,18 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     size="sm"
                     :to="`/games/${g.id}`"
                   />
-                  <UButton
-                    label="导出 TXT"
-                    icon="i-lucide-file-down"
-                    color="neutral"
-                    variant="outline"
-                    size="sm"
-                    @click="exportGameTxt(g)"
-                  />
+                  <UDropdownMenu
+                    :items="gameShareItems(g)"
+                    :disabled="!g.messages.length"
+                  >
+                    <UButton
+                      label="分享"
+                      icon="i-lucide-share-2"
+                      color="neutral"
+                      variant="outline"
+                      size="sm"
+                    />
+                  </UDropdownMenu>
                 </div>
               </UCard>
             </div>

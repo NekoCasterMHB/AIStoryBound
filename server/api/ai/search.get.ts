@@ -38,7 +38,7 @@ export default defineEventHandler(async (event) => {
     const searchRes = await fetch(
       `${WIKI_API}?action=query&list=search&format=json&utf8=1&srlimit=4&srsearch=${encodeURIComponent(`${q} 小说`)}`,
       {
-        headers: { 'User-Agent': 'AISpankWorld/1.1 (world generation)' },
+        headers: { 'User-Agent': 'AIWord2World/1.1 (world generation)' },
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
       }
     )
@@ -49,7 +49,7 @@ export default defineEventHandler(async (event) => {
         const extRes = await fetch(
           `${WIKI_API}?action=query&prop=extracts&exintro=1&explaintext=1&format=json&utf8=1&titles=${titles.map(t => encodeURIComponent(t)).join('|')}`,
           {
-            headers: { 'User-Agent': 'AISpankWorld/1.1 (world generation)' },
+            headers: { 'User-Agent': 'AIWord2World/1.1 (world generation)' },
             signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
           }
         )

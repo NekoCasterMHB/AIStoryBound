@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { parseMarkdown } from '@nuxtjs/mdc/runtime'
-import { SKILL_STATUS_LABELS } from '../../../shared/store-skill'
-import type { SkillStatus } from '../../../shared/store-skill'
+import { SKILL_STATUS_LABELS } from '#shared/store-skill'
+import type { SkillStatus } from '#shared/store-skill'
 
 // /admin/skills — Skill 审核(管理后台):商品列表 + 下载审核 + 通过/拒绝 + 推荐标记。
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
-useHead({ title: 'AI SpankWorld · Skill 审核' })
+useHead({ title: 'AI Word2World · Skill 审核' })
 
 const toast = useToast()
 

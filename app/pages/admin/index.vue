@@ -6,7 +6,7 @@ import type { RadioGroupItem } from '@nuxt/ui'
 // middleware/admin.ts,非管理员在进入页面前就被重定向回首页;接口层 requireAdmin 二次鉴权兜底)
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
-useHead({ title: 'AI SpankWorld · 兑换码管理' })
+useHead({ title: 'AI Word2World · 兑换码管理' })
 
 const { data: session } = await useAuthSession()
 const toast = useToast()

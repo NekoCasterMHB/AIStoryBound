@@ -9,7 +9,8 @@ const route = useRoute()
 const items = computed<NavigationMenuItem[]>(() => [
   { label: '兑换码管理', icon: 'i-lucide-ticket', to: '/admin', active: route.path === '/admin' },
   { label: '充值记录', icon: 'i-lucide-credit-card', to: '/admin/recharge', active: route.path === '/admin/recharge' },
-  { label: 'Skill 审核', icon: 'i-lucide-shield-check', to: '/admin/skills', active: route.path === '/admin/skills' }
+  { label: 'Skill 审核', icon: 'i-lucide-shield-check', to: '/admin/skills', active: route.path === '/admin/skills' },
+  { label: '需求管理', icon: 'i-lucide-list-checks', to: '/admin/requests', active: route.path === '/admin/requests' }
 ])
 </script>
 
@@ -28,7 +29,12 @@ const items = computed<NavigationMenuItem[]>(() => [
           to="/"
           class="flex min-w-0 items-center gap-1.5 px-2 font-bold tracking-tight text-(--ui-text-highlighted)"
         >
-          <UIcon name="i-lucide-sparkles" class="size-5 shrink-0 text-primary" />
+          <img
+            src="/pwa/pwa-192x192.png"
+            alt="AIWord2World"
+            class="size-5 shrink-0"
+            draggable="false"
+          >
           <span class="truncate">管理后台</span>
         </NuxtLink>
       </template>

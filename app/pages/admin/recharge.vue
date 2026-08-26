@@ -2,7 +2,7 @@
 // /admin/recharge — 充值记录(管理后台):全量 token 加油包订单审计,支持状态筛选与分页。
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
-useHead({ title: 'AI SpankWorld · 充值记录' })
+useHead({ title: 'AI Word2World · 充值记录' })
 
 const toast = useToast()
 

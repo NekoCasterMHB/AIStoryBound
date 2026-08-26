@@ -40,12 +40,14 @@ async function onLogout() {
           to="/"
           class="flex min-w-0 items-center gap-1.5 text-lg font-bold tracking-tight text-(--ui-text-highlighted)"
         >
-          <UIcon
-            name="i-lucide-sparkles"
-            class="size-5 shrink-0 text-primary"
-          />
+          <img
+            src="/pwa/pwa-192x192.png"
+            alt="AIWord2World"
+            class="size-10 shrink-0"
+            draggable="false"
+          >
           <!-- 极窄屏(≤340px,老 iPhone SE/小屏安卓)仅保留图标,避免挤压右侧按钮组 -->
-          <span class="hidden min-[341px]:inline">AISpankWorld</span>
+          <span class="hidden min-[341px]:inline">AIWord2World</span>
         </NuxtLink>
       </template>
 
@@ -131,11 +133,13 @@ async function onLogout() {
     <UFooter class="border-t border-neutral-200 dark:border-neutral-800">
       <template #left>
         <div class="flex items-center gap-1.5 text-base font-bold tracking-tight text-(--ui-text-highlighted)">
-          <UIcon
-            name="i-lucide-sparkles"
-            class="size-5 text-primary"
-          />
-          AISpankWorld
+          <img
+            src="/pwa/pwa-192x192.png"
+            alt="AIWord2World"
+            class="size-5 shrink-0"
+            draggable="false"
+          >
+          AIWord2World
         </div>
         <p class="mt-2 max-w-xs text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
           把每一本小说,变成真实可互动的世界。上传的小说仅供生成与本地游玩,章节正文不离开你的设备。
@@ -181,6 +185,14 @@ async function onLogout() {
                   Skill商城
                 </NuxtLink>
               </li>
+              <li>
+                <NuxtLink
+                  to="/demand"
+                  class="text-neutral-600 transition-colors hover:text-primary dark:text-neutral-400 dark:hover:text-primary-400"
+                >
+                  需求墙
+                </NuxtLink>
+              </li>
             </ul>
           </div>
           <div>
@@ -210,8 +222,8 @@ async function onLogout() {
       </template>
 
       <template #bottom>
-        <p class="text-xs text-neutral-500 dark:text-neutral-500">
-          © 2026 AISpankWorld · 上传的小说仅供生成与本地游玩,章节正文不离开你的设备
+        <p class="text-xs text-neutral-500 dark:text-neutral-500 w-full">
+          © 2026 AI Word2World · 上传的小说仅供生成与本地游玩,章节正文不离开你的设备
         </p>
       </template>
     </UFooter>

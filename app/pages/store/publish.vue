@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { useAuthSession } from '../../utils/auth-client'
 import {
-  MAX_SKILL_DESC_CHARS,
   MAX_SKILL_NAME_CHARS,
+  MAX_SKILL_TAGS,
   MAX_SKILL_ZIP_BYTES,
   SELLER_RATIO,
   parseSkillZip
-} from '../../../shared/store-skill'
-import type { SkillFileEntry } from '../../../shared/store-skill'
-import { TOKEN_CNY_PER_M } from '../../../shared/quota-packages'
+} from '#shared/store-skill'
+import type { SkillFileEntry } from '#shared/store-skill'
+import { TOKEN_CNY_PER_M } from '#shared/quota-packages'
 
 // /store/publish — 发布 / 更新 Skill(需登录;zip 压缩包,标准 agent skill 格式,须含 SKILL.md)。
 // 售出后发布者得售价 80%,平台收 20% 手续费,收益直接进入余额;提交后进入管理员审核。
@@ -19,7 +19,7 @@ const isUpdate = !!skillId
 /** 更新模式下将生成的新版本号(现有最新版本 +1) */
 const nextVersion = ref(0)
 
-useHead({ title: `AI SpankWorld · ${isUpdate ? '更新 Skill' : '发布 Skill'}` })
+useHead({ title: `AIWord2World · ${isUpdate ? '更新 Skill' : '发布 Skill'}` })
 
 const { data: session } = await useAuthSession()
 if (!session.value) {
@@ -29,8 +29,11 @@ if (!session.value) {
 const toast = useToast()
 
 const name = ref('')
-const desc = ref('')
+/** 商城卡片展示的标签(提交后与 SKILL.md frontmatter 标签合并去重,最多 6 个) */
+const tags = ref<string[]>([])
 const price = ref('')
+/** 更新模式沿用当前售价,不可修改 */
+const currentPrice = ref(0)
 const fileData = ref<File | null>(null)
 const fileEntries = ref<SkillFileEntry[]>([])
 const fileError = ref('')
@@ -38,17 +41,17 @@ const fileError = ref('')
 const guideOpen = ref(false)
 
 if (isUpdate) {
-  // 更新模式:校验商品归属并预填最新已提交版本的名称/说明/售价
+  // 更新模式:校验商品归属并预填最新已提交版本的名称/说明/售价(售价仅展示,提交沿用)
   try {
-    const mine = await $fetch<{ published: import('../../../shared/store-skill').MyPublishedSkill[] }>('/api/store/mine')
+    const mine = await $fetch<{ published: import('#shared/store-skill').MyPublishedSkill[] }>('/api/store/mine')
     const found = mine.published.find(s => s.id === skillId)
     if (!found) {
       toast.add({ title: 'Skill 不存在或不属于你', color: 'error' })
       await navigateTo('/store')
     } else {
       name.value = found.name
-      desc.value = found.desc
-      price.value = String(found.price)
+      tags.value = found.tags ?? []
+      currentPrice.value = found.price
       nextVersion.value = found.latestVersion + 1
     }
   } catch (e) {
@@ -78,10 +81,14 @@ watch(fileData, (file) => {
     fileError.value = `压缩包超过 ${MAX_SKILL_ZIP_BYTES / 1024 / 1024}MB 上限`
     return
   }
-  // 客户端预校验:可解压 + 含 SKILL.md(与服务端校验一致,尽早提示)
+  // 客户端预校验:可解压 + 含 SKILL.md + 正文非空(与服务端校验一致,尽早提示)
   void file.arrayBuffer().then((buf) => {
     try {
-      fileEntries.value = parseSkillZip(new Uint8Array(buf)).entries
+      const parsed = parseSkillZip(new Uint8Array(buf))
+      fileEntries.value = parsed.entries
+      if (!parsed.skillMd?.trim() || !parsed.skillMd.replace(/^---[\s\S]*?---/, '').trim()) {
+        fileError.value = 'SKILL.md 缺少正文(readme):请在 frontmatter 之后写明玩法步骤与规则'
+      }
     } catch (err) {
       fileError.value = (err as Error).message
     }
@@ -92,18 +99,14 @@ const submitting = ref(false)
 
 async function submit() {
   const trimmedName = name.value.trim()
-  const trimmedDesc = desc.value.trim()
   const priceNum = Math.floor(Number(price.value))
 
   if (!trimmedName || trimmedName.length > MAX_SKILL_NAME_CHARS) {
     toast.add({ title: `Skill 名称需在 1~${MAX_SKILL_NAME_CHARS} 字之间`, color: 'error' })
     return
   }
-  if (!trimmedDesc || trimmedDesc.length > MAX_SKILL_DESC_CHARS) {
-    toast.add({ title: `请填写 Skill 说明(不超过 ${MAX_SKILL_DESC_CHARS} 字)`, color: 'error' })
-    return
-  }
-  if (!Number.isFinite(priceNum) || priceNum < 0) {
+  // 更新版本不允许变更售价(售价沿用主表当前值,前端不提交)
+  if (!isUpdate && (!Number.isFinite(priceNum) || priceNum < 0)) {
     toast.add({ title: '售价需为不小于 0 的整数 token(0 表示免费)', color: 'error' })
     return
   }
@@ -118,8 +121,8 @@ async function submit() {
 
   const fd = new FormData()
   fd.append('name', trimmedName)
-  fd.append('desc', trimmedDesc)
-  fd.append('price', String(priceNum))
+  fd.append('tags', JSON.stringify(tags.value.slice(0, MAX_SKILL_TAGS)))
+  if (!isUpdate) fd.append('price', String(priceNum))
   fd.append('file', fileData.value)
   if (isUpdate) fd.append('skillId', skillId)
 
@@ -172,18 +175,22 @@ async function submit() {
           <UInput v-model="name" :maxlength="MAX_SKILL_NAME_CHARS" class="w-full" placeholder="如:文案润色助手" />
         </UFormField>
 
-        <UFormField label="说明文(商城展示)" required>
-          <UTextarea
-            v-model="desc"
-            autoresize
-            :rows="4"
-            :maxlength="MAX_SKILL_DESC_CHARS"
+        <UFormField label="标签(商城展示)">
+          <UInputTags
+            v-model="tags"
+            :max="MAX_SKILL_TAGS"
+            :max-length="12"
+            add-on-blur
+            add-on-paste
             class="w-full"
-            placeholder="介绍这个 skill 的用途、能力与使用方式,将展示在商城卡片上"
+            placeholder="输入标签后回车添加,最多 6 个;如:玩法编排、人物卡"
           />
+          <p class="mt-1 text-xs text-neutral-500">
+            标签展示在商城卡片的标题下方;正文说明自动取 SKILL.md 正文第一段,无需单独填写
+          </p>
         </UFormField>
 
-        <UFormField label="售价(token)" required>
+        <UFormField v-if="!isUpdate" label="售价(token)" required>
           <UFieldGroup class="w-full">
             <UInput
               v-model="price"
@@ -213,6 +220,11 @@ async function submit() {
             </template>
           </p>
         </UFormField>
+        <p v-else class="text-xs text-neutral-500">
+          更新版本沿用当前售价
+          <span class="font-semibold text-(--ui-text-highlighted)">{{ currentPrice.toLocaleString() }} tokens</span>
+          ,不可修改;如确需改价请通过其他渠道联系管理员
+        </p>
 
         <UFormField label="Skill 压缩包(.zip)">
           <template #label>

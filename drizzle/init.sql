@@ -242,8 +242,12 @@ CREATE TABLE IF NOT EXISTS `skill_products` (
 	`file_name` text NOT NULL,
 	`file_size` integer NOT NULL,
 	`file_entries` text,
+	`icon` text,
+	`tags` text,
+	`readme` text,
 	`status` text DEFAULT 'pending' NOT NULL,
 	`reject_reason` text,
+	`main_version` integer,
 	`featured` integer DEFAULT 0 NOT NULL,
 	`download_count` integer DEFAULT 0 NOT NULL,
 	`purchase_count` integer DEFAULT 0 NOT NULL,
@@ -268,8 +272,12 @@ CREATE TABLE IF NOT EXISTS `skill_product_versions` (
 	`file_name` text NOT NULL,
 	`file_size` integer NOT NULL,
 	`file_entries` text,
+	`icon` text,
+	`tags` text,
+	`readme` text,
 	`status` text DEFAULT 'pending' NOT NULL,
 	`reject_reason` text,
+	`enabled` integer DEFAULT 1 NOT NULL,
 	`reviewed_by` text,
 	`reviewed_at` integer,
 	`created_at` integer NOT NULL,
@@ -290,6 +298,29 @@ CREATE TABLE IF NOT EXISTS `skill_purchases` (
 	`created_at` integer NOT NULL,
 	FOREIGN KEY (`skill_id`) REFERENCES `skill_products`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`buyer_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+
+-- ---- 需求墙(用户提交功能需求并按点赞数排序,高赞优先实现) ----
+CREATE TABLE IF NOT EXISTS `feature_requests` (
+	`id` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`title` text NOT NULL,
+	`desc` text NOT NULL,
+	`like_count` integer DEFAULT 0 NOT NULL,
+	`status` text DEFAULT 'open' NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL,
+	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+
+-- ---- 需求点赞记录(唯一(request_id,user_id)= 一人一赞,可取消) ----
+CREATE TABLE IF NOT EXISTS `feature_request_likes` (
+	`id` text PRIMARY KEY NOT NULL,
+	`request_id` text NOT NULL,
+	`user_id` text NOT NULL,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`request_id`) REFERENCES `feature_requests`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
 
 -- ---- 索引 ----
@@ -319,4 +350,8 @@ CREATE INDEX IF NOT EXISTS `idx_jobs_status` ON `jobs` (`status`);
 CREATE INDEX IF NOT EXISTS `idx_skill_seller` ON `skill_products` (`seller_id`);
 CREATE INDEX IF NOT EXISTS `idx_skill_status` ON `skill_products` (`status`,`featured`);
 CREATE UNIQUE INDEX IF NOT EXISTS `idx_skill_purchase_unique` ON `skill_purchases` (`skill_id`,`buyer_id`);
+CREATE INDEX IF NOT EXISTS `idx_fr_status_likes` ON `feature_requests` (`status`,`like_count`);
+CREATE INDEX IF NOT EXISTS `idx_fr_user` ON `feature_requests` (`user_id`);
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_frl_unique` ON `feature_request_likes` (`request_id`,`user_id`);
+CREATE INDEX IF NOT EXISTS `idx_frl_user` ON `feature_request_likes` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_skill_purchase_buyer` ON `skill_purchases` (`buyer_id`);

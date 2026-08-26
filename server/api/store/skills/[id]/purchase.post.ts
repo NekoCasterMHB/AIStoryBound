@@ -24,10 +24,14 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: '不能购买自己发布的 Skill' })
   }
 
-  // 购买锁定的版本 = 当前在售版本(最新已上架;审核通过前旧版本继续售卖)
+  // 购买锁定的版本 = 当前在售版本(最新已上架且启用;审核通过前旧版本继续售卖)
   const saleRows = await db.select({ id: skillProductVersions.id })
     .from(skillProductVersions)
-    .where(and(eq(skillProductVersions.skillId, id), eq(skillProductVersions.status, 'approved')))
+    .where(and(
+      eq(skillProductVersions.skillId, id),
+      eq(skillProductVersions.status, 'approved'),
+      eq(skillProductVersions.enabled, 1)
+    ))
     .orderBy(desc(skillProductVersions.version))
     .limit(1)
     .all()

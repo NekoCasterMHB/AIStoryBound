@@ -3,7 +3,7 @@
 // 已登录访问 → 不弹框直接回跳 redirect;未登录 → 弹框,登录成功或关闭后均回跳。
 import { useAuthModal } from '~/composables/useAuthModal'
 
-useHead({ title: 'AI SpankWorld · 登录' })
+useHead({ title: 'AI Word2World · 登录' })
 
 const route = useRoute()
 const redirect = computed(() => (typeof route.query.redirect === 'string' ? route.query.redirect : '/'))
@@ -30,7 +30,7 @@ watch(session, (s) => {
         📖
       </div>
       <h1 class="text-2xl font-bold text-white">
-        AI SpankWorld
+        AIWord2World
       </h1>
       <p class="text-sm text-neutral-400 mt-1">
         登录后开始你的故事

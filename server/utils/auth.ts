@@ -40,7 +40,7 @@ export function getAuthConfig(event: H3Event): AuthEnvConfig {
 function createAuth(db: D1Database, cfg: AuthEnvConfig, emailCtx: ReturnType<typeof getEmailCtx>) {
   const orm = drizzle(db, { schema })
   return betterAuth({
-    appName: 'AI SpankWorld',
+    appName: 'AIWord2World',
     secret: cfg.secret,
     // 未显式配置 BETTER_AUTH_URL 时用动态 baseURL:从请求 Host 自动推断,
     // 显式声明 allowedHosts 以消除 better-auth 的 "Base URL is not set" 警告

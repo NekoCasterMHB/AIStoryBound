@@ -54,7 +54,7 @@ async function onStartGenerate() {
               icon="i-lucide-library-big"
               to="/works"
             >
-              看看官方预置
+              去书架逛逛
             </UButton>
           </div>
         </div>

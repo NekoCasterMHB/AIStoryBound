@@ -12,7 +12,7 @@ import type { LocalWork, ChapterSegment, PresetNovelRow } from '#shared/novel'
 import type { GenerateProgress } from '../utils/worldGen'
 import type { TokenQuotaInfo } from '../utils/tokenQuota'
 
-useHead({ title: 'AI SpankWorld · 生成世界' })
+useHead({ title: 'AI Word2World · 生成世界' })
 
 const route = useRoute()
 

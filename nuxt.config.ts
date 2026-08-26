@@ -17,8 +17,8 @@ modules: [
   pwa: {
     registerType: 'autoUpdate',
     manifest: {
-      name: 'AISpankWorld',
-      short_name: 'AISpankWorld',
+      name: 'AI Word2World',
+      short_name: 'AI W2W',
       description: 'AI 互动小说与文字冒险平台',
       lang: 'zh-CN',
       display: 'standalone',
@@ -26,9 +26,9 @@ modules: [
       theme_color: '#00DC82',
       background_color: '#ffffff',
       icons: [
-        { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-        { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
-        { src: '/maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+        { src: '/pwa/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+        { src: '/pwa/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+        { src: '/pwa/maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
       ]
     },
     workbox: {

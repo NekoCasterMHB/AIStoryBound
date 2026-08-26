@@ -41,6 +41,7 @@ export default defineEventHandler(async (event) => {
     id: skillProductVersions.id,
     version: skillProductVersions.version,
     status: skillProductVersions.status,
+    enabled: skillProductVersions.enabled,
     fileKey: skillProductVersions.fileKey,
     fileName: skillProductVersions.fileName
   })
@@ -56,10 +57,10 @@ export default defineEventHandler(async (event) => {
   if (Number.isInteger(want)) {
     target = allVersions.find(v => v.version === want) ?? null
     if (!target) throw createError({ statusCode: 404, statusMessage: `版本 v${want} 不存在` })
-    // 权限:购买者仅可下载锁定版本与该商品已上架版本
+    // 权限:购买者仅可下载锁定版本与该商品已上架且启用的版本(禁用版本用户侧不提供)
     if (!admin && !isSeller) {
       const allowed = target.id === lockedVersionId
-        || target.status === 'approved'
+        || (target.status === 'approved' && target.enabled === 1)
         || (lockedVersionId === null && target.version === 1)
       if (!allowed) {
         throw createError({ statusCode: 403, statusMessage: '该版本不可下载(仅可下载购买版本与已上架版本)' })

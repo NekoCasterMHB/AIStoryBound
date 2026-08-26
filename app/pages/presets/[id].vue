@@ -68,17 +68,14 @@ async function loadText() {
 
 onMounted(loadText)
 
-// ---- 用这本小说生成世界:跳转生成页自动带上本小说,由用户确认后再生成 ----
-/** 生成模式:false=完整(默认),true=节约(跳过一致性检查与人物卡润色,省约 15%~25% token);随跳转带到生成页 */
-const ecoMode = ref(false)
-
+// ---- 用这本小说生成世界:跳转生成页自动带上本小说,由用户确认后再生成;生成模式(完整/节约)在生成页选择 ----
 async function goGenerateWithNovel() {
   if (textState.value !== 'ready') return // 全文未就绪(加载中/失败)时不跳转
   // 生成需要登录:未登录弹出全局登录模态框,登录成功后继续
   const ok = await requireLogin()
   if (!ok) return
-  // 小说全文由生成页按同一来源加载(IndexedDB 缓存优先,未命中下载),这里只传来源与模式
-  const q = new URLSearchParams({ from: 'preset', id, eco: ecoMode.value ? '1' : '0' })
+  // 小说全文由生成页按同一来源加载(IndexedDB 缓存优先,未命中下载),这里只传来源
+  const q = new URLSearchParams({ from: 'preset', id })
   await navigateTo(`/generate?${q.toString()}`)
 }
 
@@ -130,9 +127,6 @@ function fmtChars(n?: number) {
               <h1 class="truncate text-2xl font-bold tracking-tight">
                 {{ meta.title }}
               </h1>
-              <p class="truncate text-sm text-neutral-500">
-                {{ [meta.author, meta.genre].filter(Boolean).join(' · ') || '佚名' }}
-              </p>
               <div class="mt-1 flex flex-wrap items-center gap-2">
                 <UBadge
                   variant="subtle"
@@ -148,22 +142,7 @@ function fmtChars(n?: number) {
               </div>
             </div>
           </div>
-          <div class="flex items-center gap-2 sm:ml-auto">
-            <UButton
-              label="沉浸式阅读"
-              color="primary"
-              variant="soft"
-              icon="i-lucide-book-open"
-              :to="`/read/preset/${id}`"
-            />
-            <UButton
-              label="下载 TXT"
-              color="neutral"
-              variant="outline"
-              icon="i-lucide-download"
-              :to="`/api/presets/${id}/download`"
-              target="_blank"
-            />
+          <div class="flex flex-col gap-2 sm:ml-auto sm:items-end">
             <UButton
               label="用这本小说生成世界"
               color="primary"
@@ -171,27 +150,25 @@ function fmtChars(n?: number) {
               :disabled="textState !== 'ready'"
               @click="goGenerateWithNovel"
             />
+            <div class="flex items-center gap-2">
+              <UButton
+                label="沉浸式阅读"
+                color="primary"
+                variant="soft"
+                icon="i-lucide-book-open"
+                :to="`/read/preset/${id}`"
+              />
+              <UButton
+                label="下载 TXT"
+                color="neutral"
+                variant="outline"
+                icon="i-lucide-download"
+                :to="`/api/presets/${id}/download`"
+                target="_blank"
+              />
+            </div>
           </div>
-          <label class="mt-3 inline-flex cursor-pointer items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-            <input
-              v-model="ecoMode"
-              type="checkbox"
-              class="size-3.5 accent-green-600"
-            >
-            <UIcon
-              :name="ecoMode ? 'i-lucide-leaf' : 'i-lucide-sparkles'"
-              class="size-3.5"
-            />
-            节约模式(跳过一致性检查与人物卡润色,约省 15%~25% token,人物卡更朴素;将沿用至生成页)
-          </label>
-        </div>
-
-        <p
-          v-if="meta.description"
-          class="text-sm text-neutral-600 dark:text-neutral-300"
-        >
-          {{ meta.description }}
-        </p>
+          </div>
 
         <!-- 阅读区 -->
         <div

@@ -17,14 +17,14 @@ useHead({
     // @vite-pwa/nuxt 不会自动向 SSR HTML 注入 manifest 链接,需手动声明,否则无法安装为 PWA
     ...(!isDev ? [{ rel: 'manifest', href: '/manifest.webmanifest' }] : []),
     // iOS 主屏图标(iOS 不读取 manifest icons)
-    { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' }
+    { rel: 'apple-touch-icon', href: '/pwa/apple-touch-icon.png' }
   ],
   htmlAttrs: {
     lang: 'zh-CN'
   }
 })
 
-const title = 'AISpankWorld'
+const title = 'AI Word2World'
 const description = 'AI 小说驱动互动游戏平台 —— 上传一本小说,选择一个身份,进入故事,并亲手改变原本的结局。'
 
 useSeoMeta({

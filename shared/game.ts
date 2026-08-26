@@ -106,7 +106,7 @@ export interface TurnPromptArgs {
   summaryText?: string | null
   /** 成人模式:开启后成人向内容出现频率大幅上升(选角页/个人中心开关) */
   adultMode?: boolean
-  /** 已启用的 AI Skill 玩法列表(个人中心玩法库开关 + 链接导入;限定成人互动可用的玩法菜单) */
+  /** 已启用的 AI Skill 玩法列表(个人中心技能管理:商城下载后自动启用;限定成人互动可用的玩法菜单) */
   activeSkills?: AiSkill[]
   /** 玩家偏好场景提示词(个人中心设置;优先级低于系统规则) */
   preferScenes?: string
@@ -120,20 +120,17 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
   const others = cards.filter(c => c.name !== playerName)
 
   // 规则:系统规则在前,用户偏好场景/避免场景追加在后,明确声明其优先级低于系统规则
-  // AI Skill 玩法:开启的技能按 SKILL.md 正文原样注入,供模型在成人互动时按作者写的 SOP 展开
+  // AI Skill 玩法:开启的技能按 SKILL.md 正文(含参考附件)完整注入,不做裁剪——
+  // 内容被截断的技能失去意义,启停与每轮消耗由用户在技能管理中自行控制(个人中心有实时 token 估算提示)
   const skillRules: string[] = []
   if (activeSkills && activeSkills.length) {
     skillRules.push(
       `本场可用的成人玩法技能:${activeSkills.map(s => s.name).join('、')}。成人互动情节出现时,先按各技能的正文指引判断是否适用,适用则按其步骤与规则展开;未启用玩法尽量不出现。`
     )
-    let budget = 6000
-    for (const s of activeSkills.slice(0, 6)) {
+    for (const s of activeSkills) {
       const blocks = skillPromptBlocks(s)
-      if (blocks.length === 0 || budget <= 0) continue
-      const clipped = blocks.join('\n')
-      const text = `【技能:${s.name}】\n${clipped.length > 1000 ? `${clipped.slice(0, 1000)}…` : clipped}`
-      budget -= text.length
-      skillRules.push(text)
+      if (blocks.length === 0) continue
+      skillRules.push(`【技能:${s.name}】\n${blocks.join('\n')}`)
     }
   }
   const rules = [
@@ -173,6 +170,15 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
   const recent = history.slice(-12)
   if (recent.length > 0) {
     parts.push(recent.map(m => (m.role === 'user' ? `【玩家】${m.content}` : `【剧情】${m.content}`)).join('\n'))
+  }
+  // 防人设漂移:核心人设复述在 user 尾部(长对话后注意力偏离开头 system 的设定,社区验证
+  // 此处重贴可显著降低 OOC/指令衰减);位置放在玩家本轮行动之前,不稀释当前指令的注意力
+  const anchors = [
+    playerCard ? `玩家「${playerName}」:${cardBrief(playerCard)}` : null,
+    ...others.slice(0, 3).map(cardBrief)
+  ].filter((x): x is string => !!x)
+  if (anchors.length > 0) {
+    parts.push(`【人设提醒】再次强调,以下核心角色严格忠于设定,勿 OOC:\n${anchors.map((a, i) => `${i + 1}. ${a}`).join('\n')}`)
   }
   if (parts.length === 0) {
     parts.push(`【开场】故事刚开始,请描写玩家「${playerName}」所处的开场场景,引入剧情与第一个矛盾。`)

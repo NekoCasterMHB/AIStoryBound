@@ -6,7 +6,7 @@ import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
 import { uuid } from '#shared/novel'
 import type { GameState } from '#shared/novel'
 
-useHead({ title: 'AI SpankWorld · 选择身份' })
+useHead({ title: 'AI Word2World · 选择身份' })
 
 const route = useRoute()
 const router = useRouter()

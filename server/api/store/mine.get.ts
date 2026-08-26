@@ -6,6 +6,7 @@ import { useD1 } from '../../utils/d1'
 import { requireUser } from '../../utils/authz'
 import { skillProducts, skillProductVersions, skillPurchases, user as usersTable } from '../../db/schema'
 import { and, eq, inArray, desc } from 'drizzle-orm'
+import { parseStoredTags } from '../../../shared/store-skill'
 import type { SkillStatus, SkillVersionBrief } from '../../../shared/store-skill'
 
 export default defineEventHandler(async (event) => {
@@ -32,16 +33,25 @@ export default defineEventHandler(async (event) => {
     .all()
 
   const purchasedIds = purchased.map(p => p.id).filter((x): x is string => !!x)
-  const approvedBySkill = new Map<string, number[]>()
+  const approvedBySkill = new Map<string, { version: number, createdAt: number }[]>()
   if (purchasedIds.length) {
-    const approved = await db.select({ skillId: skillProductVersions.skillId, version: skillProductVersions.version })
+    const approved = await db.select({
+      skillId: skillProductVersions.skillId,
+      version: skillProductVersions.version,
+      createdAt: skillProductVersions.createdAt
+    })
       .from(skillProductVersions)
-      .where(and(inArray(skillProductVersions.skillId, purchasedIds), eq(skillProductVersions.status, 'approved')))
+      .where(and(
+        inArray(skillProductVersions.skillId, purchasedIds),
+        eq(skillProductVersions.status, 'approved'),
+        // 禁用的版本用户侧不显示(购买锁定版本仍可下载)
+        eq(skillProductVersions.enabled, 1)
+      ))
       .orderBy(skillProductVersions.version)
       .all()
     for (const v of approved) {
       const list = approvedBySkill.get(v.skillId) ?? []
-      list.push(v.version)
+      list.push({ version: v.version, createdAt: Number(v.createdAt) })
       approvedBySkill.set(v.skillId, list)
     }
   }
@@ -49,10 +59,12 @@ export default defineEventHandler(async (event) => {
   const published = await db.select({
     id: skillProducts.id,
     name: skillProducts.name,
+    tags: skillProducts.tags,
     desc: skillProducts.desc,
     price: skillProducts.price,
     status: skillProducts.status,
     rejectReason: skillProducts.rejectReason,
+    mainVersion: skillProducts.mainVersion,
     featured: skillProducts.featured,
     downloadCount: skillProducts.downloadCount,
     purchaseCount: skillProducts.purchaseCount,
@@ -70,10 +82,12 @@ export default defineEventHandler(async (event) => {
       skillId: skillProductVersions.skillId,
       version: skillProductVersions.version,
       name: skillProductVersions.name,
+      tags: skillProductVersions.tags,
       desc: skillProductVersions.desc,
       price: skillProductVersions.price,
       status: skillProductVersions.status,
       rejectReason: skillProductVersions.rejectReason,
+      enabled: skillProductVersions.enabled,
       fileSize: skillProductVersions.fileSize,
       createdAt: skillProductVersions.createdAt
     })
@@ -86,10 +100,12 @@ export default defineEventHandler(async (event) => {
       list.push({
         version: v.version,
         name: v.name,
+        tags: parseStoredTags(v.tags),
         desc: v.desc,
         price: v.price,
         status: v.status as SkillStatus,
         rejectReason: v.rejectReason,
+        enabled: v.enabled,
         fileSize: v.fileSize,
         createdAt: Number(v.createdAt)
       })
@@ -98,7 +114,7 @@ export default defineEventHandler(async (event) => {
   }
 
   return {
-    purchased: purchased.filter(p => p.id !== null).map(p => {
+    purchased: purchased.filter(p => p.id !== null).map((p) => {
       const id = p.id as string
       const boughtVersion = p.purchasedVersion ?? 1
       const list = approvedBySkill.get(id)
@@ -111,18 +127,20 @@ export default defineEventHandler(async (event) => {
         featured: p.featured,
         purchasedAt: Number(p.purchasedAt),
         purchasedVersion: boughtVersion,
-        versions: list && list.length ? list : [boughtVersion]
+        versions: list && list.length ? list : [{ version: boughtVersion, createdAt: Number(p.purchasedAt) }]
       }
     }),
-    published: published.map(p => {
+    published: published.map((p) => {
       const versions = versionsBySkill.get(p.id) ?? []
       return {
         id: p.id,
         name: p.name,
+        tags: parseStoredTags(p.tags),
         desc: p.desc,
         price: p.price,
         status: p.status,
         rejectReason: p.rejectReason,
+        mainVersion: p.mainVersion,
         featured: p.featured,
         downloadCount: p.downloadCount,
         purchaseCount: p.purchaseCount,

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 // /profile — 个人中心:token 余额、加油包购买(微支付网关跳转)、购买记录、自建模型配置(加密存储)
 // 模型配置:默认配置(平台配额)与自建配置二选一;自建配置可存多套命名配置(Chat Completions / Anthropic Messages / Responses),表单在模态框内填写
+// 设置区按三类分页(UTabs):模型配置(自建模型 + 生成参数)/ 游玩偏好(成人模式、叙事温度、偏好场景、云端同步)/ 技能管理(商城技能开关)
+import type { TabsItem } from '@nuxt/ui'
 import { TOKEN_PACKAGES } from '#shared/quota-packages'
 import type { TokenPackage } from '#shared/quota-packages'
 import { AI_API_FORMATS, aiFormatMeta } from '#shared/ai-config'
@@ -9,9 +11,10 @@ import { useAuthSession } from '../utils/auth-client'
 import { isCloudSaveEnabled, setCloudSaveEnabled } from '../utils/cloudSave'
 import { isAdultModeEnabled, setAdultModeEnabled } from '../utils/adultMode'
 import { loadScenePrefs, saveScenePrefs } from '../utils/scenePrefs'
-import { loadEnabledAiSkills, saveEnabledAiSkills, getUserSkills, saveUserSkill, deleteUserSkill } from '../utils/aiSkills'
-import { AI_SKILLS, parseSkillMd } from '#shared/ai-skills'
-import type { AiSkill } from '#shared/ai-skills'
+import {
+  loadNarrTemp, saveNarrTemp, narrTempTier,
+  NARR_TEMP_MIN, NARR_TEMP_MAX, NARR_TEMP_STEP, NARR_TEMP_TIERS
+} from '../utils/narrPrefs'
 import { ensureAiConfigLoaded, getAiConfigStateSync, saveAiConfigState } from '../utils/aiConfigStore'
 import type { LocalAiConfig } from '../utils/aiConfigStore'
 import {
@@ -19,7 +22,21 @@ import {
 } from '../utils/genSettings'
 import type { GenLimits } from '../utils/genSettings'
 
-useHead({ title: 'AI SpankWorld · 个人中心' })
+useHead({ title: 'AI Word2World · 个人中心' })
+
+/** 设置区分三类标签页:模型配置 / 游玩偏好 / 技能管理(商城下载技能开关) */
+const profileTabs = ref<TabsItem[]>([
+  { label: '模型配置', value: 'model', slot: 'model', icon: 'i-lucide-cpu' },
+  { label: '游玩偏好', value: 'play', slot: 'play', icon: 'i-lucide-gamepad-2' },
+  { label: '技能管理', value: 'skills', slot: 'skills', icon: 'i-lucide-package' }
+])
+// 支持 /profile?tab=skills 等直达指定页签(商城「已获取」跳转用)
+const route = useRoute()
+const activeTab = ref(
+  typeof route.query.tab === 'string' && profileTabs.value.some(t => t.value === route.query.tab)
+    ? route.query.tab
+    : 'model'
+)
 
 const { data: session } = await useAuthSession()
 
@@ -483,77 +500,10 @@ function submitScenePrefs() {
   sceneMsg.value = { kind: 'ok', text: '已保存,新回合生效' }
 }
 
-/** AI Skill 玩法库(本地偏好):内置玩法 + 链接导入的自定义玩法,逐项开关 */
-const userSkills = ref<AiSkill[]>([])
-const allSkills = computed(() => [...AI_SKILLS, ...userSkills.value])
-const isBuiltinSkill = (key: string) => AI_SKILLS.some(s => s.key === key)
-const aiSkillOn = reactive<Record<string, boolean>>(
-  Object.fromEntries(AI_SKILLS.map(s => [s.key, loadEnabledAiSkills().includes(s.key)]))
-)
-const aiSkillCount = computed(() => allSkills.value.filter(s => aiSkillOn[s.key]).length)
-function toggleAiSkill(key: string, v: boolean) {
-  aiSkillOn[key] = v
-  saveEnabledAiSkills(allSkills.value.filter(s => aiSkillOn[s.key]).map(s => s.key))
-}
-function setAllAiSkills(v: boolean) {
-  for (const s of allSkills.value) aiSkillOn[s.key] = v
-  saveEnabledAiSkills(v ? allSkills.value.map(s => s.key) : [])
-}
-async function refreshUserSkills() {
-  userSkills.value = await getUserSkills()
-  // 新出现的用户技能(刚导入)补进开关状态:已设置过开关就按存储,否则按 defaultOn
-  const enabled = loadEnabledAiSkills()
-  for (const s of userSkills.value) {
-    if (aiSkillOn[s.key] === undefined) aiSkillOn[s.key] = enabled.includes(s.key) || s.defaultOn !== false
-  }
-}
-
-// ---- 链接导入 / 删除自定义技能(SKILL.md:frontmatter 声明 name/description + 自由正文)----
-const importUrl = ref('')
-const importing = ref(false)
-const importMsg = ref<{ kind: 'ok' | 'err', text: string } | null>(null)
-async function importSkillFromUrl() {
-  const url = importUrl.value.trim()
-  if (!url) return
-  importing.value = true
-  importMsg.value = null
-  try {
-    const res = await $fetch<{ url: string, text: string, files: { name: string, text: string }[] }>(
-      '/api/ai/skill-import',
-      { method: 'POST', body: { url } }
-    )
-    const skill = parseSkillMd(res.text)
-    skill.sourceUrl = res.url
-    if (res.files.length) skill.attachments = res.files
-    if (isBuiltinSkill(skill.key)) {
-      throw new Error(`key「${skill.key}」与内置玩法冲突,请修改文件中的 name 后重试`)
-    }
-    const existed = userSkills.value.some(s => s.key === skill.key)
-    await saveUserSkill(skill)
-    await refreshUserSkills()
-    // 导入后自动开启(自定义技能默认可用,可在列表里关掉)
-    if (!aiSkillOn[skill.key]) {
-      aiSkillOn[skill.key] = true
-      saveEnabledAiSkills(allSkills.value.filter(s => aiSkillOn[s.key]).map(s => s.key))
-    }
-    importMsg.value = { kind: 'ok', text: `已${existed ? '更新' : '导入'}「${skill.name}」并默认开启` }
-    importUrl.value = ''
-  } catch (e) {
-    importMsg.value = { kind: 'err', text: e instanceof Error ? e.message : String(e) }
-  } finally {
-    importing.value = false
-  }
-}
-async function removeUserSkill(key: string) {
-  await deleteUserSkill(key)
-  await refreshUserSkills()
-  importMsg.value = { kind: 'ok', text: '已删除该自定义玩法' }
-}
-
-// 进入个人中心时加载用户导入的玩法(不影响其它 onMounted 的独立逻辑)
-onMounted(() => {
-  void refreshUserSkills()
-})
+/** 叙事温度(本地偏好,默认 1.2):回合正文生成的随机性档位,滑动条即时保存,新回合生效 */
+const narrTemp = ref(loadNarrTemp())
+const narrTempTierInfo = computed(() => narrTempTier(narrTemp.value))
+watch(narrTemp, v => saveNarrTemp(v))
 </script>
 
 <template>
@@ -575,6 +525,35 @@ onMounted(() => {
       variant="soft"
       :title="loadError"
     />
+
+    <!-- 需求墙横幅 -->
+    <NuxtLink
+      to="/demand"
+      class="mb-6 block overflow-hidden rounded-2xl border border-primary-500/25 bg-gradient-to-br from-primary-500/10 via-transparent to-primary-400/10 px-5 py-4 transition-colors hover:border-primary-500/40 dark:border-primary-500/20 dark:from-primary-500/12 dark:to-primary-400/8"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p class="flex items-center gap-1.5 font-semibold text-(--ui-text-highlighted)">
+            <UIcon
+              name="i-lucide-message-square-plus"
+              class="size-4 text-primary"
+            />
+            想让我们做什么?
+          </p>
+          <p class="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+            去需求墙提需求或点赞,高赞的会优先实现
+          </p>
+        </div>
+        <UButton
+          color="primary"
+          size="sm"
+          icon="i-lucide-arrow-right"
+          trailing
+        >
+          去需求墙
+        </UButton>
+      </div>
+    </NuxtLink>
 
     <!-- 余额与加油包 -->
     <UCard class="mb-6">
@@ -623,7 +602,10 @@ onMounted(() => {
     </UCard>
 
     <!-- 兑换码模态框 -->
-    <UModal v-model:open="redeemOpen" title="兑换码">
+    <UModal
+      v-model:open="redeemOpen"
+      title="兑换码"
+    >
       <template #body>
         <div class="flex flex-col gap-3">
           <p class="text-sm text-neutral-500">
@@ -657,543 +639,510 @@ onMounted(() => {
       </template>
     </UModal>
 
-    <!-- 模型配置:默认(平台配额)/ 自建 -->
-    <UCard class="mb-6">
-      <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p class="font-semibold">
-            模型配置
-          </p>
-          <p class="text-xs text-neutral-500">
-            默认配置用平台密钥、按量扣 token;自建配置用你的 Key 不扣平台配额,可保存多套随时切换
-          </p>
-        </div>
-        <UButton
-          color="primary"
-          variant="outline"
-          icon="i-lucide-plus"
-          :disabled="aiBusy"
-          @click="openAiModal"
-        >
-          新建配置
-        </UButton>
-      </div>
-
-      <div class="mt-4 grid gap-2">
-        <div
-          v-for="c in aiState.configs"
-          :key="c.id"
-          class="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2.5 transition-colors"
-          :class="isConfigActive(c)
-            ? 'cursor-default border-primary-400/70 bg-primary-500/10 dark:border-primary-500/70 dark:bg-primary-500/15'
-            : 'border-neutral-200 dark:border-neutral-700'"
-        >
-          <div class="min-w-0">
-            <div class="flex items-center gap-2">
-              <p class="truncate text-sm font-medium">
-                {{ c.name }}
-              </p>
-              <UBadge
-                size="sm"
-                color="neutral"
-                variant="soft"
+    <UTabs
+      v-model="activeTab"
+      :items="profileTabs"
+      variant="pill"
+      color="primary"
+    >
+      <template #model>
+        <div class="mt-4">
+          <!-- 模型配置:默认(平台配额)/ 自建 -->
+          <UCard class="mb-6">
+            <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p class="font-semibold">
+                  模型配置
+                </p>
+                <p class="text-xs text-neutral-500">
+                  默认配置用平台密钥、按量扣 token;自建配置用你的 Key 不扣平台配额,可保存多套随时切换
+                </p>
+              </div>
+              <UButton
+                color="primary"
+                variant="outline"
+                icon="i-lucide-plus"
+                :disabled="aiBusy"
+                @click="openAiModal"
               >
-                {{ c.model }}
-              </UBadge>
-              <UBadge
-                v-if="isConfigActive(c)"
-                size="sm"
-                color="success"
-                variant="soft"
-              >
-                使用中
-              </UBadge>
+                新建配置
+              </UButton>
             </div>
-            <p class="mt-0.5 truncate text-xs text-neutral-500">
-              {{ aiFormatLabel(c.format) }} · {{ c.baseUrl }}
-            </p>
-          </div>
-          <div class="flex shrink-0 items-center gap-1.5">
-            <UButton
-              v-if="!isConfigActive(c)"
-              size="xs"
-              color="primary"
-              variant="soft"
-              icon="i-lucide-circle-check"
-              :loading="isEnableLoading(c)"
-              @click="askAiEnable(c)"
-            >
-              启用
-            </UButton>
-            <UButton
-              size="xs"
-              color="neutral"
-              variant="subtle"
-              icon="i-lucide-pencil"
-              :aria-label="`编辑 ${c.name}`"
-              @click="openAiEdit(c)"
-            />
-            <UButton
-              size="xs"
-              color="error"
-              variant="subtle"
-              icon="i-lucide-trash-2"
-              :aria-label="`删除 ${c.name}`"
-              @click="askAiDelete(c)"
-            />
-          </div>
-        </div>
 
-        <!-- 平台默认配置(不可编辑/删除;未使用时通过「启用」切回) -->
-        <div
-          class="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2.5 transition-colors"
-          :class="aiMode === 'default'
-            ? 'cursor-default border-primary-400/70 bg-primary-500/10 dark:border-primary-500/70 dark:bg-primary-500/15'
-            : 'border-neutral-200 dark:border-neutral-700'"
-        >
-          <div class="min-w-0">
-            <div class="flex items-center gap-2">
-              <p class="truncate text-sm font-medium">
-                默认配置(平台配额)
-              </p>
-              <UBadge
-                v-if="aiMode === 'default'"
-                size="sm"
-                color="success"
-                variant="soft"
+            <div class="mt-4 grid gap-2">
+              <div
+                v-for="c in aiState.configs"
+                :key="c.id"
+                class="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2.5 transition-colors"
+                :class="isConfigActive(c)
+                  ? 'cursor-default border-primary-400/70 bg-primary-500/10 dark:border-primary-500/70 dark:bg-primary-500/15'
+                  : 'border-neutral-200 dark:border-neutral-700'"
               >
-                使用中
-              </UBadge>
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2">
+                    <p class="truncate text-sm font-medium">
+                      {{ c.name }}
+                    </p>
+                    <UBadge
+                      size="sm"
+                      color="neutral"
+                      variant="soft"
+                    >
+                      {{ c.model }}
+                    </UBadge>
+                    <UBadge
+                      v-if="isConfigActive(c)"
+                      size="sm"
+                      color="success"
+                      variant="soft"
+                    >
+                      使用中
+                    </UBadge>
+                  </div>
+                  <p class="mt-0.5 truncate text-xs text-neutral-500">
+                    {{ aiFormatLabel(c.format) }} · {{ c.baseUrl }}
+                  </p>
+                </div>
+                <div class="flex shrink-0 items-center gap-1.5">
+                  <UButton
+                    v-if="!isConfigActive(c)"
+                    size="xs"
+                    color="primary"
+                    variant="soft"
+                    icon="i-lucide-circle-check"
+                    :loading="isEnableLoading(c)"
+                    @click="askAiEnable(c)"
+                  >
+                    启用
+                  </UButton>
+                  <UButton
+                    size="xs"
+                    color="neutral"
+                    variant="subtle"
+                    icon="i-lucide-pencil"
+                    :aria-label="`编辑 ${c.name}`"
+                    @click="openAiEdit(c)"
+                  />
+                  <UButton
+                    size="xs"
+                    color="error"
+                    variant="subtle"
+                    icon="i-lucide-trash-2"
+                    :aria-label="`删除 ${c.name}`"
+                    @click="askAiDelete(c)"
+                  />
+                </div>
+              </div>
+
+              <!-- 平台默认配置(不可编辑/删除;未使用时通过「启用」切回) -->
+              <div
+                class="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2.5 transition-colors"
+                :class="aiMode === 'default'
+                  ? 'cursor-default border-primary-400/70 bg-primary-500/10 dark:border-primary-500/70 dark:bg-primary-500/15'
+                  : 'border-neutral-200 dark:border-neutral-700'"
+              >
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2">
+                    <p class="truncate text-sm font-medium">
+                      默认配置(平台配额)
+                    </p>
+                    <UBadge
+                      v-if="aiMode === 'default'"
+                      size="sm"
+                      color="success"
+                      variant="soft"
+                    >
+                      使用中
+                    </UBadge>
+                  </div>
+                  <p class="mt-0.5 truncate text-xs text-neutral-500">
+                    平台密钥 · 按实际用量扣 token 余额
+                  </p>
+                </div>
+                <div class="flex shrink-0 items-center gap-1.5">
+                  <UButton
+                    v-if="aiMode !== 'default'"
+                    size="xs"
+                    color="primary"
+                    variant="soft"
+                    icon="i-lucide-circle-check"
+                    :loading="isDefaultEnableLoading()"
+                    @click="askAiEnable('default')"
+                  >
+                    启用
+                  </UButton>
+                </div>
+              </div>
+
+              <p
+                v-if="aiMsg"
+                class="text-xs"
+                :class="aiMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
+              >
+                {{ aiMsg.text }}
+              </p>
             </div>
-            <p class="mt-0.5 truncate text-xs text-neutral-500">
-              平台密钥 · 按实际用量扣 token 余额
-            </p>
-          </div>
-          <div class="flex shrink-0 items-center gap-1.5">
-            <UButton
-              v-if="aiMode !== 'default'"
-              size="xs"
-              color="primary"
-              variant="soft"
-              icon="i-lucide-circle-check"
-              :loading="isDefaultEnableLoading()"
-              @click="askAiEnable('default')"
-            >
-              启用
-            </UButton>
-          </div>
-        </div>
-
-        <p
-          v-if="aiMsg"
-          class="text-xs"
-          :class="aiMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
-        >
-          {{ aiMsg.text }}
-        </p>
-      </div>
-      <p
-        v-if="aiMode === 'custom' && aiState.configs.length === 0"
-        class="mt-4 text-sm text-neutral-500"
-      >
-        还没有自建配置,点击右上角「新建配置」添加。
-      </p>
-    </UCard>
-
-    <!-- 生成参数:单次调用的输入/输出上限(本地偏好) -->
-    <UCard class="mb-6">
-      <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p class="font-semibold">
-            生成参数
-          </p>
-          <p class="text-xs text-neutral-500">
-            调大数值,单次提取覆盖更全、消耗更大,一般保持默认即可
-          </p>
-        </div>
-        <UButton
-          color="neutral"
-          variant="outline"
-          icon="i-lucide-rotate-ccw"
-          @click="resetGenForm"
-        >
-          恢复默认
-        </UButton>
-      </div>
-      <div class="grid gap-x-4 gap-y-6 sm:grid-cols-2">
-        <UFormField label="单次输入上限">
-          <template #help>
-            <p class="text-xs text-neutral-500">
-              {{ unitMaxHint.desc }}
-            </p>
             <p
-              v-if="unitMaxHint.value"
-              class="tabular-nums text-xs text-neutral-500"
+              v-if="aiMode === 'custom' && aiState.configs.length === 0"
+              class="mt-4 text-sm text-neutral-500"
             >
-              {{ unitMaxHint.value }}
+              还没有自建配置,点击右上角「新建配置」添加。
             </p>
-          </template>
-          <UFieldGroup class="w-full">
-            <UInput
-              v-model.number="genForm.unitMaxChars"
-              type="number"
-              :min="GEN_LIMIT_RANGE.unitMaxChars.min"
-              :max="GEN_LIMIT_RANGE.unitMaxChars.max"
-              :step="GEN_LIMIT_RANGE.unitMaxChars.step"
-              :placeholder="String(DEFAULT_GEN_LIMITS.unitMaxChars)"
-              class="w-full"
-            />
-            <UButton
-              color="neutral"
-              variant="subtle"
-              label="字符"
-              aria-hidden="true"
-              tabindex="-1"
-              class="pointer-events-none select-none"
-            />
-          </UFieldGroup>
-        </UFormField>
-        <UFormField
-          label="提取输出上限"
-          :help="`提取输出的封顶;当前 ${fmtCurrent(genForm.extractMaxTokens)}`"
-        >
-          <UFieldGroup class="w-full">
-            <UInput
-              v-model.number="genForm.extractMaxTokens"
-              type="number"
-              :min="GEN_LIMIT_RANGE.extractMaxTokens.min"
-              :max="GEN_LIMIT_RANGE.extractMaxTokens.max"
-              :step="GEN_LIMIT_RANGE.extractMaxTokens.step"
-              :placeholder="String(DEFAULT_GEN_LIMITS.extractMaxTokens)"
-              class="w-full"
-            />
-            <UButton
-              color="neutral"
-              variant="subtle"
-              label="tokens"
-              aria-hidden="true"
-              tabindex="-1"
-              class="pointer-events-none select-none"
-            />
-          </UFieldGroup>
-        </UFormField>
-      </div>
-      <UCollapsible :unmount-on-hide="false" class="mt-6">
-        <UButton
-          color="neutral"
-          variant="outline"
-          size="sm"
-          block
-          icon="i-lucide-sliders-horizontal"
-          trailing-icon="i-lucide-chevron-down"
-        >
-          高级设置
-        </UButton>
-        <template #content>
-          <div class="mt-3 grid gap-x-4 gap-y-6 sm:grid-cols-2">
-            <UFormField
-              label="单元切段重叠"
-              :help="`长章切段时保留的重叠,减少边界遗漏;0=关闭;当前 ${fmtCurrent(genForm.unitOverlapChars)}`"
-            >
-              <UFieldGroup class="w-full">
-                <UInput
-                  v-model.number="genForm.unitOverlapChars"
-                  type="number"
-                  :min="GEN_LIMIT_RANGE.unitOverlapChars.min"
-                  :max="GEN_LIMIT_RANGE.unitOverlapChars.max"
-                  :step="GEN_LIMIT_RANGE.unitOverlapChars.step"
-                  :placeholder="String(DEFAULT_GEN_LIMITS.unitOverlapChars)"
-                  class="w-full"
-                />
-                <UButton
-                  color="neutral"
-                  variant="subtle"
-                  label="字符"
-                  aria-hidden="true"
-                  tabindex="-1"
-                  class="pointer-events-none select-none"
-                />
-              </UFieldGroup>
-            </UFormField>
-            <UFormField
-              label="一致性检查输出上限"
-              :help="`检查设定的输出封顶;当前 ${fmtCurrent(genForm.checkMaxTokens)}`"
-            >
-              <UFieldGroup class="w-full">
-                <UInput
-                  v-model.number="genForm.checkMaxTokens"
-                  type="number"
-                  :min="GEN_LIMIT_RANGE.checkMaxTokens.min"
-                  :max="GEN_LIMIT_RANGE.checkMaxTokens.max"
-                  :step="GEN_LIMIT_RANGE.checkMaxTokens.step"
-                  :placeholder="String(DEFAULT_GEN_LIMITS.checkMaxTokens)"
-                  class="w-full"
-                />
-                <UButton
-                  color="neutral"
-                  variant="subtle"
-                  label="tokens"
-                  aria-hidden="true"
-                  tabindex="-1"
-                  class="pointer-events-none select-none"
-                />
-              </UFieldGroup>
-            </UFormField>
-            <UFormField
-              label="成书输出上限"
-              :help="`简介与人物卡的输出封顶;当前 ${fmtCurrent(genForm.synthMaxTokens)}`"
-            >
-              <UFieldGroup class="w-full">
-                <UInput
-                  v-model.number="genForm.synthMaxTokens"
-                  type="number"
-                  :min="GEN_LIMIT_RANGE.synthMaxTokens.min"
-                  :max="GEN_LIMIT_RANGE.synthMaxTokens.max"
-                  :step="GEN_LIMIT_RANGE.synthMaxTokens.step"
-                  :placeholder="String(DEFAULT_GEN_LIMITS.synthMaxTokens)"
-                  class="w-full"
-                />
-                <UButton
-                  color="neutral"
-                  variant="subtle"
-                  label="tokens"
-                  aria-hidden="true"
-                  tabindex="-1"
-                  class="pointer-events-none select-none"
-                />
-              </UFieldGroup>
-            </UFormField>
-            <UFormField
-              label="单次调用超时"
-              :help="`单次调用的等待上限;当前 ${fmtCurrent(genForm.relayTimeoutSec)}`"
-            >
-              <UFieldGroup class="w-full">
-                <UInput
-                  v-model.number="genForm.relayTimeoutSec"
-                  type="number"
-                  :min="GEN_LIMIT_RANGE.relayTimeoutSec.min"
-                  :max="GEN_LIMIT_RANGE.relayTimeoutSec.max"
-                  :step="GEN_LIMIT_RANGE.relayTimeoutSec.step"
-                  :placeholder="String(DEFAULT_GEN_LIMITS.relayTimeoutSec)"
-                  class="w-full"
-                />
-                <UButton
-                  color="neutral"
-                  variant="subtle"
-                  label="秒"
-                  aria-hidden="true"
-                  tabindex="-1"
-                  class="pointer-events-none select-none"
-                />
-              </UFieldGroup>
-            </UFormField>
-          </div>
-          <p class="mt-3 text-xs text-neutral-400">
-            默认值适合大多数场景;调大输出后建议同步调大超时
-          </p>
-        </template>
-      </UCollapsible>
-      <div class="mt-4 flex items-center gap-3">
-        <UButton
-          color="primary"
-          icon="i-lucide-save"
-          @click="submitGenLimits"
-        >
-          保存
-        </UButton>
-        <p
-          v-if="genMsg"
-          class="text-xs"
-          :class="genMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
-        >
-          {{ genMsg.text }}
-        </p>
-      </div>
-    </UCard>
+          </UCard>
 
-    <!-- 成人模式:游玩时成人内容频率开关(本地偏好,默认关闭) -->
-    <UCard class="mb-6">
-      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p class="font-semibold">
-            成人模式
-          </p>
-          <p class="text-xs text-neutral-500">
-            开启后,游玩时成人内容出现频率大幅上升,并明显偏向训诫、BDSM、打屁股、捆绑、强制等亚文化题材,按角色性欲强度档位推进;默认关闭,开启后对所有游戏生效,也可在选角页单独调整
-          </p>
-        </div>
-        <USwitch v-model="adultModeOn" />
-      </div>
-    </UCard>
-
-    <!-- AI Skill 玩法库:逐项开关成人题材玩法技能(注入游玩叙事) -->
-    <UCard class="mb-6">
-      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div class="flex flex-col gap-1">
-          <p class="font-semibold">
-            AI Skill 玩法库
-          </p>
-          <p class="text-xs text-neutral-500">
-            逐项开启可用的成人题材玩法,开启的玩法会注入游玩叙事(未开启尽量不出现);已开启 {{ aiSkillCount }}/{{ allSkills.length }}
-          </p>
-        </div>
-        <div class="flex gap-2">
-          <UButton
-            size="xs"
-            color="neutral"
-            variant="soft"
-            @click="setAllAiSkills(true)"
-          >
-            全部开启
-          </UButton>
-          <UButton
-            size="xs"
-            color="neutral"
-            variant="soft"
-            @click="setAllAiSkills(false)"
-          >
-            全部关闭
-          </UButton>
-        </div>
-      </div>
-
-      <!-- 链接导入自定义玩法(市面通用 SKILL.md,经服务器下载绕开 CORS) -->
-      <div class="mb-3 space-y-2 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-900">
-        <p class="text-xs text-neutral-500">
-          通过链接导入自定义玩法(Skill 文件,市面通用格式:文件头 --- 包裹的 name/description + 自由 Markdown 正文;
-          同级引用文件如 reference.md 会自动一并抓取)。直链如 GitHub raw / jsdelivr,导入后存本地:
-        </p>
-        <div class="flex gap-2">
-          <UInput
-            v-model="importUrl"
-            placeholder="https://…/SKILL.md"
-            class="flex-1"
-          />
-          <UButton
-            label="导入"
-            icon="i-lucide-download"
-            color="primary"
-            :loading="importing"
-            @click="importSkillFromUrl"
-          />
-        </div>
-        <p
-          v-if="importMsg"
-          class="text-xs"
-          :class="importMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
-        >
-          {{ importMsg.text }}
-        </p>
-      </div>
-
-      <div class="grid gap-1.5 sm:grid-cols-2">
-        <div
-          v-for="s in allSkills"
-          :key="s.key"
-          class="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 px-3 py-2 dark:border-neutral-800"
-        >
-          <div class="min-w-0">
-            <p class="text-sm font-medium">
-              {{ s.name }}
-              <UBadge
-                v-if="!isBuiltinSkill(s.key)"
-                color="info"
-                variant="subtle"
-                size="xs"
+          <!-- 生成参数:单次调用的输入/输出上限(本地偏好) -->
+          <UCard class="mb-6">
+            <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p class="font-semibold">
+                  生成参数
+                </p>
+                <p class="text-xs text-neutral-500">
+                  调大数值,单次提取覆盖更全、消耗更大,一般保持默认即可
+                </p>
+              </div>
+              <UButton
+                color="neutral"
+                variant="outline"
+                icon="i-lucide-rotate-ccw"
+                @click="resetGenForm"
               >
-                自定义
-              </UBadge>
-            </p>
-            <p class="truncate text-xs text-neutral-500">
-              {{ s.desc || ((s.body || s.steps?.length || s.trigger) ? '含详细玩法设定' : '') }}
-            </p>
-          </div>
-          <div class="flex shrink-0 items-center gap-1">
-            <UButton
-              v-if="!isBuiltinSkill(s.key)"
-              icon="i-lucide-trash-2"
-              color="error"
-              variant="ghost"
-              size="xs"
-              aria-label="删除自定义玩法"
-              @click="removeUserSkill(s.key)"
-            />
-            <USwitch
-              :model-value="aiSkillOn[s.key]"
-              @update:model-value="v => toggleAiSkill(s.key, v)"
-            />
-          </div>
+                恢复默认
+              </UButton>
+            </div>
+            <div class="grid gap-x-4 gap-y-6 sm:grid-cols-2">
+              <UFormField label="单次输入上限">
+                <template #help>
+                  <p class="text-xs text-neutral-500">
+                    {{ unitMaxHint.desc }}
+                  </p>
+                  <p
+                    v-if="unitMaxHint.value"
+                    class="tabular-nums text-xs text-neutral-500"
+                  >
+                    {{ unitMaxHint.value }}
+                  </p>
+                </template>
+                <UFieldGroup class="w-full">
+                  <UInput
+                    v-model.number="genForm.unitMaxChars"
+                    type="number"
+                    :min="GEN_LIMIT_RANGE.unitMaxChars.min"
+                    :max="GEN_LIMIT_RANGE.unitMaxChars.max"
+                    :step="GEN_LIMIT_RANGE.unitMaxChars.step"
+                    :placeholder="String(DEFAULT_GEN_LIMITS.unitMaxChars)"
+                    class="w-full"
+                  />
+                  <UButton
+                    color="neutral"
+                    variant="subtle"
+                    label="字符"
+                    aria-hidden="true"
+                    tabindex="-1"
+                    class="pointer-events-none select-none"
+                  />
+                </UFieldGroup>
+              </UFormField>
+              <UFormField
+                label="提取输出上限"
+                :help="`提取输出的封顶;当前 ${fmtCurrent(genForm.extractMaxTokens)}`"
+              >
+                <UFieldGroup class="w-full">
+                  <UInput
+                    v-model.number="genForm.extractMaxTokens"
+                    type="number"
+                    :min="GEN_LIMIT_RANGE.extractMaxTokens.min"
+                    :max="GEN_LIMIT_RANGE.extractMaxTokens.max"
+                    :step="GEN_LIMIT_RANGE.extractMaxTokens.step"
+                    :placeholder="String(DEFAULT_GEN_LIMITS.extractMaxTokens)"
+                    class="w-full"
+                  />
+                  <UButton
+                    color="neutral"
+                    variant="subtle"
+                    label="tokens"
+                    aria-hidden="true"
+                    tabindex="-1"
+                    class="pointer-events-none select-none"
+                  />
+                </UFieldGroup>
+              </UFormField>
+            </div>
+            <UCollapsible
+              :unmount-on-hide="false"
+              class="mt-6"
+            >
+              <UButton
+                color="neutral"
+                variant="outline"
+                size="sm"
+                block
+                icon="i-lucide-sliders-horizontal"
+                trailing-icon="i-lucide-chevron-down"
+              >
+                高级设置
+              </UButton>
+              <template #content>
+                <div class="mt-3 grid gap-x-4 gap-y-6 sm:grid-cols-2">
+                  <UFormField
+                    label="单元切段重叠"
+                    :help="`长章切段时保留的重叠,减少边界遗漏;0=关闭;当前 ${fmtCurrent(genForm.unitOverlapChars)}`"
+                  >
+                    <UFieldGroup class="w-full">
+                      <UInput
+                        v-model.number="genForm.unitOverlapChars"
+                        type="number"
+                        :min="GEN_LIMIT_RANGE.unitOverlapChars.min"
+                        :max="GEN_LIMIT_RANGE.unitOverlapChars.max"
+                        :step="GEN_LIMIT_RANGE.unitOverlapChars.step"
+                        :placeholder="String(DEFAULT_GEN_LIMITS.unitOverlapChars)"
+                        class="w-full"
+                      />
+                      <UButton
+                        color="neutral"
+                        variant="subtle"
+                        label="字符"
+                        aria-hidden="true"
+                        tabindex="-1"
+                        class="pointer-events-none select-none"
+                      />
+                    </UFieldGroup>
+                  </UFormField>
+                  <UFormField
+                    label="一致性检查输出上限"
+                    :help="`检查设定的输出封顶;当前 ${fmtCurrent(genForm.checkMaxTokens)}`"
+                  >
+                    <UFieldGroup class="w-full">
+                      <UInput
+                        v-model.number="genForm.checkMaxTokens"
+                        type="number"
+                        :min="GEN_LIMIT_RANGE.checkMaxTokens.min"
+                        :max="GEN_LIMIT_RANGE.checkMaxTokens.max"
+                        :step="GEN_LIMIT_RANGE.checkMaxTokens.step"
+                        :placeholder="String(DEFAULT_GEN_LIMITS.checkMaxTokens)"
+                        class="w-full"
+                      />
+                      <UButton
+                        color="neutral"
+                        variant="subtle"
+                        label="tokens"
+                        aria-hidden="true"
+                        tabindex="-1"
+                        class="pointer-events-none select-none"
+                      />
+                    </UFieldGroup>
+                  </UFormField>
+                  <UFormField
+                    label="成书输出上限"
+                    :help="`简介与人物卡的输出封顶;当前 ${fmtCurrent(genForm.synthMaxTokens)}`"
+                  >
+                    <UFieldGroup class="w-full">
+                      <UInput
+                        v-model.number="genForm.synthMaxTokens"
+                        type="number"
+                        :min="GEN_LIMIT_RANGE.synthMaxTokens.min"
+                        :max="GEN_LIMIT_RANGE.synthMaxTokens.max"
+                        :step="GEN_LIMIT_RANGE.synthMaxTokens.step"
+                        :placeholder="String(DEFAULT_GEN_LIMITS.synthMaxTokens)"
+                        class="w-full"
+                      />
+                      <UButton
+                        color="neutral"
+                        variant="subtle"
+                        label="tokens"
+                        aria-hidden="true"
+                        tabindex="-1"
+                        class="pointer-events-none select-none"
+                      />
+                    </UFieldGroup>
+                  </UFormField>
+                  <UFormField
+                    label="单次调用超时"
+                    :help="`单次调用的等待上限;当前 ${fmtCurrent(genForm.relayTimeoutSec)}`"
+                  >
+                    <UFieldGroup class="w-full">
+                      <UInput
+                        v-model.number="genForm.relayTimeoutSec"
+                        type="number"
+                        :min="GEN_LIMIT_RANGE.relayTimeoutSec.min"
+                        :max="GEN_LIMIT_RANGE.relayTimeoutSec.max"
+                        :step="GEN_LIMIT_RANGE.relayTimeoutSec.step"
+                        :placeholder="String(DEFAULT_GEN_LIMITS.relayTimeoutSec)"
+                        class="w-full"
+                      />
+                      <UButton
+                        color="neutral"
+                        variant="subtle"
+                        label="秒"
+                        aria-hidden="true"
+                        tabindex="-1"
+                        class="pointer-events-none select-none"
+                      />
+                    </UFieldGroup>
+                  </UFormField>
+                </div>
+                <p class="mt-3 text-xs text-neutral-400">
+                  默认值适合大多数场景;调大输出后建议同步调大超时
+                </p>
+              </template>
+            </UCollapsible>
+            <div class="mt-4 flex items-center gap-3">
+              <UButton
+                color="primary"
+                icon="i-lucide-save"
+                @click="submitGenLimits"
+              >
+                保存
+              </UButton>
+              <p
+                v-if="genMsg"
+                class="text-xs"
+                :class="genMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
+              >
+                {{ genMsg.text }}
+              </p>
+            </div>
+          </UCard>
         </div>
-      </div>
-    </UCard>
+      </template>
 
-    <!-- 游玩偏好场景:用户自定义偏好/避免场景提示词(优先级低于系统规则) -->
-    <UCard class="mb-6">
-      <div class="mb-3 flex flex-col gap-1">
-        <p class="font-semibold">
-          游玩偏好场景
-        </p>
-        <p class="text-xs text-neutral-500">
-          自定义叙事提示词:「偏好场景」会适度增加相关内容,「避免场景」尽量不出现。优先级低于系统规则,与系统规则/人物卡设置冲突时以系统规则为准;保存后新回合生效
-        </p>
-      </div>
-      <div class="space-y-4">
-        <UFormField
-          label="偏好场景"
-          description="例如:训诫、捆绑、主从支配、当众羞耻"
-        >
-          <UTextarea
-            v-model="scenePrefs.prefer"
-            :rows="3"
-            placeholder="留空不生效,可填写多个场景,用逗号分隔"
-            class="w-full"
-          />
-        </UFormField>
-        <UFormField
-          label="避免出现的场景"
-          description="例如:流血、永久伤害、多人"
-        >
-          <UTextarea
-            v-model="scenePrefs.avoid"
-            :rows="3"
-            placeholder="留空不生效,可填写多个场景,用逗号分隔"
-            class="w-full"
-          />
-        </UFormField>
-      </div>
-      <div class="mt-4 flex items-center gap-3">
-        <UButton
-          color="primary"
-          icon="i-lucide-save"
-          @click="submitScenePrefs"
-        >
-          保存偏好
-        </UButton>
-        <p
-          v-if="sceneMsg"
-          class="text-xs"
-          :class="sceneMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
-        >
-          {{ sceneMsg.text }}
-        </p>
-      </div>
-    </UCard>
+      <template #play>
+        <div class="mt-4">
+          <!-- 成人模式:游玩时成人内容频率开关(本地偏好,默认关闭) -->
+          <UCard class="mb-6">
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p class="font-semibold">
+                  成人模式
+                </p>
+                <p class="text-xs text-neutral-500">
+                  开启后,游玩时成人内容出现频率大幅上升,并明显偏向训诫、BDSM、打屁股、捆绑、强制等亚文化题材,按角色性欲强度档位推进;默认关闭,开启后对所有游戏生效,也可在选角页单独调整
+                </p>
+              </div>
+              <USwitch v-model="adultModeOn" />
+            </div>
+          </UCard>
 
-    <!-- 云端同步:本地存档是否上云(默认关闭,本地优先) -->
-    <UCard class="mb-6">
-      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p class="font-semibold">
-            云端同步
-          </p>
-          <p class="text-xs text-neutral-500">
-            开启后,游戏进度会在每回合结束后自动上传云端(需登录账号),可在其他设备从「书架 → 云端游戏」恢复续玩;默认关闭,存档仅保存在本机
-          </p>
+          <!-- 叙事温度:回合正文生成的随机性档位(滑动条即时保存,新回合生效) -->
+          <UCard class="mb-6">
+            <div class="mb-3 flex flex-col gap-1">
+              <p class="font-semibold">
+                叙事温度
+              </p>
+              <p class="text-xs text-neutral-500">
+                控制回合正文的随机性与文风多样性,滑动即时保存,新回合生效;选项生成与状态结算始终使用固定低温,不受此设置影响
+              </p>
+            </div>
+            <div class="space-y-3">
+              <div class="flex items-center gap-4">
+                <USlider
+                  v-model="narrTemp"
+                  :min="NARR_TEMP_MIN"
+                  :max="NARR_TEMP_MAX"
+                  :step="NARR_TEMP_STEP"
+                  class="flex-1"
+                />
+                <span class="w-12 shrink-0 text-right font-mono text-sm text-neutral-700 dark:text-neutral-300">{{ narrTemp.toFixed(1) }}</span>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <UBadge
+                  color="primary"
+                  variant="soft"
+                >
+                  {{ narrTempTierInfo?.label ?? '自定义' }}
+                </UBadge>
+                <p class="text-xs text-neutral-500">
+                  {{ narrTempTierInfo?.desc ?? '介于两档之间,效果随数值连续变化' }}
+                </p>
+              </div>
+              <div class="space-y-1 text-xs text-neutral-400">
+                <p
+                  v-for="t in NARR_TEMP_TIERS"
+                  :key="t.label"
+                  :class="narrTempTierInfo?.label === t.label ? 'font-medium text-primary-600 dark:text-primary-400' : ''"
+                >
+                  {{ t.range[0].toFixed(1) }}~{{ t.range[1].toFixed(1) }} {{ t.label }}:{{ t.desc }}
+                </p>
+              </div>
+            </div>
+          </UCard>
+
+          <!-- 游玩偏好场景:用户自定义偏好/避免场景提示词(优先级低于系统规则) -->
+          <UCard class="mb-6">
+            <div class="mb-3 flex flex-col gap-1">
+              <p class="font-semibold">
+                游玩偏好场景
+              </p>
+              <p class="text-xs text-neutral-500">
+                自定义叙事提示词:「偏好场景」会适度增加相关内容,「避免场景」尽量不出现。优先级低于系统规则,与系统规则/人物卡设置冲突时以系统规则为准;保存后新回合生效
+              </p>
+            </div>
+            <div class="space-y-4">
+              <UFormField
+                label="偏好场景"
+                description="例如:训诫、捆绑、主从支配、当众羞耻"
+              >
+                <UTextarea
+                  v-model="scenePrefs.prefer"
+                  :rows="3"
+                  placeholder="留空不生效,可填写多个场景,用逗号分隔"
+                  class="w-full"
+                />
+              </UFormField>
+              <UFormField
+                label="避免出现的场景"
+                description="例如:流血、永久伤害、多人"
+              >
+                <UTextarea
+                  v-model="scenePrefs.avoid"
+                  :rows="3"
+                  placeholder="留空不生效,可填写多个场景,用逗号分隔"
+                  class="w-full"
+                />
+              </UFormField>
+            </div>
+            <div class="mt-4 flex items-center gap-3">
+              <UButton
+                color="primary"
+                icon="i-lucide-save"
+                @click="submitScenePrefs"
+              >
+                保存偏好
+              </UButton>
+              <p
+                v-if="sceneMsg"
+                class="text-xs"
+                :class="sceneMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
+              >
+                {{ sceneMsg.text }}
+              </p>
+            </div>
+          </UCard>
+
+          <!-- 云端同步:本地存档是否上云(默认关闭,本地优先) -->
+          <UCard class="mb-6">
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p class="font-semibold">
+                  云端同步
+                </p>
+                <p class="text-xs text-neutral-500">
+                  开启后,游戏进度会在每回合结束后自动上传云端(需登录账号),可在其他设备从「书架 → 云端游戏」恢复续玩;默认关闭,存档仅保存在本机
+                </p>
+              </div>
+              <USwitch v-model="cloudSaveOn" />
+            </div>
+          </UCard>
         </div>
-        <USwitch v-model="cloudSaveOn" />
-      </div>
-    </UCard>
+      </template>
 
+      <!-- 技能管理:商城下载技能的启用开关(独立组件,其他页面可复用) -->
+      <template #skills>
+        <div class="mt-4">
+          <SkillManager />
+        </div>
+      </template>
+    </UTabs>
     <!-- 购买弹窗 -->
     <UModal
       v-model:open="buyOpen"
