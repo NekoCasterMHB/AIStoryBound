@@ -66,6 +66,7 @@ async function loadMe() {
 }
 onMounted(() => {
   void loadMe()
+  detectPaymentResult()
 })
 
 const balance = computed(() => me.value?.aiTokenBalance ?? 0)
@@ -113,6 +114,77 @@ async function submitOrder(payType: 'wxpay' | 'alipay') {
   } finally {
     buyBusy.value = null
   }
+}
+
+// ---- 支付结果确认 ----
+// 网关支付完成会跳回 return_url(/profile)并带上全部回调参数(out_trade_no/trade_status 等)。
+// 页面检测到这些参数后,以数据库订单状态为准(只有验签通过的回调才会写库)展示成功/失败。
+interface PayResult {
+  state: 'checking' | 'paid' | 'pending' | 'error'
+  orderNo: string
+  packageName?: string
+  amountFen?: number
+  msg?: string
+}
+const payResultOpen = ref(false)
+const payResult = ref<PayResult | null>(null)
+let payResultTimer: ReturnType<typeof setTimeout> | null = null
+
+function detectPaymentResult() {
+  const q = route.query
+  const orderNo = typeof q.out_trade_no === 'string' ? q.out_trade_no : ''
+  const tradeStatus = typeof q.trade_status === 'string' ? q.trade_status : ''
+  // 网关回跳特征:带 out_trade_no 且 trade_status
+  if (!orderNo || !('trade_status' in q)) return
+  void confirmPayResult(orderNo, tradeStatus, 0)
+}
+
+async function confirmPayResult(orderNo: string, tradeStatus: string, attempt: number) {
+  payResultOpen.value = true
+  payResult.value = { state: 'checking', orderNo }
+  let confirmed = false
+  try {
+    const res = await $fetch<{ status: string, packageName: string, amount: number }>(
+      `/api/payment/result?orderNo=${encodeURIComponent(orderNo)}`
+    )
+    confirmed = true
+    if (res.status === 'paid') {
+      payResult.value = { state: 'paid', orderNo, packageName: res.packageName, amountFen: res.amount }
+      void loadMe() // 刷新余额
+      return
+    }
+  } catch {
+    // 订单不存在/未登录:按 URL 参数兜底提示
+    payResult.value = {
+      state: tradeStatus === 'TRADE_SUCCESS' ? 'error' : 'error',
+      orderNo,
+      msg: tradeStatus === 'TRADE_SUCCESS'
+        ? '已收到支付成功通知,但暂未确认到账,可稍后在购买记录中查看'
+        : `支付状态:${tradeStatus || '未知'},未确认到账`
+    }
+    return
+  }
+  if (!confirmed) return
+  // pending:异步回调可能尚未到达,每 5 秒重查,最多 60 秒
+  if (attempt >= 12) {
+    payResult.value = {
+      state: 'error',
+      orderNo,
+      msg: '支付已提交但暂未确认到账,请稍后在购买记录中查看;若长时间未到账,请联系客服并提供订单号'
+    }
+    return
+  }
+  payResult.value = { state: 'pending', orderNo, msg: '支付回调处理中,正在确认到账…' }
+  payResultTimer = setTimeout(() => { void confirmPayResult(orderNo, tradeStatus, attempt + 1) }, 5000)
+}
+
+function closePayResult() {
+  if (payResultTimer) { clearTimeout(payResultTimer); payResultTimer = null }
+  payResultOpen.value = false
+  payResult.value = null
+  // 清理 URL 上的回调参数,避免刷新重复弹窗(保留 tab 直达参数)
+  const router = useRouter()
+  void router.replace({ query: activeTab.value === 'model' ? {} : { tab: activeTab.value } })
 }
 
 // ---- 购买记录 ----
@@ -1286,7 +1358,7 @@ watch(narrTemp, v => saveNarrTemp(v))
               name="i-simple-icons-alipay"
               class="size-5 shrink-0"
             />
-            支付宝
+            支付宝(维护中)
           </UButton>
           <p class="col-span-2 text-left text-xs leading-loose text-neutral-500">
             * 充值 token 不支持退款
@@ -1296,6 +1368,87 @@ watch(narrTemp, v => saveNarrTemp(v))
             * 如未到账请查看购买记录。
           </p>
         </div>
+      </template>
+    </UModal>
+
+    <!-- 支付结果确认模态框(网关跳回时自动弹出) -->
+    <UModal
+      v-model:open="payResultOpen"
+      :dismissible="payResult?.state !== 'checking'"
+    >
+      <template #body>
+        <div
+          v-if="payResult"
+          class="flex flex-col items-center gap-3 py-4 text-center"
+        >
+          <template v-if="payResult.state === 'checking'">
+            <UIcon
+              name="i-lucide-loader-circle"
+              class="size-12 animate-spin text-primary-500"
+            />
+            <p class="font-semibold">
+              正在确认支付结果…
+            </p>
+            <p class="text-xs text-neutral-400">
+              订单号 {{ payResult.orderNo }}
+            </p>
+          </template>
+          <template v-else-if="payResult.state === 'paid'">
+            <UIcon
+              name="i-lucide-check-circle"
+              class="size-12 text-emerald-500"
+            />
+            <p class="text-lg font-semibold">
+              充值成功
+            </p>
+            <p
+              v-if="payResult.packageName"
+              class="text-sm text-neutral-500"
+            >
+              {{ payResult.packageName }} 已到账
+            </p>
+            <p class="text-xs text-neutral-400">
+              订单号 {{ payResult.orderNo }}
+            </p>
+          </template>
+          <template v-else-if="payResult.state === 'pending'">
+            <UIcon
+              name="i-lucide-loader-circle"
+              class="size-12 animate-spin text-amber-500"
+            />
+            <p class="font-semibold">
+              {{ payResult.msg }}
+            </p>
+            <p class="text-xs text-neutral-400">
+              订单号 {{ payResult.orderNo }}
+            </p>
+          </template>
+          <template v-else>
+            <UIcon
+              name="i-lucide-circle-alert"
+              class="size-12 text-amber-500"
+            />
+            <p class="text-lg font-semibold">
+              未确认到账
+            </p>
+            <p class="text-sm text-neutral-500">
+              {{ payResult.msg }}
+            </p>
+            <p class="text-xs text-neutral-400">
+              订单号 {{ payResult.orderNo }}
+            </p>
+          </template>
+        </div>
+      </template>
+      <template #footer>
+        <UButton
+          v-if="payResult?.state !== 'checking'"
+          color="primary"
+          block
+          @click="closePayResult"
+        >
+          知道了
+        </UButton>
       </template>
     </UModal>
 
