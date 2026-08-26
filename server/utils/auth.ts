@@ -55,6 +55,8 @@ function createAuth(db: D1Database, cfg: AuthEnvConfig, emailCtx: ReturnType<typ
     },
     plugins: [
       emailOTP({
+        // 验证码 10 分钟有效(邮件送达可能有数分钟延迟,见前端提示)
+        expiresIn: 600,
         // 验证码邮件走 Cloudflare Email Service — Email Sending REST API;未配置密钥时打印日志
         sendVerificationOTP: async ({ email, otp, type }) => {
           await sendOtpEmail(email, otp, type, emailCtx)

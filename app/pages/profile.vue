@@ -1155,53 +1155,47 @@ watch(narrTemp, v => saveNarrTemp(v))
             选择加油包套餐:
           </p>
           <div class="space-y-3">
-            <!-- 新人限购包:独占整行 -->
+            <!-- 新人限购包:独占整行,布局与常规套餐一致 -->
             <UCard
               v-if="newbiePkg"
               class="cursor-pointer border-2 transition"
               :class="selectedPkg?.id === newbiePkg.id ? 'border-primary-400' : 'border-transparent'"
-              :ui="{ body: 'p-3 sm:p-4' }"
+              :ui="{ body: 'p-2 sm:p-3' }"
               @click="selectedPkg = newbiePkg"
             >
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p class="flex items-center gap-1.5 font-semibold">
-                    {{ newbiePkg.label }}
-                    <UBadge
-                      size="sm"
-                      color="warning"
-                      variant="soft"
-                    >
-                      限购一次
-                    </UBadge>
-                    <UBadge
-                      v-if="newbiePkg.discountLabel"
-                      size="sm"
-                      color="error"
-                      variant="soft"
-                    >
-                      {{ newbiePkg.discountLabel }}
-                    </UBadge>
-                  </p>
-                  <p class="mt-1 text-xs text-neutral-500">
-                    {{ newbiePkg.description }}
-                    <br>
-                    {{ newbiePkg.description2 }}
-                  </p>
-                </div>
-                <div class="text-right">
-                  <p class="flex items-baseline justify-end gap-1.5">
-                    <span class="text-2xl font-bold">¥{{ newbiePkg.priceYuan }}</span>
-                    <span
-                      v-if="newbiePkg.originalPriceYuan"
-                      class="text-xs text-neutral-400 line-through"
-                    >¥{{ newbiePkg.originalPriceYuan }}</span>
-                  </p>
-                  <p class="text-xs text-neutral-500">
-                    到账 {{ newbiePkg.tokens.toLocaleString() }} tokens
-                  </p>
-                </div>
-              </div>
+              <p class="flex items-center gap-1.5 font-semibold">
+                {{ newbiePkg.label }}
+                <UBadge
+                  size="sm"
+                  color="warning"
+                  variant="soft"
+                >
+                  限购一次
+                </UBadge>
+              </p>
+              <p class="text-xs text-neutral-500">
+                {{ newbiePkg.description }}
+                <br>
+                {{ newbiePkg.description2 }}
+              </p>
+              <p class="mt-2 flex items-baseline gap-1.5">
+                <span class="text-lg font-bold">¥{{ newbiePkg.priceYuan }}</span>
+                <span
+                  v-if="newbiePkg.originalPriceYuan"
+                  class="text-xs text-neutral-400 line-through"
+                >¥{{ newbiePkg.originalPriceYuan }}</span>
+                <UBadge
+                  v-if="newbiePkg.discountLabel"
+                  size="sm"
+                  color="error"
+                  variant="soft"
+                >
+                  {{ newbiePkg.discountLabel }}
+                </UBadge>
+              </p>
+              <p class="text-xs text-neutral-500">
+                到账 {{ newbiePkg.tokens.toLocaleString() }} tokens
+              </p>
             </UCard>
 
             <!-- 常规加油包:三列 -->

@@ -20,7 +20,7 @@ async function onPasswordLogin() {
   try {
     const { error } = await authClient.signIn.email({ email: pwForm.email, password: pwForm.password })
     if (error) {
-      errorMsg.value = friendlyAuthError(error.message)
+      errorMsg.value = friendlyAuthError(error.code || error.message)
       return
     }
     onLoginSuccess()
@@ -35,7 +35,7 @@ const otpSent = ref(false)
 const otpCountdown = ref(0)
 let otpTimer: ReturnType<typeof setInterval> | null = null
 
-function startCountdown(sec = 60) {
+function startCountdown(sec = 180) {
   otpCountdown.value = sec
   if (otpTimer) clearInterval(otpTimer)
   otpTimer = setInterval(() => {
@@ -54,7 +54,9 @@ async function sendOtp() {
   try {
     const { error } = await authClient.emailOtp.sendVerificationOtp({ email: otpForm.email, type: 'sign-in' })
     if (error) {
-      errorMsg.value = friendlyAuthError(error.message)
+      // 被服务端限流(429)时启动本地倒计时,按钮显示剩余冷却时间
+      if (error.status === 429) startCountdown()
+      errorMsg.value = otpSendError(error, otpCountdown.value || 180)
       return
     }
     otpSent.value = true
@@ -70,7 +72,7 @@ async function onOtpLogin() {
   try {
     const { error } = await authClient.signIn.emailOtp({ email: otpForm.email, otp: otpForm.otp })
     if (error) {
-      errorMsg.value = friendlyAuthError(error.message)
+      errorMsg.value = friendlyAuthError(error.code || error.message)
       return
     }
     onLoginSuccess()
@@ -90,7 +92,7 @@ const regCountdown = ref(0)
 let regTimer: ReturnType<typeof setInterval> | null = null
 
 function regCountdownTick() {
-  regCountdown.value = 60
+  regCountdown.value = 180
   if (regTimer) clearInterval(regTimer)
   regTimer = setInterval(() => {
     regCountdown.value--
@@ -122,12 +124,13 @@ async function onSendRegOtp() {
       password: regForm.password
     })
     if (error) {
-      regError.value = friendlyAuthError(error.message)
+      regError.value = friendlyAuthError(error.code || error.message)
       return
     }
     const otpRes = await authClient.emailOtp.sendVerificationOtp({ email: regForm.email, type: 'email-verification' })
     if (otpRes.error) {
-      regError.value = friendlyAuthError(otpRes.error.message)
+      if (otpRes.error.status === 429) regCountdownTick()
+      regError.value = otpSendError(otpRes.error, regCountdown.value || 180)
       return
     }
     regStep.value = 'code'
@@ -142,7 +145,8 @@ async function onResendRegOtp() {
   try {
     const { error } = await authClient.emailOtp.sendVerificationOtp({ email: regForm.email, type: 'email-verification' })
     if (error) {
-      regError.value = friendlyAuthError(error.message)
+      if (error.status === 429) regCountdownTick()
+      regError.value = otpSendError(error, regCountdown.value || 180)
       return
     }
     regCountdownTick()
@@ -161,12 +165,12 @@ async function onFinishRegister() {
   try {
     const { error: verifyErr } = await authClient.emailOtp.verifyEmail({ email: regForm.email, otp: regForm.otp })
     if (verifyErr) {
-      regError.value = friendlyAuthError(verifyErr.message)
+      regError.value = friendlyAuthError(verifyErr.code || verifyErr.message)
       return
     }
     const { error: signInErr } = await authClient.signIn.email({ email: regForm.email, password: regForm.password })
     if (signInErr) {
-      regError.value = friendlyAuthError(signInErr.message)
+      regError.value = friendlyAuthError(signInErr.code || signInErr.message)
       return
     }
     onLoginSuccess()
@@ -208,11 +212,18 @@ function friendlyAuthError(code: string | undefined): string {
     USER_ALREADY_EXISTS: '该邮箱已注册,请直接登录',
     INVALID_EMAIL_OR_PASSWORD: '邮箱或密码错误',
     USER_NOT_FOUND: '该邮箱未注册,请先注册',
-    INVALID_OTP: '验证码错误或已过期',
+    INVALID_OTP: '验证码错误,请检查后重试',
+    OTP_EXPIRED: '验证码已过期,请重新获取',
     TOO_MANY_ATTEMPTS: '尝试次数过多,请稍后再试',
     EMAIL_NOT_VERIFIED: '邮箱未验证,请先通过注册流程完成验证'
   }
   return map[code ?? ''] || (code ? `操作失败:${code}` : '操作失败,请稍后再试')
+}
+
+/** 发送验证码类错误:429 为服务端限流(60 秒内最多 3 次),给出倒计时提示;其余按错误码映射 */
+function otpSendError(error: { status?: number, code?: string, message?: string } | null | undefined, cdSec: number): string {
+  if (error?.status === 429) return `发送太频繁,请等待 ${cdSec} 秒后再试`
+  return friendlyAuthError(error?.code || error?.message)
 }
 
 function onOpenChange(v: boolean) {
@@ -331,6 +342,9 @@ const tabs = ref<TabsItem[]>([
                   {{ otpCountdown > 0 ? `${otpCountdown}s` : (otpSent ? '重新发送' : '获取验证码') }}
                 </UButton>
               </div>
+              <p class="text-xs text-neutral-500">
+                收邮件有 3 分钟左右延迟,请耐心等待
+              </p>
               <UButton
                 block
                 color="primary"
@@ -463,7 +477,9 @@ const tabs = ref<TabsItem[]>([
           class="space-y-3"
         >
           <p class="text-sm text-neutral-500 dark:text-neutral-400">
-            验证码已发送至 <b class="font-semibold text-highlighted">{{ regForm.email }}</b>,5 分钟内有效。
+            验证码已发送至 <b class="font-semibold text-highlighted">{{ regForm.email }}</b>,10 分钟内有效。
+            <br>
+            收邮件有 3 分钟左右延迟,请耐心等待
           </p>
           <div class="flex gap-2">
             <UInput

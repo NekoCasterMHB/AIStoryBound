@@ -115,11 +115,13 @@ export interface MyPurchasedSkill {
 }
 
 /**
- * 解析 zip 内容,返回文件清单(不读取正文)与 SKILL.md 文本。
+ * 解析 zip 内容,返回文件清单(不读取正文)与 SKILL.md / README 文本。
  * 校验规则:必须是 fflate 可解压的 zip,且根目录含 SKILL.md(市面通用 agent skill 格式)。
+ * README(根目录 README.md / README,大小写不敏感)用于商城说明区域展示,缺省不抛错,
+ * 由发布接口按上架要求单独校验(老版本 zip 可能没有,安装流程仍需放行)。
  * 抛 Error 表示格式不合法,message 面向用户提示。
  */
-export function parseSkillZip(data: Uint8Array): { entries: SkillFileEntry[], hasSkillMd: boolean, skillMd: string | null } {
+export function parseSkillZip(data: Uint8Array): { entries: SkillFileEntry[], hasSkillMd: boolean, skillMd: string | null, readmeFile: string | null } {
   let files: Record<string, Uint8Array>
   try {
     files = unzipSync(data)
@@ -144,14 +146,32 @@ export function parseSkillZip(data: Uint8Array): { entries: SkillFileEntry[], ha
   if (!hasSkillMd) {
     throw new Error('压缩包内未找到 SKILL.md,请按标准 agent skill 格式打包(根目录含 SKILL.md)')
   }
-  return { entries, hasSkillMd, skillMd }
+  // 商城说明来源:根目录 README(README.md / 无扩展名 README,优先 .md)
+  const readmeName = names.find(n => /^README\.md$/i.test(n)) ?? names.find(n => /^README$/i.test(n))
+  const readmeFile = readmeName
+    ? new TextDecoder().decode(files[readmeName] ?? new Uint8Array(0)).slice(0, 500_000)
+    : null
+  return { entries, hasSkillMd, skillMd, readmeFile }
+}
+
+/** 轻度脱标记(标题/引用/列表符号),用于商城说明区纯文本展示 */
+function plainText(md: string): string {
+  return md
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^>\s?/gm, '')
+    .replace(/^[-*+]\s+/gm, '')
+    .split('\n').map(l => l.trimEnd()).join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, 2000)
 }
 
 /**
  * 从 SKILL.md 文本提取商城卡片展示元数据:
- * frontmatter 可选 icon(emoji 字符串)与 tags(数组或逗号分隔),正文做轻度脱标记后截断 2000 字。
+ * frontmatter 可选 icon(emoji 字符串)与 tags(数组或逗号分隔);
+ * readme = 压缩包内 README 文件内容(上架必带,商城说明区域展示);未提供时回退 SKILL.md 正文。
  */
-export function extractSkillMeta(md: string): { icon: string | null, tags: string[], readme: string } {
+export function extractSkillMeta(md: string, readmeFile?: string | null): { icon: string | null, tags: string[], readme: string } {
   const body = md.replace(/^\uFEFF/, '')
   const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(body)
   let icon: unknown = null
@@ -172,16 +192,11 @@ export function extractSkillMeta(md: string): { icon: string | null, tags: strin
     .map(t => t.trim().slice(0, MAX_SKILL_TAG_CHARS))
     .filter(Boolean)
     .slice(0, MAX_SKILL_TAGS)
-  // 正文 = frontmatter 之后;去掉常见行首标记后截断存储
-  const rawReadme = m ? body.slice(m[0].length) : body
-  const readme = rawReadme
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^>\s?/gm, '')
-    .replace(/^[-*+]\s+/gm, '')
-    .split('\n').map(l => l.trimEnd()).join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-    .slice(0, 2000)
+  // 说明 = README 文件内容(未传时回退 SKILL.md 正文,兼容旧调用)
+  const raw = readmeFile !== undefined && readmeFile !== null
+    ? readmeFile
+    : (m ? body.slice(m[0].length) : body)
+  const readme = plainText(raw)
   return { icon: iconStr || null, tags: tagList, readme }
 }
 

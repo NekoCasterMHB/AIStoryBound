@@ -86,7 +86,7 @@ export default defineEventHandler(async (event) => {
     mainVersion: r.mainVersion,
     tags: parseStoredTags(r.tags),
     versions: versionsBySkill.get(r.id) ?? [],
-    // readme 为 SKILL.md 正文摘要(≤2000 字),前端取第一段展示在卡片上
+    // readme 为压缩包内 README 内容摘要(≤2000 字),前端取第一段展示在卡片上
     readme: r.readme ?? ''
   }))
 })

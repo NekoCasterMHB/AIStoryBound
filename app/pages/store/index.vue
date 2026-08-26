@@ -677,7 +677,7 @@ async function onPreviewFile(i: number) {
                 </div>
               </div>
             </div>
-            <!-- 第二行:说明文 = SKILL.md 正文第一段,最多 3 行省略 -->
+            <!-- 第二行:说明文 = README 内容第一段,最多 3 行省略 -->
             <p class="mt-3 line-clamp-3 min-h-17 text-sm leading-relaxed text-neutral-500">
               {{ firstParagraph(s.readme) || s.desc || '暂无说明' }}
             </p>
@@ -1294,7 +1294,7 @@ async function onPreviewFile(i: number) {
           class="max-h-[65vh] overflow-y-auto pr-1"
         >
           <p class="mb-2 text-xs font-medium text-neutral-400">
-            README 预览(SKILL.md 正文摘要)
+            README 预览(压缩包内 README 文件内容)
           </p>
           <p class="whitespace-pre-wrap text-sm leading-relaxed text-neutral-700 dark:text-neutral-300">
             {{ previewData.readme || '发布者尚未提供可预览内容' }}

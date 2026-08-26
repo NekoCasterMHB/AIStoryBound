@@ -159,7 +159,7 @@ export const skillProducts = sqliteTable('skill_products', {
   icon: text('icon'),
   /** SKILL.md frontmatter 标签(JSON 字符串数组,商城卡片展示) */
   tags: text('tags'),
-  /** SKILL.md 正文摘要(商城卡片说明区展示,收录时截断 2000 字) */
+  /** 压缩包内 README 内容摘要(商城卡片说明区展示,收录时截断 2000 字) */
   readme: text('readme'),
   /** pending=待审核 | approved=已上架 | rejected=已拒绝 | removed=已下架 */
   status: text('status').notNull().default('pending'),
@@ -202,7 +202,7 @@ export const skillProductVersions = sqliteTable('skill_product_versions', {
   icon: text('icon'),
   /** SKILL.md frontmatter 标签(JSON 字符串数组,商城卡片展示) */
   tags: text('tags'),
-  /** SKILL.md 正文摘要(商城卡片说明区展示,收录时截断 2000 字) */
+  /** 压缩包内 README 内容摘要(商城卡片说明区展示,收录时截断 2000 字) */
   readme: text('readme'),
   /** pending=待审核 | approved=已上架 | rejected=已拒绝(版本级状态) */
   status: text('status').notNull().default('pending'),

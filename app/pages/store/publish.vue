@@ -81,13 +81,17 @@ watch(fileData, (file) => {
     fileError.value = `压缩包超过 ${MAX_SKILL_ZIP_BYTES / 1024 / 1024}MB 上限`
     return
   }
-  // 客户端预校验:可解压 + 含 SKILL.md + 正文非空(与服务端校验一致,尽早提示)
+  // 客户端预校验:可解压 + 含 SKILL.md + 含 README(商城说明展示,与服务端校验一致,尽早提示)
   void file.arrayBuffer().then((buf) => {
     try {
       const parsed = parseSkillZip(new Uint8Array(buf))
       fileEntries.value = parsed.entries
+      if (!parsed.readmeFile?.trim()) {
+        fileError.value = '压缩包缺少 README 文件(如 README.md):商城说明区域将展示 README 内容'
+        return
+      }
       if (!parsed.skillMd?.trim() || !parsed.skillMd.replace(/^---[\s\S]*?---/, '').trim()) {
-        fileError.value = 'SKILL.md 缺少正文(readme):请在 frontmatter 之后写明玩法步骤与规则'
+        fileError.value = 'SKILL.md 缺少正文:请在 frontmatter 之后写明玩法步骤与规则'
       }
     } catch (err) {
       fileError.value = (err as Error).message
@@ -154,7 +158,7 @@ async function submit() {
           将提交为 v{{ nextVersion }}:审核通过后替换商店版本;审核期间商店继续展示现有版本,已购者仍可下载旧版本
         </template>
         <template v-else>
-          格式要求与市面通用 agent skill 一致:压缩包内须包含 SKILL.md(含名称/说明 frontmatter 与正文说明),可附带参考文件
+          格式要求与市面通用 agent skill 一致:压缩包内须包含 SKILL.md(含名称/说明 frontmatter 与正文说明)与 README(商城说明区域展示),可附带参考文件
         </template>
       </p>
     </div>
@@ -186,7 +190,7 @@ async function submit() {
             placeholder="输入标签后回车添加,最多 6 个;如:玩法编排、人物卡"
           />
           <p class="mt-1 text-xs text-neutral-500">
-            标签展示在商城卡片的标题下方;正文说明自动取 SKILL.md 正文第一段,无需单独填写
+            标签展示在商城卡片的标题下方;商城说明自动取压缩包内 README 文件内容第一段,无需单独填写
           </p>
         </UFormField>
 
@@ -249,7 +253,7 @@ async function submit() {
             position="inside"
             layout="list"
             label="点击选择或拖拽 .zip 压缩包到此处"
-            :description="`压缩包须包含 SKILL.md(正文说明格式不限,中文亦可),大小不超过 ${MAX_SKILL_ZIP_BYTES / 1024 / 1024}MB`"
+            :description="`压缩包须包含 SKILL.md 与 README 文件(README 内容将展示在商城说明区域),大小不超过 ${MAX_SKILL_ZIP_BYTES / 1024 / 1024}MB`"
             class="w-full"
             :ui="{ base: 'min-h-48' }"
           />
@@ -257,7 +261,7 @@ async function submit() {
             {{ fileError }}
           </p>
           <p v-else-if="fileEntries.length" class="mt-1 text-xs text-neutral-500">
-            已识别 {{ fileEntries.length }} 个文件,含 SKILL.md ✓
+            已识别 {{ fileEntries.length }} 个文件,含 SKILL.md 与 README ✓
           </p>
         </UFormField>
 
@@ -407,7 +411,7 @@ async function submit() {
             <ul class="list-disc space-y-1 pl-5">
               <li>技能名:只用小写字母、数字、连字符(hyphen-case),≤64 字符,优先动词开头的短词(如 fix-bug)。</li>
               <li>
-                不要放 README、CHANGELOG 等「给人看的辅助文档」——AI 不需要安装指南和更新日志,每个多余文件都是噪音。
+                <b>README.md 必带(本平台上架要求)</b>:它是商城说明区域的展示来源,内容会脱标记后展示在商品卡片与预览弹窗,用几行写清玩法与适用场景即可;CHANGELOG、LICENSE 等「给人看的辅助文档」仍不需要,每个多余文件都是噪音。
               </li>
             </ul>
           </section>
@@ -449,8 +453,9 @@ description: 教学 AI 如何正确进行成人玩法互动。Use when 用户请
             </h3>
             <ul class="list-disc space-y-1 pl-5">
               <li>zip 根目录含 SKILL.md(frontmatter 写名称/说明,正文写操作说明),正文格式不限,中文亦可。</li>
+              <li>zip 根目录必须包含 README 文件(如 README.md):商城说明区域展示其内容,用于向买家介绍玩法与适用场景。</li>
               <li>可附带 scripts/、references/ 等参考文件。</li>
-              <li>压缩包不超过 {{ MAX_SKILL_ZIP_BYTES / 1024 / 1024 }}MB;上传后会自动预检 zip 结构与 SKILL.md。</li>
+              <li>压缩包不超过 {{ MAX_SKILL_ZIP_BYTES / 1024 / 1024 }}MB;上传后会自动预检 zip 结构与 SKILL.md / README。</li>
             </ul>
           </section>
         </div>

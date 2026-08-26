@@ -3,7 +3,7 @@
 // 首次发布:创建商品主表(status=pending)+ 版本 v1,均为待审核。
 // 更新:在原商品下追加新版本(版本号自动递增,独立 R2 文件,旧文件保留),新版本待审核;
 //      审核通过前商店继续售卖旧版本(主表保持原在售快照,通过后由审核接口同步)。
-// 校验:zip 真实可解压且含 SKILL.md(市面通用 agent skill 格式,见 shared/store-skill.ts)。
+// 校验:zip 真实可解压且含 SKILL.md(市面通用 agent skill 格式),另须含 README 文件(商城说明区域展示,见 shared/store-skill.ts)。
 import { readMultipartFormData } from 'h3'
 import { useD1 } from '../../utils/d1'
 import { getSkillBucket } from '../../utils/r2'
@@ -58,20 +58,26 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: `压缩包超过 ${MAX_SKILL_ZIP_BYTES / 1024 / 1024}MB 上限` })
   }
 
-  // zip 校验:可解压 + 含 SKILL.md,产出文件清单供管理端预览、SKILL.md 文本用于展示元数据
+  // zip 校验:可解压 + 含 SKILL.md,产出文件清单供管理端预览、SKILL.md 文本用于 frontmatter 元数据、README 用于商城说明
   let entries
   let skillMd
+  let readmeFile
   try {
     const parsed = parseSkillZip(fileData)
     entries = parsed.entries
     skillMd = parsed.skillMd
+    readmeFile = parsed.readmeFile
   } catch (e) {
     throw createError({ statusCode: 400, statusMessage: (e as Error).message })
   }
-  // 展示元数据:frontmatter 的 icon/tags + 正文摘要;SKILL.md 正文为必填(未付费预览依赖 readme)
-  const { icon, tags: fmTags, readme } = extractSkillMeta(skillMd ?? '')
+  // 上架要求:压缩包必须含 README 文件(根目录 README.md 或 README),商城说明区域展示其内容
+  if (!readmeFile?.trim()) {
+    throw createError({ statusCode: 400, statusMessage: '压缩包缺少 README 文件(如 README.md):商城说明区域将展示 README 内容' })
+  }
+  // 展示元数据:frontmatter 的 icon/tags + README 内容摘要(脱标记截断 ≤2000 字)
+  const { icon, tags: fmTags, readme } = extractSkillMeta(skillMd ?? '', readmeFile)
   if (!readme) {
-    throw createError({ statusCode: 400, statusMessage: '压缩包内的 SKILL.md 缺少正文(readme):请在 frontmatter 之后写明玩法步骤与规则,未付费用户将以此内容预览商品' })
+    throw createError({ statusCode: 400, statusMessage: '压缩包内的 README 内容为空:请在 README 中写明玩法说明,商城说明区域将展示其内容' })
   }
   // 标签 = 表单输入 + SKILL.md frontmatter 合并去重(最多 6 个);说明文 = 旧接口 desc 或标签串
   const tags = [...formTags]

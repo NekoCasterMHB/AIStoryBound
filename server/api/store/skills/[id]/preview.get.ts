@@ -1,7 +1,7 @@
 // server/api/store/skills/[id]/preview.get.ts
 // Skill 在线预览(公开,游客可访问):读取最新已上架版本的压缩包,返回文件清单与 markdown 文本内容。
 // 权限:免费商品 / 已购买 / 发布者 / 管理员可看全部 markdown;未付费游客仅可看 README 摘要
-// (主表 readme 字段,SKILL.md 正文脱标记截断,不返回 SKILL.md 文件本身)。
+// (主表 readme 字段,README 文件内容脱标记截断,不返回文件本身)。
 // 限制:最多 30 个 md、单个 ≤200KB、合计 ≤1MB,超限跳过,防止大包拖垮接口。
 import { unzipSync } from 'fflate'
 import { useD1 } from '../../../../utils/d1'
@@ -79,7 +79,7 @@ export default defineEventHandler(async (event) => {
     totalBytes += bytes.length
   }
 
-  // 未付费仅开放 README 摘要(SKILL.md 正文脱标记截断,不暴露 frontmatter 与其余文件);
+  // 未付费仅开放 README 摘要(README 文件内容脱标记截断,不暴露 frontmatter 与其余文件);
   // 免费 / 已购买 / 发布者 / 管理员返回全部 markdown 文件
   const visible = canViewAll ? mds : []
 
