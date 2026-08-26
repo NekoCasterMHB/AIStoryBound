@@ -398,6 +398,10 @@ export const aiUsage = sqliteTable('ai_usage', {
   userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
   /** 本次消耗 token 数 */
   tokens: integer('tokens').notNull(),
+  /** 输入 token(金额估算用) */
+  promptTokens: integer('prompt_tokens').notNull().default(0),
+  /** 输出 token(金额估算用) */
+  completionTokens: integer('completion_tokens').notNull().default(0),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
 }, t => [
   index('idx_ai_usage_time').on(t.createdAt),

@@ -121,11 +121,13 @@ export default defineEventHandler(async (event) => {
           .where(eq(usersTable.id, sessUser.id))
           .run()
           .catch(() => {})
-        // 用量落库:管理仪表盘近 24h 消耗统计(历史数据自部署后累计)
+        // 用量落库:管理仪表盘近 24h 消耗统计与金额估算(历史数据自部署后累计)
         void db.insert(aiUsage).values({
           id: uuid(),
           userId: sessUser.id,
           tokens: cost,
+          promptTokens: u?.promptTokens ?? 0,
+          completionTokens: u?.completionTokens ?? 0,
           createdAt: new Date()
         }).run().catch(() => {})
       }

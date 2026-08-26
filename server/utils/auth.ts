@@ -53,6 +53,12 @@ function createAuth(db: D1Database, cfg: AuthEnvConfig, emailCtx: ReturnType<typ
       // 邮箱未验证前不允许登录(验证走验证码,见 emailOTP.overrideDefaultEmailVerification)
       requireEmailVerification: true
     },
+    // 关闭 signUp 隐式发码:requireEmailVerification 会让注册自动触发 sendVerificationEmail,
+    // 而 emailOTP 插件已将该回调替换为发送验证码(overrideDefaultEmailVerification),
+    // 若不关闭,前端 onSendRegOtp 再显式调 sendVerificationOtp 会一次注册发两封邮件且第二封覆盖第一封。
+    emailVerification: {
+      sendOnSignUp: false
+    },
     plugins: [
       emailOTP({
         // 验证码 10 分钟有效(邮件送达可能有数分钟延迟,见前端提示)

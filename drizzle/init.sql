@@ -335,6 +335,8 @@ CREATE TABLE IF NOT EXISTS `ai_usage` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`tokens` integer NOT NULL,
+	`prompt_tokens` integer NOT NULL DEFAULT 0,
+	`completion_tokens` integer NOT NULL DEFAULT 0,
 	`created_at` integer NOT NULL,
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
