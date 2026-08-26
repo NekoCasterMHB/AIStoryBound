@@ -4,11 +4,12 @@
 // 进度由本地状态驱动;中间产物仅内存(单章失败=跳过+告警,>1/3 失败中止)。
 import { detectEncoding, extractFrontMatter, segmentChapters, uuid } from '#shared/novel'
 import type {
-  ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, EntitySource, LocalWork, WorldEntities
+  ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, LocalWork, WorldEntities
 } from '#shared/novel'
 import {
   buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
   buildSynthesizeMessages, mergeExtractions, splitUnits, verifyQuotes,
+  emptyExtraction, finalizeCards, normalizeExtraction, quoteByChapter,
   ADULT_GENRE, ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS
 } from '#shared/world-build'
 import { aiChatJson, CancelledError } from './aiRelay'
@@ -90,20 +91,6 @@ export function parseChaptersFromText(text: string): ChapterSegment[] {
     throw new Error('文本为空或无法解析为章节')
   }
   return chapters
-}
-
-/** 校验提取输出的结构,返回数组字段齐全的规范化结果 */
-function normalizeExtraction(raw: unknown): ChapterExtraction {
-  const r = (raw ?? {}) as Partial<ChapterExtraction>
-  return {
-    characters: Array.isArray(r.characters) ? r.characters : [],
-    locations: Array.isArray(r.locations) ? r.locations : [],
-    factions: Array.isArray(r.factions) ? r.factions : [],
-    timeline_events: Array.isArray(r.timeline_events) ? r.timeline_events : [],
-    world_rules: Array.isArray(r.world_rules) ? r.world_rules : [],
-    items: Array.isArray(r.items) ? r.items : [],
-    foreshadowing: Array.isArray(r.foreshadowing) ? r.foreshadowing : []
-  }
 }
 
 /** 并发池:fn 抛错则该项失败(由调用方决定跳过或中止);onDone 每项完成后回调(实时进度用)。
@@ -447,39 +434,8 @@ export async function generateWorld(
     liveCalls.delete('synth')
     const overlayRaw = synthData
 
-    // 后处理:只保留实体库中的角色;first_appearance 缺失时按出现章节兜底
-    const nameToEntity = new Map(entities.characters.map(c => [normKey(c.name), c]))
-    const characters = (Array.isArray(overlayRaw.characters) ? overlayRaw.characters : [])
-      .filter(c => c?.name && topNames.has(c.name))
-      .map((c) => {
-        const ent = nameToEntity.get(normKey(c.name))
-        let patched = c
-        if (!patched.first_appearance && ent && ent.sources.length > 0) {
-          const ch = Math.min(...ent.sources.map(s => s.chapter))
-          patched = { ...patched, first_appearance: `第${ch}章` }
-        }
-        // 成书模型漏填 desire 时,用提取实体里按原文推断的值兜底(比模型自估更贴原文)
-        if (patched.desire == null && ent && ent.desire != null) {
-          patched = { ...patched, desire: ent.desire }
-        }
-        // 成书漏填题材喜好时,从提取实体回填原文依据的玩法喜好
-        if (!(patched.kinks ?? []).length && ent && (ent.kinks ?? []).length) {
-          patched = {
-            ...patched,
-            kinks: (ent.kinks ?? []).slice(0, 8).map(k => ({
-              theme: k.theme,
-              view: k.view ?? null,
-              role: k.role ?? null,
-              detail: k.quote ?? null
-            }))
-          }
-        }
-        // 成书漏填性爱属性时,用提取实体里按原文推断的值兜底
-        if (!patched.sex && ent && ent.sex && Object.keys(ent.sex).length) {
-          patched = { ...patched, sex: { ...ent.sex } }
-        }
-        return patched
-      })
+    // 后处理:只保留实体库中的角色;first_appearance 缺失时按出现章节兜底(shared 实现,与预生成脚本共用)
+    const characters = finalizeCards(overlayRaw, entities, topNames)
 
     overlay = {
       title: overlayRaw.title || title,
@@ -508,29 +464,6 @@ export async function generateWorld(
   }
   await saveWork(work)
   return { work, usage: { tokensUsed } }
-}
-
-function emptyExtraction(): ChapterExtraction {
-  return { characters: [], locations: [], factions: [], timeline_events: [], world_rules: [], items: [], foreshadowing: [] }
-}
-
-function normKey(s: string): string {
-  return (s ?? '').replace(/\s+/g, '').trim()
-}
-
-/** 按章节号从实体库回填引用文本(AI 检查只回章节号,引用以实体 sources 为准) */
-function quoteByChapter(entities: WorldEntities, chapter?: number): EntitySource | null {
-  if (!chapter) return null
-  for (const list of [
-    entities.characters, entities.locations, entities.factions, entities.timeline_events,
-    entities.world_rules, entities.items, entities.foreshadowing
-  ]) {
-    for (const e of list) {
-      const s = e.sources.find(s => s.chapter === chapter)
-      if (s) return s
-    }
-  }
-  return { chapter }
 }
 
 // ---- 本地作品库(IndexedDB works) ----

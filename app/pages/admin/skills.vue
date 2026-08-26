@@ -384,7 +384,7 @@ async function renderPreview(i: number) {
     <UModal v-model:open="rejectOpen" :title="`拒绝「${rejectRow?.name ?? ''}」`">
       <template #body>
         <UFormField label="拒绝原因(将展示给发布者)" required>
-          <UTextarea v-model="rejectReason" :rows="3" placeholder="如:压缩包缺 SKILL.md / 内容与描述不符" />
+          <UTextarea v-model="rejectReason" :rows="3" autoresize :maxrows="8" class="w-full" placeholder="如:压缩包缺 SKILL.md / 内容与描述不符" />
         </UFormField>
         <div class="mt-4 flex justify-end gap-2">
           <UButton color="neutral" variant="outline" @click="rejectOpen = false">

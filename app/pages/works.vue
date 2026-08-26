@@ -1,11 +1,14 @@
 <script setup lang="ts">
 // /works — 我的书架(登录后):推荐书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
-import type { TabsItem } from '@nuxt/ui'
+import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, parseChaptersFromText } from '../utils/worldGen'
 import { listLocalGames, saveLocalGame } from '../utils/gameStore'
 import { downloadGameAsTxt } from '../utils/exportStory'
 import { downloadGameAsZip, importWorkFromZip } from '../utils/shareZip'
 import { listReadingProgress } from '../utils/readingStore'
+import { fetchPrebuiltWorld, installPrebuiltWork } from '../utils/prebuiltWorld'
+import type { PrebuiltWorld } from '../utils/prebuiltWorld'
+import { setAdultModeEnabled } from '../utils/adultMode'
 import { type LocalWork, type LocalGame, type GameState, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
 
 useHead({ title: 'AI Word2World · 我的书架' })
@@ -60,6 +63,29 @@ async function loadOfficialWorks() {
     officialWorks.value = await $fetch('/api/presets').catch(() => [])
   } finally {
     officialLoading.value = false
+  }
+}
+
+// ---- 推荐书架「直接开始」:用官方预生成世界 0 token 进入选角 ----
+const directStartingId = ref<string | null>(null)
+
+async function startPrebuilt(p: PresetNovelRow) {
+  if (directStartingId.value) return
+  directStartingId.value = p.id
+  try {
+    const world: PrebuiltWorld | null = await fetchPrebuiltWorld(p.id)
+    if (!world) {
+      toast.add({ title: '本书暂无官方预生成世界', color: 'warning' })
+      return
+    }
+    const workId = await installPrebuiltWork(p, world)
+    // 预置小说进入世界默认开启成人模式(选角页可关)
+    setAdultModeEnabled(true)
+    await navigateTo(`/play/${workId}`)
+  } catch (e) {
+    toast.add({ title: '进入失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    directStartingId.value = null
   }
 }
 
@@ -183,6 +209,20 @@ async function restoreCloudGame(id: string) {
 async function onDeleteWork(work: LocalWork) {
   await deleteWork(work.id)
   await refreshLocal()
+}
+
+/** 每部本地作品的「更多操作」菜单:编辑作品 / 编辑角色卡 / 同步云端 / 删除 */
+function workMenuItems(w: LocalWork): DropdownMenuItem[][] {
+  return [
+    [
+      { label: '编辑作品', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
+      { label: '编辑角色卡', icon: 'i-lucide-users', onSelect: () => openCharEditor(w.id) },
+      { label: '同步云端', icon: 'i-lucide-cloud-upload', onSelect: () => syncWorkToCloud(w) }
+    ],
+    [
+      { label: '删除', icon: 'i-lucide-trash-2', color: 'error', onSelect: () => onDeleteWork(w) }
+    ]
+  ]
 }
 
 // ---- 编辑角色卡(操作本地作品 overlay.characters) ----
@@ -452,9 +492,19 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
               </div>
               <div class="mt-3 flex flex-wrap gap-2">
                 <UButton
+                  v-if="p.hasWorld"
+                  label="进入世界"
+                  icon="i-lucide-zap"
+                  color="primary"
+                  size="sm"
+                  :loading="directStartingId === p.id"
+                  @click="startPrebuilt(p)"
+                />
+                <UButton
                   :label="readBtnLabel(progressFor('preset', p.id))"
                   icon="i-lucide-book-open"
                   color="primary"
+                  variant="soft"
                   size="sm"
                   :to="`/read/preset/${p.id}`"
                 />
@@ -537,16 +587,13 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     {{ b.label }}
                   </UBadge>
                 </div>
-                <p class="mt-1 text-xs text-neutral-500">
-                  作者: {{ w.author || '佚名' }}
-                </p>
-                <p class="mt-1 text-xs text-neutral-500">
-                  章节数: {{ w.chapters.length }} 章
+                <p class="mt-1 truncate text-xs text-neutral-500">
+                  作者: {{ w.author || '佚名' }} · {{ w.chapters.length }} 章
                 </p>
                 <p class="mt-1 text-xs text-neutral-500">
                   最后操作: {{ fmtTime(w.updatedAt ?? w.createdAt) }}
                 </p>
-                <div class="mt-1 flex items-end justify-between gap-2">
+                <div class="mt-1">
                   <UBadge
                     v-if="w.tokensUsed"
                     color="neutral"
@@ -556,9 +603,8 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                   >
                     已消耗 {{ w.tokensUsed.toLocaleString() }} tokens
                   </UBadge>
-                  <span v-else />
                 </div>
-                <div class="mt-3 flex flex-wrap gap-1.5">
+                <div class="mt-3 flex flex-wrap items-center gap-1.5">
                   <UButton
                     :label="readBtnLabel(progressFor('work', w.id))"
                     icon="i-lucide-book-open"
@@ -568,22 +614,6 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     :to="`/read/work/${w.id}`"
                   />
                   <UButton
-                    label="编辑"
-                    icon="i-lucide-pencil"
-                    color="neutral"
-                    variant="soft"
-                    size="sm"
-                    :to="`/edit/${w.id}`"
-                  />
-                  <UButton
-                    label="角色卡"
-                    icon="i-lucide-users"
-                    color="neutral"
-                    variant="soft"
-                    size="sm"
-                    @click="openCharEditor(w.id)"
-                  />
-                  <UButton
                     v-if="w.overlay?.characters?.length"
                     label="选择角色"
                     icon="i-lucide-play"
@@ -591,22 +621,18 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     size="sm"
                     :to="`/play/${w.id}`"
                   />
-                  <UButton
-                    label="同步云端"
-                    icon="i-lucide-cloud-upload"
-                    color="neutral"
-                    variant="outline"
-                    size="sm"
-                    @click="syncWorkToCloud(w)"
-                  />
-                  <UButton
-                    label="删除"
-                    icon="i-lucide-trash-2"
-                    color="error"
-                    variant="subtle"
-                    size="sm"
-                    @click="onDeleteWork(w)"
-                  />
+                  <UDropdownMenu
+                    :items="workMenuItems(w)"
+                    :content="{ align: 'end' }"
+                  >
+                    <UButton
+                      icon="i-lucide-settings"
+                      color="neutral"
+                      variant="soft"
+                      size="sm"
+                      aria-label="更多操作"
+                    />
+                  </UDropdownMenu>
                 </div>
               </UCard>
             </div>

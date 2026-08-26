@@ -42,9 +42,9 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     description: '新人福利 · 每人限购 1 次',
     description2: '约 10+ 次世界生成 · 170 万字对话',
     tokens: 1_000_000,
-    priceYuan: 3,
+    priceYuan: 6,
     originalPriceYuan: packPriceYuan(1),
-    discountLabel: '1.5 折',
+    discountLabel: '3 折',
     oneTimeOnly: true
   },
   {
@@ -54,9 +54,9 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     description: '约 10+ 次完整世界生成',
     description2: '文字对话约 170 万字',
     tokens: 1_000_000,
-    priceYuan: 18,
+    priceYuan: 15,
     originalPriceYuan: packPriceYuan(1),
-    discountLabel: '9 折'
+    discountLabel: '7.5 折'
   },
   {
     id: 'tokens_10m',
@@ -65,9 +65,9 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     description: '约 100+ 次完整世界生成',
     description2: '文字对话约 1700 万字',
     tokens: 10_000_000,
-    priceYuan: 150,
+    priceYuan: 120,
     originalPriceYuan: packPriceYuan(10),
-    discountLabel: '7.9 折'
+    discountLabel: '6.3 折'
   },
   {
     id: 'tokens_50m',
@@ -76,9 +76,9 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     description: '约 500+ 次完整世界生成',
     description2: '文字对话约 8500 万字',
     tokens: 50_000_000,
-    priceYuan: 599,
+    priceYuan: 500,
     originalPriceYuan: packPriceYuan(50),
-    discountLabel: '6.3 折'
+    discountLabel: '5.3 折'
   }
 ]
 

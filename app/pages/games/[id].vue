@@ -70,6 +70,8 @@ const cards = computed(() => work.value?.overlay?.characters ?? [])
 const playerCard = computed(() => cards.value.find(c => c.name === game.value?.characterName))
 
 const streaming = ref(false)
+/** 叙事流式已完成、选项(结构化)生成中:此阶段显示选项骨架屏 */
+const awaitingOptions = ref(false)
 const streamText = ref('')
 const liveTokens = ref(0)
 const liveSpeed = ref(0)
@@ -107,6 +109,7 @@ async function savePointNow() {
 async function sendTurn(choice?: string) {
   if (streaming.value || !game.value) return
   streaming.value = true
+  awaitingOptions.value = false
   error.value = null
   turnUsage.value = null
   streamText.value = ''
@@ -157,6 +160,8 @@ async function sendTurn(choice?: string) {
     const narratorMsg = { id: uuid(), idx: messages.value.length, role: 'narrator', speaker: null, content: narratorText }
     messages.value.push(narratorMsg)
     streamText.value = ''
+    // 叙事已上屏,进入选项生成阶段:显示骨架屏等待
+    awaitingOptions.value = true
 
     // 2) 选项 + 状态变化(结构化)
     const optRes = await aiChatJson<TurnStructured>(
@@ -194,6 +199,7 @@ async function sendTurn(choice?: string) {
     streamText.value = ''
   } finally {
     streaming.value = false
+    awaitingOptions.value = false
   }
 }
 
@@ -508,7 +514,7 @@ watch([messages, streamText], async () => {
           </div>
 
           <div
-            v-if="streaming"
+            v-if="streaming && !awaitingOptions"
             class="text-sm"
           >
             <p class="whitespace-pre-line leading-relaxed text-neutral-700 dark:text-neutral-200">
@@ -520,6 +526,23 @@ watch([messages, streamText], async () => {
 
       <!-- 选项 + 自由输入 -->
       <div class="space-y-2">
+        <!-- 选项生成中:骨架屏占位,形状对齐真实选项按钮 -->
+        <div
+          v-if="streaming && awaitingOptions"
+          class="space-y-2"
+        >
+          <p class="text-xs text-neutral-500">
+            正在生成选项…
+          </p>
+          <div class="grid gap-2">
+            <USkeleton
+              v-for="i in 3"
+              :key="i"
+              class="h-11 w-full rounded-lg"
+            />
+          </div>
+        </div>
+
         <div
           v-if="options.length && !streaming"
           class="grid gap-2"

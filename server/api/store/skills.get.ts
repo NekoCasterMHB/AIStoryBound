@@ -1,5 +1,5 @@
 // server/api/store/skills.get.ts
-// Skill 商城商品列表(公开):仅返回已上架(approved)商品,免费(price=0)优先、推荐在前、新品在后;
+// Skill 商城商品列表(公开):仅返回已上架(approved)且至少有一个已上架版本的商品,免费(price=0)优先、推荐在前、新品在后;
 // 登录用户附带 owned 标记(是否已购买/是否自己发布,便于前端切换"购买/下载"按钮)。
 import { useD1 } from '../../utils/d1'
 import { getSessionUser } from '../../utils/authz'
@@ -68,7 +68,10 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  return rows.map(r => ({
+  return rows
+    // 防御:商品状态 approved 但没有任何已上架版本(历史脏数据)时不在商城展示
+    .filter(r => (versionsBySkill.get(r.id)?.length ?? 0) > 0)
+    .map(r => ({
     id: r.id,
     name: r.name,
     desc: r.desc,

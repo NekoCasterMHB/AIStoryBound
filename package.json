@@ -21,6 +21,7 @@
     "db:migrate:remote": "node scripts/d1-migrate.mjs --remote",
     "seed:presets:local": "tsx scripts/seed-presets.ts --local",
     "seed:presets:remote": "tsx scripts/seed-presets.ts --remote",
+    "prebuild:presets": "tsx scripts/prebuild-presets.ts",
     "gen:pwa-icons": "node scripts/generate-pwa-icons.mjs"
   },
   "dependencies": {

@@ -606,3 +606,84 @@ export function compactEntities(entities: WorldEntities) {
     foreshadowing: entities.foreshadowing.map(f => ({ hint: tr(f.hint, 80), chapters: chaptersOf(f.sources) }))
   }
 }
+
+// ---- 提取输出规范化 / 引用回填 / 成书后处理(浏览器编排与预生成脚本共用,保证产物一致) ----
+
+/** 校验提取输出的结构,返回数组字段齐全的规范化结果 */
+export function normalizeExtraction(raw: unknown): ChapterExtraction {
+  const r = (raw ?? {}) as Partial<ChapterExtraction>
+  return {
+    characters: Array.isArray(r.characters) ? r.characters : [],
+    locations: Array.isArray(r.locations) ? r.locations : [],
+    factions: Array.isArray(r.factions) ? r.factions : [],
+    timeline_events: Array.isArray(r.timeline_events) ? r.timeline_events : [],
+    world_rules: Array.isArray(r.world_rules) ? r.world_rules : [],
+    items: Array.isArray(r.items) ? r.items : [],
+    foreshadowing: Array.isArray(r.foreshadowing) ? r.foreshadowing : []
+  }
+}
+
+/** 提取全失败时的空占位(合并阶段按 0 实体处理) */
+export function emptyExtraction(): ChapterExtraction {
+  return { characters: [], locations: [], factions: [], timeline_events: [], world_rules: [], items: [], foreshadowing: [] }
+}
+
+/** 名字归一化(去空白;别名消歧与成书角色匹配共用) */
+export function normKey(s: string): string {
+  return (s ?? '').replace(/\s+/g, '').trim()
+}
+
+/** 按章节号从实体库回填引用文本(AI 检查只回章节号,引用以实体 sources 为准) */
+export function quoteByChapter(entities: WorldEntities, chapter?: number): EntitySource | null {
+  if (!chapter) return null
+  for (const list of [
+    entities.characters, entities.locations, entities.factions, entities.timeline_events,
+    entities.world_rules, entities.items, entities.foreshadowing
+  ]) {
+    for (const e of list) {
+      const s = e.sources.find(s => s.chapter === chapter)
+      if (s) return s
+    }
+  }
+  return { chapter }
+}
+
+/** 成书后处理:只保留实体库中的角色;first_appearance 缺失时按出现章节兜底 */
+export function finalizeCards(
+  overlayRaw: { characters?: CharacterCard[] },
+  entities: WorldEntities,
+  topNames: Set<string>
+): CharacterCard[] {
+  const nameToEntity = new Map(entities.characters.map(c => [normKey(c.name), c]))
+  return (Array.isArray(overlayRaw.characters) ? overlayRaw.characters : [])
+    .filter(c => c?.name && topNames.has(c.name))
+    .map((c) => {
+      const ent = nameToEntity.get(normKey(c.name))
+      let patched = c
+      if (!patched.first_appearance && ent && ent.sources.length > 0) {
+        const ch = Math.min(...ent.sources.map(s => s.chapter))
+        patched = { ...patched, first_appearance: `第${ch}章` }
+      }
+      // 成书模型漏填 desire 时,用提取实体里按原文推断的值兜底(比模型自估更贴原文)
+      if (patched.desire == null && ent && ent.desire != null) {
+        patched = { ...patched, desire: ent.desire }
+      }
+      // 成书漏填题材喜好时,从提取实体回填原文依据的玩法喜好
+      if (!(patched.kinks ?? []).length && ent && (ent.kinks ?? []).length) {
+        patched = {
+          ...patched,
+          kinks: (ent.kinks ?? []).slice(0, 8).map(k => ({
+            theme: k.theme,
+            view: k.view ?? null,
+            role: k.role ?? null,
+            detail: k.quote ?? null
+          }))
+        }
+      }
+      // 成书漏填性爱属性时,用提取实体里按原文推断的值兜底
+      if (!patched.sex && ent && ent.sex && Object.keys(ent.sex).length) {
+        patched = { ...patched, sex: { ...ent.sex } }
+      }
+      return patched
+    })
+}

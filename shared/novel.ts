@@ -44,6 +44,8 @@ export interface PresetNovelRow {
   sort_order: number
   download_count: number
   created_at: string | null
+  /** 是否已有预生成世界(列表接口附加;用户可直接 0 token 进入,未预生成回退自定义生成) */
+  hasWorld?: boolean
 }
 
 /** 预置小说缓存条目(浏览器 IndexedDB presets store) */
