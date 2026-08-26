@@ -36,7 +36,11 @@ modules: [
       globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,txt}'],
       // 图标.png 是 scripts/generate-pwa-icons.mjs 的 1.7MB 源图,不应进 SW 预缓存
       globIgnores: ['**/图标.png'],
-      cleanupOutdatedCaches: true
+      cleanupOutdatedCaches: true,
+      // Nuxt SSR 没有静态 index.html(nitro 运行时渲染),precache 里不存在 "/",
+      // 若保留 @vite-pwa/nuxt 默认 navigateFallback:'/' 会在导航时报 non-precached-url。
+      // 显式关闭导航兜底:导航请求走网络(SSR 正常渲染),API 请求也不受 SW 影响。
+      navigateFallback: undefined
     },
     devOptions: {
       enabled: false

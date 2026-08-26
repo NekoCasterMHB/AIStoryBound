@@ -589,15 +589,23 @@ watch(narrTemp, v => saveNarrTemp(v))
         </div>
       </div>
 
+      <UAlert
+        color="warning"
+        variant="soft"
+        icon="i-lucide-circle-alert"
+        title="支付系统维护中"
+        description="充值功能已暂停,正在修复到账问题。修复完成后将恢复,已支付的订单会自动补发到账。"
+        class="mt-5"
+      />
       <UButton
         color="primary"
         icon="i-lucide-zap"
         size="lg"
         block
-        class="mt-5"
-        @click="openBuy"
+        class="mt-3"
+        disabled
       >
-        购买加油包
+        购买加油包(维护中)
       </UButton>
     </UCard>
 
@@ -1151,6 +1159,13 @@ watch(narrTemp, v => saveNarrTemp(v))
     >
       <template #body>
         <div class="space-y-4">
+          <UAlert
+            color="warning"
+            variant="soft"
+            icon="i-lucide-circle-alert"
+            title="支付系统维护中"
+            description="充值已暂停,正在修复到账问题,请勿下单付款。已支付的订单稍后会自动补发。"
+          />
           <p class="text-sm text-neutral-500">
             选择加油包套餐:
           </p>
@@ -1251,20 +1266,20 @@ watch(narrTemp, v => saveNarrTemp(v))
             block
             class="bg-[#07C160]! text-white!"
             :loading="buyBusy === 'wxpay'"
-            :disabled="!selectedPkg || buyBusy === 'alipay'"
+            :disabled="true"
             @click="submitOrder('wxpay')"
           >
             <UIcon
               name="i-simple-icons-wechat"
               class="size-5 shrink-0"
             />
-            微信支付
+            微信支付(维护中)
           </UButton>
           <UButton
             block
             class="bg-[#1677FF]! text-white!"
             :loading="buyBusy === 'alipay'"
-            :disabled="!selectedPkg || buyBusy === 'wxpay'"
+            :disabled="true"
             @click="submitOrder('alipay')"
           >
             <UIcon
