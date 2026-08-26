@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
 
-// /admin 管理后台专用布局:左侧可折叠侧边栏(兑换码 / 充值记录 / Skill 审核)+ 内容区。
+// /admin 管理后台专用布局:左侧可折叠侧边栏(仪表盘 / 兑换码 / 充值记录 / Skill 审核)+ 内容区。
 // 不套 default.vue 的全站导航与页脚;页面级鉴权由各页 definePageMeta middleware: 'admin' 负责。
 const open = ref(true)
 const route = useRoute()
 
 const items = computed<NavigationMenuItem[]>(() => [
-  { label: '兑换码管理', icon: 'i-lucide-ticket', to: '/admin', active: route.path === '/admin' },
+  { label: '仪表盘', icon: 'i-lucide-layout-dashboard', to: '/admin', active: route.path === '/admin' },
+  { label: '兑换码管理', icon: 'i-lucide-ticket', to: '/admin/redeem', active: route.path === '/admin/redeem' },
   { label: '充值记录', icon: 'i-lucide-credit-card', to: '/admin/recharge', active: route.path === '/admin/recharge' },
   { label: 'Skill 审核', icon: 'i-lucide-shield-check', to: '/admin/skills', active: route.path === '/admin/skills' },
   { label: '需求管理', icon: 'i-lucide-list-checks', to: '/admin/requests', active: route.path === '/admin/requests' }

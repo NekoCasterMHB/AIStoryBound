@@ -391,3 +391,15 @@ export const appConfig = sqliteTable('app_config', {
   value: text('value').notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
 })
+
+// ---- AI 用量记录(平台模式每次扣费写一条;管理仪表盘统计近 24h 消耗,历史数据自部署后累计) ----
+export const aiUsage = sqliteTable('ai_usage', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** 本次消耗 token 数 */
+  tokens: integer('tokens').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  index('idx_ai_usage_time').on(t.createdAt),
+  index('idx_ai_usage_user').on(t.userId)
+])

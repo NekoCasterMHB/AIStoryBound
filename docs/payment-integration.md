@@ -192,33 +192,59 @@ Body: { packageId: string, payType: string }   // payType: 'wxpay' | 'alipay'
 
 > `baseUrl` 由 `getRequestProtocol(event) + '://' + getRequestHost(event)` 动态拼接，保证回调/回跳 URL 指向当前域名。
 
-### 4.3 异步回调 `server/api/payment/notify.post.ts`
+### 4.3 异步回调 `server/api/payment/notify.{post,get}.ts`
 
 ```ts
 POST|GET /api/payment/notify
 ```
 
+> ⚠️ **必须同时注册 POST 与 GET 两个 handler**(`notify.post.ts` + `notify.get.ts`,共用 `server/utils/payment-notify.ts` 的 `handlePaymentNotify`)。网关的**服务器异步通知是 GET 方式**(见官方文档与 SDK 示例 `notify_url.php`)。若只注册 POST,GET 请求会落到 SPA fallback 并被登录守卫 302 到 `/login`,网关拿不到 `success/fail` 会一直重试后放弃,表现为"支付成功但订单永远 pending"——这是本项目实际踩过的坑。
+
+**网关真实回调参数示例**(GET query,`sign` 用平台公钥按签名规则验签):
+
+```text
+pid=1006
+trade_no=2026082700523914002        # 平台订单号(入库 provider_trade_no)
+out_trade_no=1787763158325174619    # 商户订单号(幂等键)
+api_trade_no=2026082722001407801417963560  # 微信/支付宝单号
+type=alipay
+trade_status=TRADE_SUCCESS          # 固定为 TRADE_SUCCESS(成功才回调)
+addtime=2026-08-27 00:52:39
+endtime=2026-08-27 00:52:53
+name=product
+money=0.1
+param={&quot;userId&quot;:&quot;...&quot;,&quot;packageId&quot;:&quot;tokens_test_0_1&quot;}   # ⚠️ HTML 实体编码!
+buyer=2088022740807806
+timestamp=1787763174
+sign_type=RSA
+sign=W9MAtf3s6B...
+```
+
 处理步骤（顺序敏感，逐条照抄）：
 
-1. **合并参数**：`params = { ...getQuery(event), ...readBody(event) }`（网关 POST form 或 GET 均兼容）。
+1. **合并参数**：`params = { ...getQuery(event), ...readBody(event) }`（网关 GET 或 POST 均兼容）。
 2. **验签**：`verifyRSA(buildSignStr(params), params.sign)` 失败 → 返回字符串 `'fail'`（网关会重试）。
 3. **状态过滤**：`params.trade_status !== 'TRADE_SUCCESS'` → 直接返回 `'success'`（不处理非成功状态）。
 4. **取关键字段**：
    - `outTradeNo = params.out_trade_no`（缺失返回 `'fail'`）
    - `amountFen = Math.round(parseFloat(params.money) * 100)`（元 → 分，入库单位）
-   - 解析 `params.param` JSON → `userId`、`packageId`（缺失/解析失败返回 `'fail'`）
-5. **校验商品**：`getQuotaPackageById(packageId)`，取不到返回 `'fail'`。
+   - **解析 `params.param` 前必须先做 HTML 实体解码**（见下方「已知坑 #1」）→ `userId`、`packageId`（缺失/解析失败返回 `'fail'`）
+5. **校验商品**：`getTokenPackageById(packageId)`，取不到返回 `'fail'`。
 6. **幂等检查**：按 `orderNo` 查 `quota_package_order`：
    - 已存在且 `status === 'paid'` → 返回 `'success'`（已入账，直接确认）。
    - 已存在（未 paid）→ `UPDATE` 置为 paid，写入 `providerTradeNo`、`paidAt`。
    - 不存在 → `INSERT` 新订单（status=paid）。
-7. **配额入账**：
-   - `getUserQuotaSnapshot(userId)` 取当前配额。
-   - `applyQuotaIncrease(limits, quotaPackage.quotaIncrease)` 叠加。
-   - `UPDATE users` 写回 `boardQuotaLimit / toolQuotaLimit / itemQuotaLimit / eventQuotaLimit / planQuotaLimit / quotaUpdatedAt`。
+7. **配额入账**：`UPDATE users SET ai_token_balance = ai_token_balance + pkg.tokens`（只对已存在用户生效；`meta.changes === 0` 返回 `'fail'`）。
 8. **返回**：字符串 `'success'`。
 
 > ⚠️ 回调响应体必须是纯字符串 `success` / `fail`（网关按内容判断是否重试），**不是 JSON**。
+
+**已知坑（本项目实战排障记录）：**
+
+1. **`param` 是 HTML 实体编码的 JSON**：网关回调/接口返回里的 `param` 实际为 `{&quot;userId&quot;:&quot;...&quot;}`（`&quot;` 代替 `"`），直接 `JSON.parse` 必然抛错 → 返回 `fail` → 网关重试后放弃 → **钱收了但订单永远 pending**。修复：解析前先 `decodeHtmlEntities`（`&quot;`/`&apos;`/`&lt;`/`&gt;`/`&amp;` → 对应字符），正常 JSON 不受影响。
+2. **GET 回调 302**：见本节开头,必须注册 `notify.get.ts`。
+3. **网关会重试失败的通知**（间隔递增,多次后放弃）,修复后可在商户后台对订单点「重新通知」触发,无需用户重新支付。
+4. **用网关「订单查询」接口自检密钥链路**：`POST /api/pay/query`(参数 `pid/out_trade_no|trade_no/timestamp/sign/sign_type`)用商户私钥签名,返回 `code:0` 即私钥正确;返回数据带网关签名,用平台公钥验签通过即公钥与签名规则正确。参考 `scripts/query-order.mjs`。
 
 ### 4.4 购买历史 `server/api/profile/purchases.get.ts`
 
@@ -232,6 +258,32 @@ GET /api/profile/purchases   // 需登录
 { id, orderNo, packageId, packageName, amount /*分*/, currency,
   provider, providerTradeNo, status, paidAt, createdAt }
 ```
+
+### 4.5 支付结果确认 `server/api/payment/result.get.ts` + 前端模态框
+
+网关支付完成会跳转 `return_url = /profile` **并带上全部回调参数**(与 notify 同构)。前端检测到 `out_trade_no` + `trade_status` 后:
+
+1. 调 `GET /api/payment/result?orderNo=xxx`(登录,校验订单归属)查**数据库真实状态**——只有验签通过的回调才会写库,URL 参数本身不可信;
+2. 订单 `paid` → 弹「充值成功」模态框并刷新余额;
+3. 订单 `pending` → 弹「回调处理中」并每 5 秒轮询(最多 60 秒,异步回调可能晚于页面跳转);
+4. 轮询超时/接口失败 → 提示「未确认到账」+ 订单号,引导查看购买记录/联系客服;
+5. 关闭模态框时清理 URL 回调参数(避免刷新重复弹),保留 `?tab=` 直达参数;确认中状态不可点击外部关闭。
+
+### 4.6 管理端充值测试 `server/api/admin/recharge/test-create.post.ts`
+
+管理员创建一笔 0.1 元测试订单,走与真实充值完全一致的「签名 → pending 建单 → 回调入账」链路,用于验证回调是否正常到账:
+
+- 测试套餐 `TEST_PACKAGE`(`shared/quota-packages.ts`,id=`tokens_test_0_1`):**不入 `TOKEN_PACKAGES`**(不会出现在用户购买页),`tokens: 0` 保证回调只验证入账链路、不发放配额;`getTokenPackageById` 单独识别它(回调商品校验必需);
+- `param` 里 `userId` 用管理员本人,测试订单在充值记录页直接可见;
+- 管理端入口: `/admin/recharge` 右上角「充值测试(0.1 元)」。
+- 网关侧核对:商户后台可查平台单号;`scripts/query-order.mjs` 可查订单状态(`status:1`=支付成功)。
+
+### 4.7 充值开关(数据库配置,无需重新部署)
+
+- 表 `app_config`(key-value,`server/db/schema.ts` + `drizzle/init.sql`),键 `payment_disabled`(`'1'`=关闭,缺省=开放);
+- 读取:`server/utils/config.ts` 的 `isPaymentDisabled`;`create.post.ts` / `test-create.post.ts` 下单前检查,关闭时返回 `503 充值功能维护中`;
+- 管理端:`/admin/recharge` 右上角开关 → `PUT /api/admin/recharge/config`(requireAdmin,upsert)即时生效;
+- 用户端:`GET /api/payment/config`(公开)拉取开关,`/profile` 充值按钮/弹窗/横幅随开关联动。
 
 ---
 
@@ -336,6 +388,8 @@ form.submit()
 | 8 | 私钥不出客户端 | 私钥仅存服务端 runtimeConfig/环境变量 |
 | 9 | 订单号唯一 | `时间戳+6位随机`，网关侧幂等键 |
 | 10 | 仅处理 TRADE_SUCCESS | 其他状态直接确认不处理，避免误入账 |
+| 11 | param 实体解码 | 网关回调/接口返回的 `param` 是 HTML 实体编码 JSON（`&quot;` 代替 `"`），**`JSON.parse` 前必须先解码**，否则回调恒 `fail`、订单永远 pending |
+| 12 | GET 回调必须注册 | 网关异步通知是 GET，`notify.get.ts` 缺失时 GET 会被 SPA fallback 302 到登录页，网关收不到 `success/fail` |
 
 ---
 
@@ -360,12 +414,14 @@ form.submit()
 3. **签名工具**：创建 `server/utils/micropay.ts`（`buildSignStr` / `signRSA` / `verifyRSA` / `generateOutTradeNo`）。
 4. **数据库**：建 `quota_package_order` 表 + `users` 表配额字段，加 `order_no` 唯一索引。
 5. **创建订单接口**：`POST /api/payment/create`（鉴权 → 校验 → 签名 → 返回 `{action, params}`）。
-6. **回调接口**：`POST/GET /api/payment/notify`（验签 → 状态过滤 → 幂等 → 写订单 → 叠加配额 → 返回 `success`）。
+6. **回调接口**：`POST/GET /api/payment/notify`（**GET/POST 各注册一个 handler**，验签 → 状态过滤 → **param 实体解码** → 幂等 → 写订单 → 叠加配额 → 返回 `success`）。
 7. **查询接口**：`GET /api/profile/purchases`（登录用户订单列表）。
-8. **前端弹窗**：商品选择 + 支付方式 + 动态 form POST 跳转；购买历史弹窗。
+8. **前端弹窗**：商品选择 + 支付方式 + 动态 form POST 跳转；购买历史弹窗；支付结果确认模态框（`/api/payment/result` 轮询确认到账）。
 9. **i18n**：补齐三语言 `purchase.*` 文案。
 10. **测试**：`micropay.test.ts` 覆盖签名往返与订单号生成。
 11. **联调**：用真实支付 1 分钱/最小金额商品验证回调入账与幂等（重复回调只入账一次）。
+12. **排障自检**：`scripts/query-order.mjs` 用商户私钥查网关订单（`code:0` 且平台公钥验签通过 = 密钥链路正确）；修复后可在商户后台对订单点「重新通知」重试回调，无需用户重新支付。
+13. **运行时充值开关（可选）**：`app_config` 表 + `payment_disabled` 键，管理端 `/admin/recharge` 开关即时生效，无需重新部署。
 
 ---
 
@@ -373,14 +429,20 @@ form.submit()
 
 | 文件 | 职责 |
 |------|------|
-| `server/api/payment/create.post.ts` | 创建订单、构造并签名提交参数 |
-| `server/api/payment/notify.post.ts` | 异步回调：验签、幂等、入账 |
+| `server/api/payment/create.post.ts` | 创建订单、构造并签名提交参数、充值开关检查 |
+| `server/api/payment/notify.post.ts` / `notify.get.ts` | 异步回调入口（POST/GET,共用处理逻辑） |
+| `server/utils/payment-notify.ts` | 回调核心：验签、param 实体解码、幂等、入账 |
+| `server/api/payment/result.get.ts` | 支付结果确认（前端模态框轮询用） |
+| `server/api/payment/config.get.ts` | 充值开关公开读取 |
+| `server/api/admin/recharge/test-create.post.ts` | 管理端 0.1 元充值测试下单 |
+| `server/api/admin/recharge/config.put.ts` | 管理端充值开关写入 |
 | `server/api/profile/purchases.get.ts` | 购买历史查询 |
 | `server/utils/micropay.ts` | 签名/验签/订单号工具 |
-| `server/utils/quota.ts` | 用户配额快照读取/映射 |
-| `lib/quota-packages.ts` | 商品定义 + 配额叠加纯函数 |
-| `server/db/schema/quota_package.ts` | 订单表 schema |
-| `app/components/QuotaPurchaseModal.vue` | 购买弹窗（前端入口） |
-| `app/components/PurchaseHistoryModal.vue` | 购买历史弹窗 |
+| `server/utils/config.ts` | app_config 表读写 + 充值开关判断 |
+| `shared/quota-packages.ts` | 商品定义 + TEST_PACKAGE 测试套餐 |
+| `server/db/schema.ts` | 订单表 + app_config 表 schema |
+| `scripts/query-order.mjs` | 网关订单查询自检（密钥链路验证） |
+| `scripts/replay-notify.mjs` | 网关签名数据重放为回调（排障用） |
+| `app/pages/profile.vue` | 购买弹窗 + 充值开关联动 + 支付结果模态框 |
+| `app/pages/admin/recharge.vue` | 充值记录 + 充值测试 + 充值开关 |
 | `server/utils/__tests__/micropay.test.ts` | 签名工具测试 |
-| `i18n/locales/{zh-CN,en,ja}.ts` | 三语言文案 |

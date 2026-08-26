@@ -12,7 +12,8 @@ import { getAiConfig } from '../../utils/ai'
 import { buildUpstreamRequest, relaySse } from '../../utils/ai-relay'
 import { isAiApiFormat } from '../../../shared/ai-config'
 import { RELAY_TIMEOUT_DEFAULT_MS, RELAY_TIMEOUT_MIN_MS, RELAY_TIMEOUT_MAX_MS } from '../../../shared/ai-config'
-import { user as usersTable } from '../../db/schema'
+import { user as usersTable, aiUsage } from '../../db/schema'
+import { uuid } from '../../../shared/novel'
 
 /** 请求体可携带单次调用超时(毫秒),由个人中心生成参数下发;缺失/越界用默认值,上限防止拖住上游连接 */
 function clampRelayTimeout(v: unknown): number {
@@ -120,6 +121,13 @@ export default defineEventHandler(async (event) => {
           .where(eq(usersTable.id, sessUser.id))
           .run()
           .catch(() => {})
+        // 用量落库:管理仪表盘近 24h 消耗统计(历史数据自部署后累计)
+        void db.insert(aiUsage).values({
+          id: uuid(),
+          userId: sessUser.id,
+          tokens: cost,
+          createdAt: new Date()
+        }).run().catch(() => {})
       }
     })
   }

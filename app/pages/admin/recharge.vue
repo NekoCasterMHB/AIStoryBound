@@ -39,7 +39,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 const rows = ref<RechargeRow[]>([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = 20
+const pageSize = 10
 const stats = ref<{ status: string, n: number }[]>([])
 const loading = ref(false)
 const statusFilter = ref('')
@@ -138,8 +138,6 @@ async function startTest(payType: 'wxpay' | 'alipay') {
 function fmtTs(ts: number | null) {
   return ts ? new Date(ts).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' }) : '—'
 }
-
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 </script>
 
 <template>
@@ -294,18 +292,17 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize))
       </div>
 
       <!-- 分页 -->
-      <div v-if="total > pageSize" class="mt-4 flex items-center justify-between border-t border-neutral-100 pt-4 dark:border-neutral-900">
+      <div v-if="total > pageSize" class="mt-4 flex items-center justify-between gap-3 border-t border-neutral-100 pt-4 dark:border-neutral-900">
         <p class="text-xs text-neutral-500">
-          共 {{ total }} 条 · 第 {{ page }} / {{ totalPages }} 页
+          共 {{ total }} 条
         </p>
-        <div class="flex gap-2">
-          <UButton size="sm" color="neutral" variant="soft" :disabled="page <= 1" @click="load(page - 1)">
-            上一页
-          </UButton>
-          <UButton size="sm" color="neutral" variant="soft" :disabled="page >= totalPages" @click="load(page + 1)">
-            下一页
-          </UButton>
-        </div>
+        <UPagination
+          v-model:page="page"
+          :items-per-page="pageSize"
+          :total="total"
+          show-edges
+          @update:page="load"
+        />
       </div>
     </UCard>
 

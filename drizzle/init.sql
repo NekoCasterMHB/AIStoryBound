@@ -330,6 +330,15 @@ CREATE TABLE IF NOT EXISTS `app_config` (
 	`updated_at` integer NOT NULL
 );
 
+-- ---- AI 用量记录(平台模式每次扣费写一条;管理仪表盘统计近 24h 消耗) ----
+CREATE TABLE IF NOT EXISTS `ai_usage` (
+	`id` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`tokens` integer NOT NULL,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+
 -- ---- 索引 ----
 CREATE UNIQUE INDEX IF NOT EXISTS `user_email_unique` ON `user` (`email`);
 CREATE INDEX IF NOT EXISTS `idx_user_email` ON `user` (`email`);
@@ -361,4 +370,6 @@ CREATE INDEX IF NOT EXISTS `idx_fr_status_likes` ON `feature_requests` (`status`
 CREATE INDEX IF NOT EXISTS `idx_fr_user` ON `feature_requests` (`user_id`);
 CREATE UNIQUE INDEX IF NOT EXISTS `idx_frl_unique` ON `feature_request_likes` (`request_id`,`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_frl_user` ON `feature_request_likes` (`user_id`);
+CREATE INDEX IF NOT EXISTS `idx_ai_usage_time` ON `ai_usage` (`created_at`);
+CREATE INDEX IF NOT EXISTS `idx_ai_usage_user` ON `ai_usage` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_skill_purchase_buyer` ON `skill_purchases` (`buyer_id`);
