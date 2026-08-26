@@ -60,12 +60,22 @@ interface PurchaseRecord {
 const me = ref<MeInfo | null>(null)
 const loadError = ref<string | null>(null)
 
+/** 充值开关(数据库配置,管理端可即时启停):true=维护中禁用 */
+const paymentDisabled = ref(false)
+
+async function fetchPaymentConfig() {
+  paymentDisabled.value = await $fetch<{ paymentDisabled: boolean }>('/api/payment/config')
+    .then(r => r.paymentDisabled)
+    .catch(() => false)
+}
+
 async function loadMe() {
   me.value = await $fetch<MeInfo>('/api/profile/me').catch(() => null)
   if (!me.value) loadError.value = '加载个人资料失败'
 }
 onMounted(() => {
   void loadMe()
+  void fetchPaymentConfig()
   detectPaymentResult()
 })
 
@@ -662,11 +672,11 @@ watch(narrTemp, v => saveNarrTemp(v))
       </div>
 
       <UAlert
+        v-if="paymentDisabled"
         color="warning"
         variant="soft"
         icon="i-lucide-circle-alert"
-        title="支付系统维护中"
-        description="充值功能已暂停,正在修复到账问题。修复完成后将恢复,已支付的订单会自动补发到账。"
+        title="充值系统维护中"
         class="mt-5"
       />
       <UButton
@@ -675,9 +685,10 @@ watch(narrTemp, v => saveNarrTemp(v))
         size="lg"
         block
         class="mt-3"
-        disabled
+        :disabled="paymentDisabled"
+        @click="openBuy"
       >
-        购买加油包(维护中)
+        {{ paymentDisabled ? '购买加油包(维护中)' : '购买加油包' }}
       </UButton>
     </UCard>
 
@@ -1232,11 +1243,11 @@ watch(narrTemp, v => saveNarrTemp(v))
       <template #body>
         <div class="space-y-4">
           <UAlert
+            v-if="paymentDisabled"
             color="warning"
             variant="soft"
             icon="i-lucide-circle-alert"
-            title="支付系统维护中"
-            description="充值已暂停,正在修复到账问题,请勿下单付款。已支付的订单稍后会自动补发。"
+            title="充值系统维护中"
           />
           <p class="text-sm text-neutral-500">
             选择加油包套餐:
@@ -1338,27 +1349,27 @@ watch(narrTemp, v => saveNarrTemp(v))
             block
             class="bg-[#07C160]! text-white!"
             :loading="buyBusy === 'wxpay'"
-            :disabled="true"
+            :disabled="paymentDisabled || buyBusy === 'alipay'"
             @click="submitOrder('wxpay')"
           >
             <UIcon
               name="i-simple-icons-wechat"
               class="size-5 shrink-0"
             />
-            微信支付(维护中)
+            {{ paymentDisabled ? '微信支付(维护中)' : '微信支付' }}
           </UButton>
           <UButton
             block
             class="bg-[#1677FF]! text-white!"
             :loading="buyBusy === 'alipay'"
-            :disabled="true"
+            :disabled="paymentDisabled || buyBusy === 'wxpay'"
             @click="submitOrder('alipay')"
           >
             <UIcon
               name="i-simple-icons-alipay"
               class="size-5 shrink-0"
             />
-            支付宝(维护中)
+            {{ paymentDisabled ? '支付宝(维护中)' : '支付宝' }}
           </UButton>
           <p class="col-span-2 text-left text-xs leading-loose text-neutral-500">
             * 充值 token 不支持退款
@@ -1374,7 +1385,8 @@ watch(narrTemp, v => saveNarrTemp(v))
     <!-- 支付结果确认模态框(网关跳回时自动弹出) -->
     <UModal
       v-model:open="payResultOpen"
-      :dismissible="payResult?.state !== 'checking'"
+      :dismissible="payResult?.state === 'paid' || payResult?.state === 'error'"
+      @update:open="v => { if (!v) closePayResult() }"
     >
       <template #body>
         <div
@@ -1439,16 +1451,6 @@ watch(narrTemp, v => saveNarrTemp(v))
             </p>
           </template>
         </div>
-      </template>
-      <template #footer>
-        <UButton
-          v-if="payResult?.state !== 'checking'"
-          color="primary"
-          block
-          @click="closePayResult"
-        >
-          知道了
-        </UButton>
       </template>
     </UModal>
 

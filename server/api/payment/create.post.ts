@@ -5,6 +5,7 @@ import { requireUser } from '../../utils/authz'
 import { getMicropayConfig, buildSignStr, signRSA, generateOutTradeNo } from '../../utils/micropay'
 import { isTokenPackageId, getTokenPackageById } from '../../../shared/quota-packages'
 import { useD1 } from '../../utils/d1'
+import { isPaymentDisabled } from '../../utils/config'
 import { quotaPackageOrder } from '../../db/schema'
 import { eq, and } from 'drizzle-orm'
 import { uuid } from '../../../shared/novel'
@@ -14,6 +15,13 @@ const GATEWAY_SUBMIT_URL = 'https://pay.microgg.cn/api/pay/submit'
 
 export default defineEventHandler(async (event) => {
   const sessUser = await requireUser(event)
+  const db = useD1(event)
+
+  // 充值开关(管理端可即时启停,见 /admin/recharge 与 app_config 表)
+  if (await isPaymentDisabled(db)) {
+    throw createError({ statusCode: 503, statusMessage: '充值功能维护中,暂时无法下单' })
+  }
+
   const body = await readBody<{ packageId?: string, payType?: string }>(event).catch(() => ({} as { packageId?: string, payType?: string }))
   const { packageId, payType } = body
 
@@ -50,7 +58,6 @@ export default defineEventHandler(async (event) => {
 
   // 建 pending 订单(购买记录可查;回调据此幂等入账)
   const now = new Date()
-  const db = useD1(event)
 
   // 限购套餐:每人仅可购买一次(按已支付订单判定;待支付/已退款不拦截)
   if (pkg.oneTimeOnly) {

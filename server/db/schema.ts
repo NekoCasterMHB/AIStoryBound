@@ -384,3 +384,10 @@ export const featureRequestLikes = sqliteTable('feature_request_likes', {
   uniqueIndex('idx_frl_unique').on(t.requestId, t.userId),
   index('idx_frl_user').on(t.userId)
 ])
+
+// ---- 站点配置(key-value,运行时管理,无需重新部署;见 admin 管理页与 server/utils/config.ts) ----
+export const appConfig = sqliteTable('app_config', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
+})

@@ -64,6 +64,36 @@ async function load(pageNum = page.value) {
 }
 onMounted(() => { void load(1) })
 
+// ---- 充值开关(存 app_config 表,即时生效,无需重新部署) ----
+const paymentDisabled = ref(false)
+const configBusy = ref(false)
+
+async function loadConfig() {
+  paymentDisabled.value = await $fetch<{ paymentDisabled: boolean }>('/api/payment/config')
+    .then(r => r.paymentDisabled)
+    .catch(() => false)
+}
+async function togglePayment() {
+  configBusy.value = true
+  try {
+    const res = await $fetch<{ paymentDisabled: boolean }>('/api/admin/recharge/config', {
+      method: 'PUT',
+      body: { paymentDisabled: !paymentDisabled.value }
+    })
+    paymentDisabled.value = res.paymentDisabled
+    toast.add({
+      title: res.paymentDisabled ? '已关闭充值入口' : '已开启充值入口',
+      description: res.paymentDisabled ? '用户端充值按钮将禁用并显示维护提示' : '用户端可正常下单充值',
+      color: res.paymentDisabled ? 'warning' : 'success'
+    })
+  } catch (e) {
+    toast.add({ title: '切换充值开关失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    configBusy.value = false
+  }
+}
+onMounted(() => { void loadConfig() })
+
 function pickStatus(s: string) {
   statusFilter.value = s
   void load(1)
@@ -123,14 +153,34 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize))
           全部 token 加油包订单(微支付网关回调入账,无需人工确认)
         </p>
       </div>
-      <UButton
-        color="warning"
-        variant="soft"
-        icon="i-lucide-flask-conical"
-        @click="testOpen = true"
-      >
-        充值测试(0.1 元)
-      </UButton>
+      <div class="flex items-center gap-4">
+        <div class="flex flex-col items-end gap-1">
+          <p class="text-xs text-neutral-500">
+            充值入口
+          </p>
+          <USwitch
+            :model-value="!paymentDisabled"
+            :loading="configBusy"
+            color="primary"
+            aria-label="充值入口开关"
+            @update:model-value="togglePayment"
+          />
+          <p
+            class="text-xs font-medium"
+            :class="paymentDisabled ? 'text-amber-600' : 'text-emerald-600'"
+          >
+            {{ paymentDisabled ? '维护中(已关闭)' : '开放中' }}
+          </p>
+        </div>
+        <UButton
+          color="warning"
+          variant="soft"
+          icon="i-lucide-flask-conical"
+          @click="testOpen = true"
+        >
+          充值测试(0.1 元)
+        </UButton>
+      </div>
     </div>
 
     <!-- 状态筛选(计数来自接口统计) -->

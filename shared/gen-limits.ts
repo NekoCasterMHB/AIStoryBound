@@ -20,7 +20,7 @@ export interface GenLimits {
   relayTimeoutSec: number
 }
 
-/** 默认与代码常量一致(20000/10000/20000/32768/1000/600s) */
+/** 默认与代码常量一致(20000/1000/10000/20000/32768/600s) */
 export const DEFAULT_GEN_LIMITS: GenLimits = {
   unitMaxChars: UNIT_MAX_CHARS,
   unitOverlapChars: UNIT_OVERLAP_CHARS,

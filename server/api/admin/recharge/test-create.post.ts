@@ -6,6 +6,7 @@ import { requireAdmin } from '../../../utils/authz'
 import { getMicropayConfig, buildSignStr, signRSA, generateOutTradeNo } from '../../../utils/micropay'
 import { TEST_PACKAGE } from '../../../../shared/quota-packages'
 import { useD1 } from '../../../utils/d1'
+import { isPaymentDisabled } from '../../../utils/config'
 import { quotaPackageOrder } from '../../../db/schema'
 import { uuid } from '../../../../shared/novel'
 
@@ -14,6 +15,13 @@ const GATEWAY_SUBMIT_URL = 'https://pay.microgg.cn/api/pay/submit'
 
 export default defineEventHandler(async (event) => {
   const admin = await requireAdmin(event)
+  const db = useD1(event)
+
+  // 充值开关:关闭时管理端测试下单也一并禁止(避免测试单无人处理)
+  if (await isPaymentDisabled(db)) {
+    throw createError({ statusCode: 503, statusMessage: '充值功能维护中,暂时无法下单' })
+  }
+
   const body = await readBody<{ payType?: string }>(event).catch(() => ({} as { payType?: string }))
   const { payType } = body
   if (payType !== 'wxpay' && payType !== 'alipay') {
@@ -44,7 +52,6 @@ export default defineEventHandler(async (event) => {
   params.sign = await signRSA(buildSignStr(params), cfg.privateKey)
 
   const now = new Date()
-  const db = useD1(event)
   await db.insert(quotaPackageOrder).values({
     id: uuid(),
     orderNo: outTradeNo,

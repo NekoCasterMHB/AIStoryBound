@@ -323,6 +323,13 @@ CREATE TABLE IF NOT EXISTS `feature_request_likes` (
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
 
+-- ---- 站点配置(key-value,运行时管理,无需重新部署;见 server/utils/config.ts) ----
+CREATE TABLE IF NOT EXISTS `app_config` (
+	`key` text PRIMARY KEY NOT NULL,
+	`value` text NOT NULL,
+	`updated_at` integer NOT NULL
+);
+
 -- ---- 索引 ----
 CREATE UNIQUE INDEX IF NOT EXISTS `user_email_unique` ON `user` (`email`);
 CREATE INDEX IF NOT EXISTS `idx_user_email` ON `user` (`email`);
