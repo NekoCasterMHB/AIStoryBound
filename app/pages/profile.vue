@@ -49,6 +49,7 @@ interface MeInfo {
 interface PurchaseRecord {
   id: string
   orderNo: string
+  packageId: string
   packageName: string
   amount: number
   provider: string
@@ -76,6 +77,7 @@ async function loadMe() {
 onMounted(() => {
   void loadMe()
   void fetchPaymentConfig()
+  void refreshOneTimePackStatus()
   detectPaymentResult()
 })
 
@@ -85,13 +87,21 @@ const balanceText = computed(() => balance.value.toLocaleString())
 // ---- 购买加油包 ----
 const buyOpen = ref(false)
 const selectedPkg = ref<TokenPackage | null>(null)
-const newbiePkg = TOKEN_PACKAGES.find(p => p.oneTimeOnly) ?? null
+/** 已购过限购新人包(paid)后不再展示该卡片,由购买记录判断 */
+const boughtOneTimePack = ref(false)
+const newbiePkg = computed(() => !boughtOneTimePack.value ? (TOKEN_PACKAGES.find(p => p.oneTimeOnly) ?? null) : null)
 const regularPackages = TOKEN_PACKAGES.filter(p => !p.oneTimeOnly)
 const buyBusy = ref<'wxpay' | 'alipay' | null>(null)
 const buyError = ref<string | null>(null)
 
+/** 拉取购买记录,判断是否已购限购新人包 */
+async function refreshOneTimePackStatus() {
+  const purchases = await $fetch<PurchaseRecord[]>('/api/profile/purchases').catch(() => [])
+  boughtOneTimePack.value = purchases.some(p => p.packageId === 'tokens_1m_once' && p.status === 'paid')
+}
+
 function openBuy() {
-  selectedPkg.value = TOKEN_PACKAGES[0] ?? null
+  selectedPkg.value = (newbiePkg.value ?? regularPackages[0]) ?? null
   buyError.value = null
   buyOpen.value = true
 }
@@ -161,6 +171,7 @@ async function confirmPayResult(orderNo: string, tradeStatus: string, attempt: n
     if (res.status === 'paid') {
       payResult.value = { state: 'paid', orderNo, packageName: res.packageName, amountFen: res.amount }
       void loadMe() // 刷新余额
+      void refreshOneTimePackStatus() // 新人包已购则隐藏卡片
       return
     }
   } catch {
@@ -227,6 +238,46 @@ function statusLabel(s: string) {
     refunded: { text: '已退款', color: 'error' }
   }
   return map[s] ?? { text: s, color: 'neutral' }
+}
+
+// ---- 继续支付(30 分钟内待支付订单) ----
+const continueBusy = ref<string | null>(null)
+const continueError = ref('')
+
+/** 待支付且未超过 30 分钟(与后端 PENDING_ORDER_TTL_MS 一致) */
+function canContinue(r: PurchaseRecord) {
+  return r.status === 'pending' && Date.now() - r.createdAt <= 30 * 60 * 1000
+}
+
+async function continuePay(r: PurchaseRecord) {
+  if (continueBusy.value) return
+  continueBusy.value = r.orderNo
+  continueError.value = ''
+  try {
+    const res = await $fetch<{ action: string, params: Record<string, string> }>('/api/payment/continue', {
+      method: 'POST',
+      body: { orderNo: r.orderNo }
+    })
+    // 与下单一致:动态创建隐藏 form POST 跳转网关收银台
+    const form = document.createElement('form')
+    form.method = 'POST'
+    form.action = res.action
+    form.style.display = 'none'
+    for (const [k, v] of Object.entries(res.params)) {
+      const input = document.createElement('input')
+      input.type = 'hidden'
+      input.name = k
+      input.value = v
+      form.appendChild(input)
+    }
+    document.body.appendChild(form)
+    form.submit()
+  } catch (e) {
+    continueError.value = e instanceof Error ? e.message : String(e)
+    void openHistory() // 刷新列表(超时订单会被标记为已关闭)
+  } finally {
+    continueBusy.value = null
+  }
 }
 
 // ---- 兑换码 ----
@@ -1682,6 +1733,16 @@ watch(narrTemp, v => saveNarrTemp(v))
               </p>
             </div>
             <div class="flex shrink-0 items-center gap-2">
+              <UButton
+                v-if="canContinue(r)"
+                size="xs"
+                color="primary"
+                variant="soft"
+                :loading="continueBusy === r.orderNo"
+                @click="continuePay(r)"
+              >
+                继续支付
+              </UButton>
               <UBadge
                 :color="statusLabel(r.status).color"
                 variant="soft"
@@ -1692,6 +1753,12 @@ watch(narrTemp, v => saveNarrTemp(v))
               <span class="tabular-nums text-neutral-500">{{ fmtAmount(r.amount) }}</span>
             </div>
           </div>
+          <p
+            v-if="continueError"
+            class="text-xs text-red-500"
+          >
+            {{ continueError }}
+          </p>
         </div>
       </template>
     </UModal>

@@ -6,6 +6,7 @@ import { getMicropayConfig, buildSignStr, signRSA, generateOutTradeNo } from '..
 import { isTokenPackageId, getTokenPackageById } from '../../../shared/quota-packages'
 import { useD1 } from '../../utils/d1'
 import { isPaymentDisabled } from '../../utils/config'
+import { closeExpiredPendingOrders } from '../../utils/orders'
 import { quotaPackageOrder } from '../../db/schema'
 import { eq, and } from 'drizzle-orm'
 import { uuid } from '../../../shared/novel'
@@ -59,7 +60,11 @@ export default defineEventHandler(async (event) => {
   // 建 pending 订单(购买记录可查;回调据此幂等入账)
   const now = new Date()
 
-  // 限购套餐:每人仅可购买一次(按已支付订单判定;待支付/已退款不拦截)
+  // 待支付订单超过 30 分钟自动关闭(惰性清理,见 utils/orders.ts)
+  await closeExpiredPendingOrders(event)
+
+  // 限购套餐:每人仅可购买一次(已支付订单永久拦截;30 分钟内的待支付订单同样占用名额,
+  // 防止重复下单/回调异常时刷单;超时自动关闭后放行,可重新购买)
   if (pkg.oneTimeOnly) {
     const owned = await db.select().from(quotaPackageOrder)
       .where(and(
@@ -69,6 +74,14 @@ export default defineEventHandler(async (event) => {
       ))
       .get()
     if (owned) throw createError({ statusCode: 400, statusMessage: '该套餐每人限购一次' })
+    const pending = await db.select().from(quotaPackageOrder)
+      .where(and(
+        eq(quotaPackageOrder.userId, sessUser.id),
+        eq(quotaPackageOrder.packageId, packageId),
+        eq(quotaPackageOrder.status, 'pending')
+      ))
+      .get()
+    if (pending) throw createError({ statusCode: 400, statusMessage: '你有一笔待支付的该套餐订单,请先完成支付后再试' })
   }
 
   await db.insert(quotaPackageOrder).values({
