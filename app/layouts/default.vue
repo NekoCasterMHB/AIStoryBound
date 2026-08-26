@@ -115,15 +115,28 @@ async function onLogout() {
         </UButton>
 
         <template v-if="!user">
-          <UButton
-            color="neutral"
-            variant="outline"
-            icon="i-lucide-log-in"
-            size="sm"
-            @click="onLoginClick"
-          >
-            登录
-          </UButton>
+          <div class="lg:hidden">
+            <UButton
+              color="neutral"
+              variant="outline"
+              icon="i-lucide-log-in"
+              size="sm"
+              square
+              aria-label="登录"
+              @click="onLoginClick"
+            />
+          </div>
+          <div class="hidden lg:block">
+            <UButton
+              color="neutral"
+              variant="outline"
+              icon="i-lucide-log-in"
+              size="sm"
+              @click="onLoginClick"
+            >
+              <span>登录</span>
+            </UButton>
+          </div>
         </template>
         <template v-else>
           <UDropdownMenu
