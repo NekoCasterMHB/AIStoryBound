@@ -69,6 +69,42 @@ function pickStatus(s: string) {
   void load(1)
 }
 
+// ---- 充值测试:创建 0.1 元订单,走真实支付回调链路验证到账 ----
+const testOpen = ref(false)
+const testBusy = ref<'wxpay' | 'alipay' | null>(null)
+const testError = ref('')
+
+async function startTest(payType: 'wxpay' | 'alipay') {
+  if (testBusy.value) return
+  testBusy.value = payType
+  testError.value = ''
+  try {
+    const res = await $fetch<{ action: string, params: Record<string, string> }>('/api/admin/recharge/test-create', {
+      method: 'POST',
+      body: { payType }
+    })
+    testOpen.value = false
+    // 与用户充值时一致的动态 form POST 跳转网关收银台
+    const form = document.createElement('form')
+    form.method = 'POST'
+    form.action = res.action
+    form.style.display = 'none'
+    for (const [k, v] of Object.entries(res.params)) {
+      const input = document.createElement('input')
+      input.type = 'hidden'
+      input.name = k
+      input.value = v
+      form.appendChild(input)
+    }
+    document.body.appendChild(form)
+    form.submit()
+  } catch (e) {
+    testError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    testBusy.value = null
+  }
+}
+
 function fmtTs(ts: number | null) {
   return ts ? new Date(ts).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' }) : '—'
 }
@@ -78,13 +114,23 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize))
 
 <template>
   <div class="mx-auto max-w-6xl px-4 py-6">
-    <div class="mb-5">
-      <h1 class="text-xl font-semibold">
-        充值记录
-      </h1>
-      <p class="text-sm text-neutral-500">
-        全部 token 加油包订单(微支付网关回调入账,无需人工确认)
-      </p>
+    <div class="mb-5 flex items-start justify-between gap-4">
+      <div>
+        <h1 class="text-xl font-semibold">
+          充值记录
+        </h1>
+        <p class="text-sm text-neutral-500">
+          全部 token 加油包订单(微支付网关回调入账,无需人工确认)
+        </p>
+      </div>
+      <UButton
+        color="warning"
+        variant="soft"
+        icon="i-lucide-flask-conical"
+        @click="testOpen = true"
+      >
+        充值测试(0.1 元)
+      </UButton>
     </div>
 
     <!-- 状态筛选(计数来自接口统计) -->
@@ -212,5 +258,59 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize))
         </div>
       </div>
     </UCard>
+
+    <!-- 充值测试弹窗 -->
+    <UModal
+      v-model:open="testOpen"
+      title="充值测试(0.1 元)"
+    >
+      <template #body>
+        <div class="space-y-4">
+          <UAlert
+            color="warning"
+            variant="soft"
+            icon="i-lucide-circle-alert"
+            title="测试说明"
+            description="创建一笔 0.1 元测试订单,走与用户充值完全相同的支付与回调链路。支付成功后订单会变为已支付(不入账 token),请到网关完成付款后回到本页确认到账。"
+          />
+          <p
+            v-if="testError"
+            class="text-sm text-red-500"
+          >
+            {{ testError }}
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="grid w-full grid-cols-2 gap-2">
+          <UButton
+            block
+            class="bg-[#07C160]! text-white!"
+            :loading="testBusy === 'wxpay'"
+            :disabled="testBusy !== null"
+            @click="startTest('wxpay')"
+          >
+            <UIcon
+              name="i-simple-icons-wechat"
+              class="size-5 shrink-0"
+            />
+            微信支付 0.1 元
+          </UButton>
+          <UButton
+            block
+            class="bg-[#1677FF]! text-white!"
+            :loading="testBusy === 'alipay'"
+            :disabled="testBusy !== null"
+            @click="startTest('alipay')"
+          >
+            <UIcon
+              name="i-simple-icons-alipay"
+              class="size-5 shrink-0"
+            />
+            支付宝 0.1 元
+          </UButton>
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

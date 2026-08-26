@@ -86,6 +86,21 @@ export function isTokenPackageId(id: string): boolean {
   return TOKEN_PACKAGES.some(p => p.id === id)
 }
 
+/**
+ * 管理端充值链路测试套餐(0.1 元):仅供 admin/recharge/test-create 下单,
+ * 不入 TOKEN_PACKAGES(避免出现在用户购买页),tokens=0 保证回调只验证入账链路、不发放配额。
+ * 回调校验(getTokenPackageById)需能查到它,故单独注册。
+ */
+export const TEST_PACKAGE: TokenPackage = {
+  id: 'tokens_test_0_1',
+  label: '充值测试 0.1 元',
+  shortLabel: '测试0.1',
+  description: '管理端充值链路测试',
+  description2: '支付成功后订单置为已支付,不入账 token',
+  tokens: 0,
+  priceYuan: 0.1
+}
+
 export function getTokenPackageById(id: string): TokenPackage | undefined {
-  return TOKEN_PACKAGES.find(p => p.id === id)
+  return TOKEN_PACKAGES.find(p => p.id === id) ?? (id === TEST_PACKAGE.id ? TEST_PACKAGE : undefined)
 }
