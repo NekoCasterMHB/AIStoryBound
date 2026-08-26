@@ -10,6 +10,16 @@ import { quotaPackageOrder, user as usersTable } from '../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
 import { uuid } from '../../shared/novel'
 
+/** 解码常见 HTML 实体(网关对 param 等字段可能做实体编码) */
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+}
+
 export async function handlePaymentNotify(event: H3Event): Promise<string> {
   const query = getQuery(event)
   const body = await readBody<Record<string, unknown>>(event).catch(() => ({}))
@@ -31,9 +41,10 @@ export async function handlePaymentNotify(event: H3Event): Promise<string> {
   // 3) 关键字段
   const outTradeNo = params.out_trade_no
   const amountFen = Math.round(parseFloat(params.money ?? '') * 100)
+  // 网关返回/回调的 param 可能为 HTML 实体编码({&quot;userId&quot;...}),先解码再解析
   let biz: { userId?: string, packageId?: string }
   try {
-    biz = JSON.parse(params.param ?? '{}')
+    biz = JSON.parse(decodeHtmlEntities(params.param ?? '{}'))
   } catch {
     return 'fail'
   }
