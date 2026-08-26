@@ -368,7 +368,7 @@ const features = [
       class="pointer-events-none absolute inset-0"
     >
       <div class="bg-grid absolute inset-0" />
-      <div class="absolute -top-40 left-1/2 h-[480px] w-[760px] -translate-x-1/2 rounded-full bg-primary-400/20 blur-3xl dark:bg-primary-500/10" />
+      <div class="absolute -top-40 left-1/2 h-120 w-190 -translate-x-1/2 rounded-full bg-primary-400/20 blur-3xl dark:bg-primary-500/10" />
       <div class="animate-drift absolute left-[6%] top-44 size-40 rounded-full bg-primary-300/20 blur-3xl dark:bg-primary-600/10" />
       <div
         class="animate-drift absolute right-[4%] top-72 size-56 rounded-full bg-primary-500/15 blur-3xl dark:bg-primary-700/10"
@@ -386,7 +386,7 @@ const features = [
           />
           AI 驱动 · 本地优先 · 世界观一致
         </p>
-        <h1 class="mx-auto mt-6 max-w-3xl text-4xl font-bold leading-tight tracking-tight text-(--ui-text-highlighted) sm:text-5xl">
+        <h1 class="mx-auto mt-6 max-w-3xl text-4xl font-bold leading-tight tracking-tight text-highlighted sm:text-5xl">
           把一本小说,变成<br class="hidden sm:block"><span class="text-gradient">可走进的世界</span>
         </h1>
         <p class="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-neutral-600 dark:text-neutral-400 sm:text-lg">
@@ -415,7 +415,7 @@ const features = [
       <!-- 主卡片:未登录引导 / 上传 / 生成中 / 完成 / 失败 -->
       <div
         ref="uploadCard"
-        class="mx-auto mt-14 max-w-4xl scroll-mt-6 rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm shadow-neutral-900/[0.03] dark:border-neutral-800 dark:bg-neutral-900/60 sm:p-10"
+        class="mx-auto mt-14 max-w-4xl scroll-mt-6 rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm shadow-neutral-900/3 dark:border-neutral-800 dark:bg-neutral-900/60 sm:p-10"
       >
         <input
           ref="fileInput"
@@ -436,7 +436,7 @@ const features = [
               class="size-6"
             />
           </div>
-          <p class="mt-5 text-lg font-semibold text-(--ui-text-highlighted)">
+          <p class="mt-5 text-lg font-semibold text-highlighted">
             登录后即可生成世界
           </p>
           <p class="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
@@ -459,19 +459,19 @@ const features = [
           v-else-if="genState.phase === 'idle'"
           class="rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-200 sm:p-14"
           :class="isDragging
-            ? 'border-primary-500 bg-primary-500/[0.04]'
+            ? 'border-primary-500 bg-primary-500/4'
             : 'border-neutral-300/80 bg-neutral-50/50 dark:border-neutral-700/80 dark:bg-neutral-950/30'"
           @dragover.prevent="isDragging = true"
           @dragleave.prevent="isDragging = false"
           @drop.prevent="onDrop"
         >
-          <div class="mx-auto flex size-12 items-center justify-center rounded-xl bg-gradient-to-br from-green-500/15 to-teal-500/15 text-primary-600 dark:text-primary-400">
+          <div class="mx-auto flex size-12 items-center justify-center rounded-xl bg-linear-to-br from-green-500/15 to-teal-500/15 text-primary-600 dark:text-primary-400">
             <UIcon
               name="i-lucide-upload"
               class="size-6"
             />
           </div>
-          <p class="mt-5 text-base font-semibold text-(--ui-text-highlighted)">
+          <p class="mt-5 text-base font-semibold text-highlighted">
             拖入整本 TXT,或点击选择文件
           </p>
           <p class="mx-auto mt-1.5 max-w-sm text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
@@ -536,7 +536,7 @@ const features = [
             </div>
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
-                <p class="truncate text-sm font-semibold text-(--ui-text-highlighted)">
+                <p class="truncate text-sm font-semibold text-highlighted">
                   {{ pendingGen?.title }}
                 </p>
                 <UBadge
@@ -651,7 +651,7 @@ const features = [
               />
             </div>
             <div class="min-w-0 flex-1">
-              <p class="truncate text-sm font-semibold text-(--ui-text-highlighted)">
+              <p class="truncate text-sm font-semibold text-highlighted">
                 {{ genState.title }}
               </p>
               <p class="mt-0.5 text-xs text-neutral-500">
@@ -718,7 +718,7 @@ const features = [
           <div class="flex items-center gap-3">
             <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800">
               <div
-                class="h-full rounded-full bg-gradient-to-r from-primary-500 to-teal-400 transition-[width] duration-500 ease-out"
+                class="h-full rounded-full bg-linear-to-r from-primary-500 to-teal-400 transition-[width] duration-500 ease-out"
                 :style="{ width: `${genPercent}%` }"
               />
             </div>
@@ -770,7 +770,7 @@ const features = [
               class="size-7"
             />
           </div>
-          <p class="mt-5 text-lg font-semibold text-(--ui-text-highlighted)">
+          <p class="mt-5 text-lg font-semibold text-highlighted">
             《{{ genState.title }}》世界已生成
           </p>
           <div class="mt-3 flex flex-wrap items-center justify-center gap-2 text-xs">
@@ -828,7 +828,7 @@ const features = [
               class="size-6"
             />
           </div>
-          <p class="mt-5 text-lg font-semibold text-(--ui-text-highlighted)">
+          <p class="mt-5 text-lg font-semibold text-highlighted">
             生成失败
           </p>
           <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
@@ -856,7 +856,7 @@ const features = [
           <p class="text-xs font-semibold tracking-widest text-primary-600 dark:text-primary-400">
             流程
           </p>
-          <h2 class="mt-2 text-2xl font-bold tracking-tight text-(--ui-text-highlighted) sm:text-3xl">
+          <h2 class="mt-2 text-2xl font-bold tracking-tight text-highlighted sm:text-3xl">
             从一本小说到可玩的世界
           </h2>
           <p class="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
@@ -881,7 +881,7 @@ const features = [
                 class="size-5"
               />
             </div>
-            <h3 class="font-semibold text-(--ui-text-highlighted)">
+            <h3 class="font-semibold text-highlighted">
               {{ step.title }}
             </h3>
             <p class="mt-2 text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
@@ -901,13 +901,13 @@ const features = [
           :key="f.title"
           class="group rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-500)_30%,transparent)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-400)_15%,transparent)]"
         >
-          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500/15 to-primary-400/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
+          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-linear-to-br from-primary-500/15 to-primary-400/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
             <UIcon
               :name="f.icon"
               class="size-5"
             />
           </div>
-          <h3 class="font-semibold text-(--ui-text-highlighted)">
+          <h3 class="font-semibold text-highlighted">
             {{ f.title }}
           </h3>
           <p class="mt-2 text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">

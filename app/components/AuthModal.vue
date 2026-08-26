@@ -187,7 +187,7 @@ function resetRegister() {
 
 // ---- 视图切换:登录 ⇄ 注册(互不混排) ----
 const view = ref<'login' | 'register'>('login')
-const modalTitle = computed(() => view.value === 'login' ? '登录 AIWord2World' : '注册账号')
+const modalTitle = computed(() => view.value === 'login' ? '登录 AI Word2World' : '注册账号')
 const modalDescription = computed(() => view.value === 'login'
   ? '未登录仅可预览;登录后生成世界并保存作品'
   : '注册即赠送 30 万 token,生成世界与游戏回合按实际用量消耗')
@@ -463,7 +463,7 @@ const tabs = ref<TabsItem[]>([
           class="space-y-3"
         >
           <p class="text-sm text-neutral-500 dark:text-neutral-400">
-            验证码已发送至 <b class="font-semibold text-(--ui-text-highlighted)">{{ regForm.email }}</b>,5 分钟内有效。
+            验证码已发送至 <b class="font-semibold text-highlighted">{{ regForm.email }}</b>,5 分钟内有效。
           </p>
           <div class="flex gap-2">
             <UInput

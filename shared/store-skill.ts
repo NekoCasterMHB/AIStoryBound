@@ -55,6 +55,8 @@ export interface StoreSkillSummary {
   tags: string[]
   /** 已上架版本(版本号倒序;「获取技能」可切换,旧版本通过后保持可下载) */
   versions: { version: number, createdAt: number }[]
+  /** 发布者手动指定的主版本;为空 = 最新已上架版本(商城展示快照来源,「获取技能」默认目标) */
+  mainVersion: number | null
   /** SKILL.md 正文摘要(卡片说明区展示,取第一段正文) */
   readme: string
 }

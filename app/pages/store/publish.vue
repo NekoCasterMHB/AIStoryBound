@@ -19,7 +19,7 @@ const isUpdate = !!skillId
 /** 更新模式下将生成的新版本号(现有最新版本 +1) */
 const nextVersion = ref(0)
 
-useHead({ title: `AIWord2World · ${isUpdate ? '更新 Skill' : '发布 Skill'}` })
+useHead({ title: `AI Word2World · ${isUpdate ? '更新 Skill' : '发布 Skill'}` })
 
 const { data: session } = await useAuthSession()
 if (!session.value) {
@@ -222,7 +222,7 @@ async function submit() {
         </UFormField>
         <p v-else class="text-xs text-neutral-500">
           更新版本沿用当前售价
-          <span class="font-semibold text-(--ui-text-highlighted)">{{ currentPrice.toLocaleString() }} tokens</span>
+          <span class="font-semibold text-highlighted">{{ currentPrice.toLocaleString() }} tokens</span>
           ,不可修改;如确需改价请通过其他渠道联系管理员
         </p>
 
@@ -289,7 +289,7 @@ async function submit() {
       <template #body>
         <div class="space-y-5 text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
           <section>
-            <h3 class="mb-1 font-semibold text-(--ui-text-highlighted)">
+            <h3 class="mb-1 font-semibold text-highlighted">
               什么是 Skill
             </h3>
             <p>
@@ -305,7 +305,7 @@ async function submit() {
           </section>
 
           <section>
-            <h3 class="mb-1 font-semibold text-(--ui-text-highlighted)">
+            <h3 class="mb-1 font-semibold text-highlighted">
               SKILL.md 的两部分
             </h3>
             <ul class="list-disc space-y-1 pl-5">
@@ -328,7 +328,7 @@ async function submit() {
           </section>
 
           <section>
-            <h3 class="mb-1 font-semibold text-(--ui-text-highlighted)">
+            <h3 class="mb-1 font-semibold text-highlighted">
               可选目录
             </h3>
             <ul class="list-disc space-y-1 pl-5">
@@ -340,7 +340,7 @@ async function submit() {
           </section>
 
           <section>
-            <h3 class="mb-1 font-semibold text-(--ui-text-highlighted)">
+            <h3 class="mb-1 font-semibold text-highlighted">
               写好 description(最重要)
             </h3>
             <ul class="list-disc space-y-1 pl-5">
@@ -356,7 +356,7 @@ async function submit() {
           </section>
 
           <section>
-            <h3 class="mb-1 font-semibold text-(--ui-text-highlighted)">
+            <h3 class="mb-1 font-semibold text-highlighted">
               写好 body(给另一个 AI 的指令)
             </h3>
             <ul class="list-disc space-y-1 pl-5">
@@ -377,7 +377,7 @@ async function submit() {
           </section>
 
           <section>
-            <h3 class="mb-1 font-semibold text-(--ui-text-highlighted)">
+            <h3 class="mb-1 font-semibold text-highlighted">
               信息分层(常见错误)
             </h3>
             <ul class="space-y-1 pl-5">
@@ -401,7 +401,7 @@ async function submit() {
           </section>
 
           <section>
-            <h3 class="mb-1 font-semibold text-(--ui-text-highlighted)">
+            <h3 class="mb-1 font-semibold text-highlighted">
               命名与避坑
             </h3>
             <ul class="list-disc space-y-1 pl-5">
@@ -413,7 +413,7 @@ async function submit() {
           </section>
 
           <section>
-            <h3 class="mb-1 font-semibold text-(--ui-text-highlighted)">
+            <h3 class="mb-1 font-semibold text-highlighted">
               针对本项目的完整示例
             </h3>
             <p>
@@ -444,7 +444,7 @@ description: 教学 AI 如何正确进行成人玩法互动。Use when 用户请
           </section>
 
           <section>
-            <h3 class="mb-1 font-semibold text-(--ui-text-highlighted)">
+            <h3 class="mb-1 font-semibold text-highlighted">
               本平台上架要求
             </h3>
             <ul class="list-disc space-y-1 pl-5">

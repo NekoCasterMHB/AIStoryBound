@@ -19,7 +19,7 @@ async function onStartGenerate() {
       class="pointer-events-none absolute inset-0"
     >
       <div class="bg-grid absolute inset-0" />
-      <div class="absolute -top-40 left-1/2 h-[480px] w-[760px] -translate-x-1/2 rounded-full bg-primary-400/20 blur-3xl dark:bg-primary-500/10" />
+      <div class="absolute -top-40 left-1/2 h-120 w-190 -translate-x-1/2 rounded-full bg-primary-400/20 blur-3xl dark:bg-primary-500/10" />
       <div class="animate-drift absolute left-[6%] top-44 size-40 rounded-full bg-primary-300/20 blur-3xl dark:bg-primary-600/10" />
       <div
         class="animate-drift absolute right-[4%] top-72 size-56 rounded-full bg-primary-500/15 blur-3xl dark:bg-primary-700/10"
@@ -36,7 +36,7 @@ async function onStartGenerate() {
         AI 驱动 · 本地优先 · 世界观一致
       </p>
 
-      <h1 class="mx-auto max-w-3xl text-4xl font-bold leading-tight tracking-tight text-(--ui-text-highlighted) sm:text-5xl">
+      <h1 class="mx-auto max-w-3xl text-4xl font-bold leading-tight tracking-tight text-highlighted sm:text-5xl">
         把每一本小说,变成<br>
         <span class="text-gradient">真实可互动的世界</span>
       </h1>
@@ -87,7 +87,7 @@ async function onStartGenerate() {
             />
             五类实体
           </dt>
-          <dd class="mt-1 text-sm font-semibold text-(--ui-text-highlighted)">
+          <dd class="mt-1 text-sm font-semibold text-highlighted">
             人物 · 地点 · 势力 · 规则 · 伏笔
           </dd>
         </div>
@@ -99,7 +99,7 @@ async function onStartGenerate() {
             />
             原文溯源
           </dt>
-          <dd class="mt-1 text-sm font-semibold text-(--ui-text-highlighted)">
+          <dd class="mt-1 text-sm font-semibold text-highlighted">
             每条设定带章节出处
           </dd>
         </div>
@@ -111,7 +111,7 @@ async function onStartGenerate() {
             />
             OOC 防护
           </dt>
-          <dd class="mt-1 text-sm font-semibold text-(--ui-text-highlighted)">
+          <dd class="mt-1 text-sm font-semibold text-highlighted">
             人物卡锁定性格边界
           </dd>
         </div>
@@ -123,7 +123,7 @@ async function onStartGenerate() {
             />
             随时回滚
           </dt>
-          <dd class="mt-1 text-sm font-semibold text-(--ui-text-highlighted)">
+          <dd class="mt-1 text-sm font-semibold text-highlighted">
             每回合可重选分支
           </dd>
         </div>

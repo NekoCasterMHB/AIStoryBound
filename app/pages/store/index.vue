@@ -97,6 +97,15 @@ const buyOpen = ref(false)
 const buying = ref(false)
 /** 购买模态框阶段:confirm=确认购买 / fetch=购买完成,引导立即获取技能 */
 const buyStage = ref<'confirm' | 'fetch'>('confirm')
+/** 确认框展示的当前余额(收费技能打开时从 /api/profile/me 拉取,供显示支付后余额) */
+const buyBalance = ref<number | null>(null)
+const buyBalanceLoading = ref(false)
+/** 余额已知且不足以支付时,确认按钮禁用并提示充值 */
+const buyInsufficient = computed(() => {
+  const t = buyTarget.value
+  const b = buyBalance.value
+  return !!t && t.price > 0 && b !== null && b < t.price
+})
 
 async function onBuy(skill: StoreSkillSummary) {
   const ok = await requireLogin()
@@ -104,6 +113,18 @@ async function onBuy(skill: StoreSkillSummary) {
   buyTarget.value = skill
   buyStage.value = 'confirm'
   buyOpen.value = true
+  buyBalance.value = null
+  if (skill.price > 0) {
+    buyBalanceLoading.value = true
+    try {
+      const me = await $fetch<{ aiTokenBalance?: number }>('/api/profile/me')
+      buyBalance.value = me?.aiTokenBalance ?? null
+    } catch {
+      buyBalance.value = null
+    } finally {
+      buyBalanceLoading.value = false
+    }
+  }
 }
 
 async function confirmBuy() {
@@ -173,7 +194,7 @@ async function onDownload(id: string, name: string, version?: number) {
     saveBlob(blob, `${clean}${version ? `-v${version}` : ''}.zip`)
     toast.add({
       title: '已下载并启用',
-      description: `「${skill.name}」已加入技能管理(个人中心)并自动启用,游玩按此玩法展开`,
+      description: `「${skill.name}」已加入技能管理(个人中心)并自动启用,游玩时 AI 将按此 SOP 展开专业玩法`,
       color: 'success'
     })
   } catch (e) {
@@ -187,18 +208,36 @@ async function onDownload(id: string, name: string, version?: number) {
   }
 }
 
-/** 卡片上当前选中的获取版本(默认最新已上架版本) */
-function defaultSkillVersion(s: StoreSkillSummary) {
-  return verSel[s.id] ?? s.versions[0]?.version
+/** 卡片上当前选中的获取版本(默认主版本,未设置主版本时取最新已上架版本) */
+function defaultSkillVersion(s: StoreSkillSummary): number | undefined {
+  return verSel[s.id] ?? cardMainVersion(s) ?? undefined
 }
 
-/** 卡片「获取技能」的版本菜单:全部已上架版本,当前选中项打勾 */
+/** 卡片「当前主版本」:发布者手动指定优先,否则最新已上架版本(versions[0]) */
+function cardMainVersion(s: StoreSkillSummary): number | null {
+  if (typeof s.mainVersion === 'number' && s.versions.some(v => v.version === s.mainVersion)) return s.mainVersion
+  return s.versions[0]?.version ?? null
+}
+
+/** 卡片「获取技能」按钮文案:选中的是主版本时不带版本号;其余版本带版本号 */
+function fetchLabel(s: StoreSkillSummary): string {
+  const ver = defaultSkillVersion(s)
+  if (typeof ver !== 'number') return '获取技能'
+  return ver === cardMainVersion(s) ? '获取技能' : `获取技能 v${ver}`
+}
+
+/** 卡片「获取技能」的版本菜单:开头「获取特定版本」标题,每个版本独立分组(组间分割线),当前选中项打勾,主版本带「主版本」标记 */
 function cardVersionItems(s: StoreSkillSummary) {
-  return s.versions.map(v => ({
-    label: `v${v.version} · ${fmtDay(v.createdAt)}`,
-    icon: v.version === defaultSkillVersion(s) ? 'i-lucide-check' : 'i-lucide-download',
-    onSelect: () => { verSel[s.id] = v.version }
-  }))
+  const main = cardMainVersion(s)
+  return [
+    [{ type: 'label' as const, label: '获取特定版本' }],
+    ...s.versions.map(v => [{
+      label: `v${v.version} · 发布日期:${fmtDay(v.createdAt)}`,
+      icon: v.version === defaultSkillVersion(s) ? 'i-lucide-check' : 'i-lucide-download',
+      kbds: v.version === main ? ['主版本'] : undefined,
+      onSelect: () => { verSel[s.id] = v.version }
+    }])
+  ]
 }
 
 /** 已本地安装(IndexedDB,含未启用)的商城技能 id,用于卡片「已获取」判定 */
@@ -210,12 +249,12 @@ function isDownloaded(id: string) {
 /** 本地已装版本号(key=商城商品 id;无商城来源记录时为 undefined) */
 const downloadedVersions = ref<Record<string, number>>({})
 
-/** 本地版本是否落后于商城最新启用版本(本地无版本号视为未知,不提示更新) */
+/** 本地版本是否落后于卡片默认获取的版本(默认=主版本;本地无版本号视为未知,不提示更新) */
 function hasStoreUpdate(s: StoreSkillSummary): boolean {
   const local = downloadedVersions.value[s.id]
   if (typeof local !== 'number') return false
-  const latest = s.versions[0]?.version
-  return typeof latest === 'number' && local < latest
+  const target = defaultSkillVersion(s)
+  return typeof target === 'number' && local < target
 }
 
 async function loadDownloaded() {
@@ -246,7 +285,7 @@ async function onFetch(id: string, version: number | undefined, name?: string) {
     }
     toast.add({
       title: '已获取并启用',
-      description: `「${skill.name}」已加入技能管理(个人中心)并自动启用,游玩按此玩法展开`,
+      description: `「${skill.name}」已加入技能管理(个人中心)并自动启用,游玩时 AI 将按此 SOP 展开专业玩法`,
       color: 'success'
     })
   } catch (e) {
@@ -524,11 +563,15 @@ async function onPreviewFile(i: number) {
   <div class="mx-auto max-w-6xl px-4 py-6">
     <div class="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 class="text-xl font-semibold">
+        <h1 class="flex items-center gap-2 text-xl font-semibold">
+          <UIcon
+            name="i-lucide-store"
+            class="size-5 text-primary"
+          />
           Skill 商城
         </h1>
         <p class="mt-1 text-sm text-neutral-500">
-          用 token 选购 agent skill,购买后永久可下载;你也可以发布自己的 skill 赚取 token
+          用 token 选购 agent skill 玩法,下载即自动安装并启用;游玩时 AI 按技能 SOP 展开专业玩法,也可调教出符合 xp 的专属人格。发布自己的 skill 还能赚取 token
         </p>
       </div>
       <UButton
@@ -577,6 +620,7 @@ async function onPreviewFile(i: number) {
             v-for="s in skills"
             :key="s.id"
             class="flex flex-col"
+            :ui="{ body: 'flex-1' }"
           >
             <!-- 第一行:方形圆角图标 + 标题 + 标题下方标签 -->
             <div class="flex items-start gap-3">
@@ -603,7 +647,7 @@ async function onPreviewFile(i: number) {
                     variant="subtle"
                     class="shrink-0"
                   >
-                    v{{ s.versions[0]?.version }}
+                    v{{ cardMainVersion(s) }}
                   </UBadge>
                   <UBadge
                     v-if="s.featured === 1"
@@ -633,61 +677,94 @@ async function onPreviewFile(i: number) {
                 </div>
               </div>
             </div>
-            <!-- 第二行:说明文 = SKILL.md 正文第一段,最多 5 行省略 -->
-            <p class="mt-3 line-clamp-5 min-h-28 text-sm leading-relaxed text-neutral-500">
+            <!-- 第二行:说明文 = SKILL.md 正文第一段,最多 3 行省略 -->
+            <p class="mt-3 line-clamp-3 min-h-17 text-sm leading-relaxed text-neutral-500">
               {{ firstParagraph(s.readme) || s.desc || '暂无说明' }}
             </p>
-            <p class="mt-2 flex items-center gap-1 text-xs text-neutral-400">
-              <UIcon
-                name="i-lucide-user-round"
-                class="size-3.5"
-              />
-              发布者:{{ s.sellerName }}
-            </p>
-            <div class="mt-4 flex items-center justify-between gap-2 border-t border-neutral-100 pt-3 dark:border-neutral-900">
-              <div class="flex items-center gap-2">
-                <UButton
-                  size="sm"
-                  variant="ghost"
-                  color="neutral"
-                  icon="i-lucide-eye"
-                  aria-label="预览内容"
-                  @click="onPreview(s)"
+            <div class="mt-2 flex items-center justify-between text-xs">
+              <div class="flex items-center gap-3">
+                <span
+                  class="flex items-center gap-1 tabular-nums text-neutral-500"
+                  :title="`下载 ${s.downloadCount}`"
                 >
-                  预览
-                </UButton>
-                <p
+                  <UIcon
+                    name="i-lucide-download"
+                    class="size-3.5"
+                  />
+                  {{ s.downloadCount }}
+                </span>
+                <UBadge
                   v-if="s.price > 0"
-                  class="text-sm tabular-nums"
+                  color="warning"
+                  variant="soft"
+                  size="sm"
+                  icon="i-lucide-coins"
+                  leading
+                  class="tabular-nums"
                 >
-                  <span class="font-semibold text-(--ui-text-highlighted)">{{ fmtTokens(s.price) }}</span>
-                  <span class="text-neutral-500"> tokens</span>
-                </p>
-              </div>
-              <UButtonGroup v-if="s.owned && !isDownloaded(s.id)">
-                <UButton
+                  {{ fmtTokens(s.price) }} tokens
+                </UBadge>
+                <UBadge
+                  v-else
                   color="success"
                   variant="soft"
                   size="sm"
+                >
+                  免费
+                </UBadge>
+              </div>
+              <p class="flex min-w-0 items-center gap-1 text-neutral-400">
+                <UIcon
+                  name="i-lucide-user-round"
+                  class="size-3.5 shrink-0"
+                />
+                <span class="truncate">{{ s.sellerName }}</span>
+              </p>
+            </div>
+            <!-- Footer:预览(左)与获取/购买(右)分区,互不混排 -->
+            <template #footer>
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <UButton
+                    size="md"
+                    variant="outline"
+                    color="neutral"
+                    icon="i-lucide-book-open"
+                    aria-label="预览内容"
+                    @click="onPreview(s)"
+                  >
+                    预览
+                  </UButton>
+                </div>
+              <UFieldGroup
+                v-if="s.owned && !isDownloaded(s.id)"
+                class="flex-1"
+              >
+                <UButton
+                  block
+                  color="primary"
+                  size="md"
                   icon="i-lucide-download"
                   :loading="isInstalling(s.id, defaultSkillVersion(s))"
                   @click="onFetch(s.id, defaultSkillVersion(s), s.name)"
+                  class="flex-1"
                 >
-                  获取技能{{ s.versions.length ? ` v${defaultSkillVersion(s)}` : '' }}
+                  {{ fetchLabel(s) }}
                 </UButton>
                 <UDropdownMenu
                   v-if="s.versions.length"
                   :items="cardVersionItems(s)"
+                  :ui="{ item: 'text-xs' }"
                 >
                   <UButton
-                    color="success"
-                    variant="soft"
-                    size="sm"
+                    color="primary"
+                    size="md"
                     icon="i-lucide-chevron-down"
                     aria-label="选择获取版本"
+                    class="border-l border-white/30"
                   />
                 </UDropdownMenu>
-              </UButtonGroup>
+              </UFieldGroup>
               <UButton
                 v-else-if="s.owned && hasStoreUpdate(s)"
                 color="success"
@@ -716,32 +793,11 @@ async function onPreviewFile(i: number) {
                 :icon="s.price > 0 ? 'i-lucide-shopping-cart' : 'i-lucide-gift'"
                 @click="onBuy(s)"
               >
-                {{ s.price > 0 ? `购买 · ${fmtTokens(s.price)}` : '免费获取' }}
+                {{ s.price > 0 ? '支付并获取' : '免费获取' }}
               </UButton>
-            </div>
-            <div class="mt-2 flex items-center gap-3 text-xs tabular-nums text-neutral-500">
-              <span
-                class="flex items-center gap-1"
-                :title="`已售 ${s.purchaseCount}`"
-              >
-                <UIcon
-                  name="i-lucide-shopping-cart"
-                  class="size-3.5"
-                />
-                {{ s.purchaseCount }}
-              </span>
-              <span
-                class="flex items-center gap-1"
-                :title="`下载 ${s.downloadCount}`"
-              >
-                <UIcon
-                  name="i-lucide-download"
-                  class="size-3.5"
-                />
-                {{ s.downloadCount }}
-              </span>
-            </div>
-          </UCard>
+              </div>
+            </template>
+            </UCard>
         </div>
       </template>
 
@@ -859,12 +915,6 @@ async function onPreviewFile(i: number) {
               <p class="flex items-center gap-2 font-medium">
                 <span class="min-w-0 truncate">{{ row.original.name }}</span>
                 <UBadge
-                  size="sm"
-                  variant="subtle"
-                >
-                  v{{ row.original.latestVersion }}
-                </UBadge>
-                <UBadge
                   v-if="row.original.featured === 1"
                   color="primary"
                   size="sm"
@@ -910,15 +960,22 @@ async function onPreviewFile(i: number) {
             <span class="text-sm">{{ fmtDay(latestVersionOf(row.original)?.createdAt ?? row.original.createdAt) }}</span>
           </template>
           <template #versions-cell="{ row }">
-            <UButton
-              color="neutral"
-              variant="soft"
-              size="sm"
-              icon="i-lucide-history"
-              @click="openVersions(row.original)"
-            >
-              版本管理
-            </UButton>
+            <div class="flex items-center gap-2">
+              <UBadge
+                variant="subtle"
+              >
+                v{{ row.original.latestVersion }}
+              </UBadge>
+              <UButton
+                color="neutral"
+                variant="soft"
+                size="sm"
+                icon="i-lucide-history"
+                @click="openVersions(row.original)"
+              >
+                版本管理
+              </UButton>
+            </div>
           </template>
           <template #actions-cell="{ row }">
             <div class="flex justify-end">
@@ -941,22 +998,48 @@ async function onPreviewFile(i: number) {
       </template>
     </UTabs>
 
-    <!-- 购买确认弹窗 -->
+    <!-- 购买确认弹窗:收费技能展示余额变化,二次确认后支付 -->
     <UModal
       v-model:open="buyOpen"
-      :title="`${buyTarget && buyTarget.price > 0 ? '购买' : '免费获取'}「${buyTarget?.name ?? ''}」`"
+      :title="`${buyTarget && buyTarget.price > 0 ? '支付并获取' : '免费获取'}「${buyTarget?.name ?? ''}」`"
     >
       <template #body>
-        <!-- 阶段 1:确认购买/免费获取 -->
+        <!-- 阶段 1:确认支付/免费获取 -->
         <template v-if="buyStage === 'confirm'">
-          <p
-            v-if="buyTarget && buyTarget.price > 0"
-            class="text-sm text-neutral-600 dark:text-neutral-400"
-          >
-            将以
-            <span class="font-semibold text-(--ui-text-highlighted)">{{ fmtTokens(buyTarget.price) }} tokens</span>
-            购买该 Skill,购买后永久可下载。发布者将获得售价的 80%,20% 为平台手续费。
-          </p>
+          <template v-if="buyTarget && buyTarget.price > 0">
+            <p class="text-sm text-neutral-600 dark:text-neutral-400">
+              将支付
+              <span class="font-semibold text-highlighted">{{ fmtTokens(buyTarget.price) }} tokens</span>
+              获取该 Skill,购买后永久可下载。发布者将获得售价的 80%,20% 为平台手续费。
+            </p>
+            <div class="mt-3 space-y-1.5 rounded-lg border border-neutral-200 px-3 py-2.5 text-sm dark:border-neutral-800">
+              <p class="flex items-center justify-between gap-4">
+                <span class="text-neutral-500">当前余额</span>
+                <span class="tabular-nums text-highlighted">
+                  {{ buyBalanceLoading ? '获取中…' : (buyBalance === null ? '—' : `${fmtTokens(buyBalance)} tokens`) }}
+                </span>
+              </p>
+              <p class="flex items-center justify-between gap-4">
+                <span class="text-neutral-500">支付金额</span>
+                <span class="tabular-nums font-semibold text-red-500">- {{ fmtTokens(buyTarget.price) }} tokens</span>
+              </p>
+              <p class="flex items-center justify-between gap-4 border-t border-neutral-100 pt-1.5 dark:border-neutral-900">
+                <span class="text-neutral-500">支付后余额</span>
+                <span
+                  class="tabular-nums font-medium"
+                  :class="buyInsufficient ? 'text-red-500' : 'text-highlighted'"
+                >
+                  {{ buyBalanceLoading || buyBalance === null ? '—' : `${fmtTokens(Math.max(0, buyBalance - buyTarget.price))} tokens` }}
+                </span>
+              </p>
+            </div>
+            <p
+              v-if="buyInsufficient"
+              class="mt-2 text-xs text-red-500"
+            >
+              余额不足,请先到个人中心充值或兑换后再来获取
+            </p>
+          </template>
           <p
             v-else
             class="text-sm text-neutral-600 dark:text-neutral-400"
@@ -974,9 +1057,10 @@ async function onPreviewFile(i: number) {
             <UButton
               color="primary"
               :loading="buying"
+              :disabled="buyInsufficient"
               @click="confirmBuy"
             >
-              {{ buyTarget && buyTarget.price > 0 ? '确认购买' : '免费获取' }}
+              {{ buyTarget && buyTarget.price > 0 ? '确认支付' : '免费获取' }}
             </UButton>
           </div>
         </template>

@@ -21,6 +21,7 @@ export default defineEventHandler(async (event) => {
     purchaseCount: skillProducts.purchaseCount,
     sellerId: skillProducts.sellerId,
     createdAt: skillProducts.createdAt,
+    mainVersion: skillProducts.mainVersion,
     icon: skillProducts.icon,
     tags: skillProducts.tags,
     readme: skillProducts.readme
@@ -79,6 +80,7 @@ export default defineEventHandler(async (event) => {
     createdAt: Number(r.createdAt),
     owned: ownedIds.has(r.id),
     icon: r.icon,
+    mainVersion: r.mainVersion,
     tags: parseStoredTags(r.tags),
     versions: versionsBySkill.get(r.id) ?? [],
     // readme 为 SKILL.md 正文摘要(≤2000 字),前端取第一段展示在卡片上

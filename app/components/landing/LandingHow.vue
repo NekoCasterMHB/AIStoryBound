@@ -29,7 +29,7 @@ const steps = [
         <p class="text-xs font-semibold tracking-widest text-primary-600 dark:text-primary-400">
           玩法
         </p>
-        <h2 class="mt-2 text-2xl font-bold tracking-tight text-(--ui-text-highlighted) sm:text-3xl">
+        <h2 class="mt-2 text-2xl font-bold tracking-tight text-highlighted sm:text-3xl">
           三步,进入故事
         </h2>
         <p class="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
@@ -56,7 +56,7 @@ const steps = [
               class="size-5"
             />
           </div>
-          <h3 class="font-semibold text-(--ui-text-highlighted)">
+          <h3 class="font-semibold text-highlighted">
             {{ s.title }}
           </h3>
           <p class="mt-2 text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">

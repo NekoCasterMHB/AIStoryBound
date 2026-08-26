@@ -18,7 +18,7 @@ const visible = computed(() => (topDemands.value ?? []).slice(0, 3))
           <p class="text-xs font-semibold tracking-widest text-primary-600 dark:text-primary-400">
             需求墙
           </p>
-          <h2 class="mt-2 text-2xl font-bold tracking-tight text-(--ui-text-highlighted) sm:text-3xl">
+          <h2 class="mt-2 text-2xl font-bold tracking-tight text-highlighted sm:text-3xl">
             想让我们做什么
           </h2>
           <p class="mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
@@ -72,7 +72,7 @@ const visible = computed(() => (topDemands.value ?? []).slice(0, 3))
               {{ d.likeCount }} 赞
             </span>
           </div>
-          <p class="mt-3 line-clamp-2 font-semibold leading-snug text-(--ui-text-highlighted)">
+          <p class="mt-3 line-clamp-2 font-semibold leading-snug text-highlighted">
             {{ d.title }}
           </p>
           <p class="mt-2 line-clamp-2 text-sm text-neutral-500 dark:text-neutral-400">

@@ -15,7 +15,7 @@ async function onStartGenerate() {
     <div class="mx-auto max-w-6xl px-4 py-20">
       <div
         v-reveal
-        class="relative overflow-hidden rounded-3xl border border-primary-500/25 bg-gradient-to-br from-primary-500/10 via-transparent to-primary-400/10 px-6 py-16 text-center dark:border-primary-500/20 dark:from-primary-500/12 dark:to-primary-400/8"
+        class="relative overflow-hidden rounded-3xl border border-primary-500/25 bg-linear-to-br from-primary-500/10 via-transparent to-primary-400/10 px-6 py-16 text-center dark:border-primary-500/20 dark:from-primary-500/12 dark:to-primary-400/8"
       >
         <!-- 装饰光斑 -->
         <div
@@ -31,7 +31,7 @@ async function onStartGenerate() {
         </div>
 
         <div class="relative">
-          <h2 class="text-2xl font-bold tracking-tight text-(--ui-text-highlighted) sm:text-3xl">
+          <h2 class="text-2xl font-bold tracking-tight text-highlighted sm:text-3xl">
             准备好了吗?<br>
             把你最爱的书,变成<span class="text-gradient">可以走进去的世界</span>
           </h2>

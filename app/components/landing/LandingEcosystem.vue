@@ -16,11 +16,11 @@ const blocks = [
   {
     icon: 'i-lucide-store',
     title: 'Skill 玩法商城',
-    desc: '用 token 选购 agent skill 玩法,下载即自动安装并启用。\n游玩时 AI 按技能的 SOP 指引展开,玩法随买随用。',
+    desc: '用 token 选购 agent skill 玩法,下载即自动安装并启用。\n游玩时 AI 按技能的 SOP 指引展开,专业玩法与专属人格,随买随用。',
     points: [
-      '下载即装:校验后自动入技能库并启用,无需手动配置',
-      '技能管理:个人中心逐项开关,随时调整本场玩法',
-      '发布赚钱:上传你的 Skill 定价出售,实得售价的 80%'
+      '专业玩法:技能内嵌作者沉淀的 SOP 指引,装上即拥有专业级玩法体验',
+      '专属人格:人格 / 调教类技能,可调教出符合你 xp 的专属 AI 人格',
+      '下载即装:校验后自动入技能库并启用,发布你的 Skill 还能赚钱'
     ],
     cta: { label: '逛逛商城', icon: 'i-lucide-store', to: '/store' }
   }
@@ -34,7 +34,7 @@ const blocks = [
         <p class="text-xs font-semibold tracking-widest text-primary-600 dark:text-primary-400">
           分享与生态
         </p>
-        <h2 class="mt-2 text-2xl font-bold tracking-tight text-(--ui-text-highlighted) sm:text-3xl">
+        <h2 class="mt-2 text-2xl font-bold tracking-tight text-highlighted sm:text-3xl">
           故事可以分享,玩法可以生长
         </h2>
         <p class="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
@@ -49,13 +49,13 @@ const blocks = [
           v-reveal
           class="group flex flex-col rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-500)_30%,transparent)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-400)_15%,transparent)]"
         >
-          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500/15 to-primary-400/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
+          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-linear-to-br from-primary-500/15 to-primary-400/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
             <UIcon
               :name="b.icon"
               class="size-5"
             />
           </div>
-          <h3 class="font-semibold text-(--ui-text-highlighted)">
+          <h3 class="font-semibold text-highlighted">
             {{ b.title }}
           </h3>
           <p class="mt-2 whitespace-pre-line text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">

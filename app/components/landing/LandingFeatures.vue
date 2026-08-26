@@ -41,7 +41,7 @@ const features = [
         <p class="text-xs font-semibold tracking-widest text-primary-600 dark:text-primary-400">
           为什么选我们
         </p>
-        <h2 class="mt-2 text-2xl font-bold tracking-tight text-(--ui-text-highlighted) sm:text-3xl">
+        <h2 class="mt-2 text-2xl font-bold tracking-tight text-highlighted sm:text-3xl">
           不是聊天机器人,是忠于原著的世界
         </h2>
         <p class="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
@@ -56,13 +56,13 @@ const features = [
           v-reveal
           class="group rounded-2xl border border-neutral-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-primary-500/40 hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-500)_30%,transparent)] dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30 dark:hover:shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary-400)_15%,transparent)]"
         >
-          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500/15 to-primary-400/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
+          <div class="mb-3 flex size-10 items-center justify-center rounded-xl bg-linear-to-br from-primary-500/15 to-primary-400/15 text-primary-600 transition-transform duration-300 group-hover:scale-110 dark:text-primary-400">
             <UIcon
               :name="f.icon"
               class="size-5"
             />
           </div>
-          <h3 class="font-semibold text-(--ui-text-highlighted)">
+          <h3 class="font-semibold text-highlighted">
             {{ f.title }}
           </h3>
           <p class="mt-2 text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">

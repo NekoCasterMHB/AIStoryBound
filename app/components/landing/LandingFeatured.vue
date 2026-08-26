@@ -29,7 +29,7 @@ function bookTitle(title: string) {
           <p class="text-xs font-semibold tracking-widest text-primary-600 dark:text-primary-400">
             官方精选
           </p>
-          <h2 class="mt-2 text-2xl font-bold tracking-tight text-(--ui-text-highlighted) sm:text-3xl">
+          <h2 class="mt-2 text-2xl font-bold tracking-tight text-highlighted sm:text-3xl">
             推荐作品
           </h2>
           <p class="mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
@@ -84,7 +84,7 @@ function bookTitle(title: string) {
             :to="`/presets/${p.id}`"
             class="flex w-48 shrink-0 flex-col rounded-xl border border-neutral-200 bg-white px-4 py-3 transition-colors hover:border-primary-500/40 dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-primary-500/30"
           >
-            <span class="truncate font-semibold text-(--ui-text-highlighted)">
+            <span class="truncate font-semibold text-highlighted">
               {{ bookTitle(p.title) }}
             </span>
             <span

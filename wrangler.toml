@@ -1,4 +1,4 @@
-# AIWord2World — Cloudflare Worker 配置
+# AI Word2World — Cloudflare Worker 配置
 # 本地 dev: nitro-cloudflare-dev 通过 getPlatformProxy 读取本文件,在 Nitro dev server 模拟 binding
 # 部署:     wrangler deploy 将 binding 注入生产 Worker(与本地同构)
 # 类型:     修改 binding 后运行 `npx wrangler types` 重新生成 worker-configuration.d.ts
@@ -16,8 +16,8 @@ compatibility_flags = ["nodejs_compat"]
 # 需 wrangler 登录态(`npx wrangler whoami` 可查),未登录时该库回退为本地模拟;部署时此字段被忽略,始终走真实绑定。
 [[d1_databases]]
 binding = "DB"
-database_name = "aiSpankWorld"
-database_id = "a54b678b-1498-4db6-98e0-3794712e1f57"
+database_name = "aiword2world"
+database_id = "41cf9e1a-9453-4300-9b36-659fa8aff422"
 remote = true
 
 # Skill 商城文件存储(R2 bucket)
@@ -25,7 +25,7 @@ remote = true
 # 需 wrangler 登录态(`npx wrangler whoami` 可查);部署时始终走真实绑定。
 [[r2_buckets]]
 binding = "SKILL_FILES"
-bucket_name = "aistorybound"
+bucket_name = "aiword2world"
 remote = true
 
 # LLM 网关非敏感配置(注入 env.AI_BASE_URL / env.AI_MODEL,server/utils/ai.ts 读取)

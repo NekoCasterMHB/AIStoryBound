@@ -11,7 +11,7 @@ import { wrangler } from './wrangler.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const target = process.argv[2] === '--remote' ? '--remote' : '--local'
-const database = 'aiSpankWorld'
+const database = 'aiword2world'
 
 console.log(`[d1-migrate] applying ${database} (${target}) from drizzle/init.sql ...`)
 wrangler(['d1', 'execute', database, target, '--file', join(root, 'drizzle', 'init.sql')], { inheritStdio: true })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// /works — 我的书架(登录后):官方书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
+// /works — 我的书架(登录后):推荐书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
 import type { TabsItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, parseChaptersFromText } from '../utils/worldGen'
 import { listLocalGames, saveLocalGame } from '../utils/gameStore'
@@ -50,7 +50,7 @@ function readBadges(p: ReadingProgress | undefined): { label: string, color: 'su
   return b ? [b] : []
 }
 
-// ---- 官方书架(预置小说) ----
+// ---- 推荐书架(预置小说) ----
 const officialWorks = ref<PresetNovelRow[]>([])
 const officialLoading = ref(false)
 
@@ -243,8 +243,8 @@ function gameShareItems(g: LocalGame) {
 }
 
 const shelfTabs = ref<TabsItem[]>([
-  { label: '个人书架', value: 'personal', slot: 'personal' },
-  { label: '官方书架', value: 'official', slot: 'official' }
+  { label: '个人书架', icon: 'i-lucide-book-open', value: 'personal', slot: 'personal' },
+  { label: '推荐书架', icon: 'i-lucide-star', value: 'official', slot: 'official' }
 ])
 const activeTab = ref('personal')
 
@@ -366,7 +366,11 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
     >
     <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-xl font-semibold">
+        <h1 class="flex items-center gap-2 text-xl font-semibold">
+          <UIcon
+            name="i-lucide-library"
+            class="size-5 text-primary"
+          />
           我的书架
         </h1>
       </div>
@@ -396,14 +400,20 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       variant="pill"
       color="primary"
     >
-      <!-- 官方书架:预置小说,点击进入预览页用其生成世界 -->
+      <!-- 推荐书架:预置小说,点击进入预览页用其生成世界 -->
       <template #official>
         <div class="mt-4">
+          <p
+            class="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900"
+          >
+            声明:推荐书架内的小说均由网友自发上传,仅用于个人学习与娱乐;若涉及版权问题,请联系我们删除。
+          </p>
+          <div class="mt-4">
           <div
             v-if="officialLoading && officialWorks.length === 0"
             class="text-sm text-neutral-500"
           >
-            正在加载官方书架…
+            正在加载推荐书架…
           </div>
           <div
             v-else-if="officialWorks.length === 0"

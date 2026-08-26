@@ -29,7 +29,7 @@ const items = ref<AccordionItem[]>([
   },
   {
     label: 'Skill 商城是什么?怎么用?',
-    content: 'Skill 商城用 token 选购 agent skill 玩法。下载后会自动校验、安装进技能库并启用,游戏时 AI 按技能的指引展开对应玩法;个人中心的「技能管理」可以随时逐项开关。你也可以发布自己的 Skill 定价出售,实得售价的 80%。'
+    content: 'Skill 商城用 token 选购 agent skill 玩法。下载后自动校验、安装进技能库并启用,游玩时 AI 按作者在技能里写好的 SOP 指引展开 —— 专业级玩法装上即有;人格 / 调教类技能还能让 AI 演绎符合你 xp 的专属人格。个人中心的「技能管理」可随时逐项开关,也可以发布自己的 Skill 定价出售,实得售价的 80%。'
   }
 ])
 </script>
@@ -44,7 +44,7 @@ const items = ref<AccordionItem[]>([
         <p class="text-xs font-semibold tracking-widest text-primary-600 dark:text-primary-400">
           常见问题
         </p>
-        <h2 class="mt-2 text-2xl font-bold tracking-tight text-(--ui-text-highlighted) sm:text-3xl">
+        <h2 class="mt-2 text-2xl font-bold tracking-tight text-highlighted sm:text-3xl">
           还有疑问?
         </h2>
       </div>
@@ -52,7 +52,7 @@ const items = ref<AccordionItem[]>([
       <UAccordion
         v-reveal
         :items="items"
-        class="[&_[role=region]]:text-sm [&_[role=region]]:leading-relaxed [&_[role=region]]:text-neutral-600 dark:[&_[role=region]]:text-neutral-400"
+        class="**:[[role=region]]:text-sm **:[[role=region]]:leading-relaxed **:[[role=region]]:text-neutral-600 dark:**:[[role=region]]:text-neutral-400"
       />
     </div>
   </section>

@@ -28,7 +28,7 @@ async function onLogout() {
 <template>
   <div>
     <!-- :toggle="false" 去掉移动端最右侧的侧边栏展开按钮(本布局未提供侧边栏内容) -->
-    <!-- 窄屏压缩:right 组件间距收紧,与隐藏书架按钮配合避免按钮群横向溢出 -->
+    <!-- 窄屏压缩:right 组件间距收紧,书架/商城在窄屏仅显示图标,避免按钮群横向溢出 -->
     <UHeader
       :toggle="false"
       :ui="{
@@ -38,16 +38,16 @@ async function onLogout() {
       <template #left>
         <NuxtLink
           to="/"
-          class="flex min-w-0 items-center gap-1.5 text-lg font-bold tracking-tight text-(--ui-text-highlighted)"
+          class="flex min-w-0 items-center gap-1.5 text-lg font-bold tracking-tight text-highlighted"
         >
           <img
             src="/pwa/pwa-192x192.png"
-            alt="AIWord2World"
+            alt="AI Word2World"
             class="size-10 shrink-0"
             draggable="false"
           >
           <!-- 极窄屏(≤340px,老 iPhone SE/小屏安卓)仅保留图标,避免挤压右侧按钮组 -->
-          <span class="hidden min-[341px]:inline">AIWord2World</span>
+          <span class="hidden min-[341px]:inline">AI Word2World</span>
         </NuxtLink>
       </template>
 
@@ -57,7 +57,18 @@ async function onLogout() {
 
         <UColorModeButton />
 
-        <!-- 窄屏(<lg)隐藏:入口已收进用户菜单,避免与右侧按钮群挤压溢出 -->
+        <!-- 书架/商城入口:窄屏(<lg)仅显示图标,保留入口;桌面显示图标+文字 -->
+        <div class="lg:hidden">
+          <UButton
+            to="/works"
+            icon="i-lucide-library"
+            color="neutral"
+            variant="soft"
+            size="sm"
+            square
+            aria-label="我的书架"
+          />
+        </div>
         <div class="hidden lg:block">
           <UButton
             to="/works"
@@ -67,10 +78,20 @@ async function onLogout() {
             size="sm"
             aria-label="我的书架"
           >
-            <span class="hidden sm:inline">我的书架</span>
+            <span>我的书架</span>
           </UButton>
         </div>
 
+        <div class="lg:hidden">
+          <UButton
+            to="/store"
+            icon="i-lucide-store"
+            variant="subtle"
+            size="sm"
+            square
+            aria-label="Skill商城"
+          />
+        </div>
         <div class="hidden lg:block">
           <UButton
             to="/store"
@@ -79,7 +100,7 @@ async function onLogout() {
             size="sm"
             aria-label="Skill商城"
           >
-            <span class="hidden sm:inline">Skill商城</span>
+            <span>Skill商城</span>
           </UButton>
         </div>
 
@@ -130,24 +151,36 @@ async function onLogout() {
     </UMain>
 
     <!-- 全站页脚(阅读页走 reader 布局,不经过本布局) -->
-    <UFooter class="border-t border-neutral-200 dark:border-neutral-800">
+    <!-- 左右两栏平衡:品牌在左、链接在右;移动端用 order 保证品牌在前 -->
+    <UFooter
+      class="border-t border-neutral-200 dark:border-neutral-800"
+      :ui="{
+        container: 'flex flex-col py-8 lg:py-4 lg:flex-row lg:items-center lg:justify-between lg:gap-x-3',
+        left: 'order-1 flex items-center justify-center lg:justify-start lg:flex-1 gap-x-1.5 mt-3 lg:mt-0',
+        center: 'hidden',
+        right: 'order-2 flex items-center justify-center lg:justify-end lg:flex-1 gap-x-1.5 mt-8 lg:mt-0',
+      }"
+    >
       <template #left>
-        <div class="flex items-center gap-1.5 text-base font-bold tracking-tight text-(--ui-text-highlighted)">
-          <img
-            src="/pwa/pwa-192x192.png"
-            alt="AIWord2World"
-            class="size-5 shrink-0"
-            draggable="false"
-          >
-          AIWord2World
+        <div class="flex flex-col gap-2">
+          <div class="flex items-center gap-1.5 text-base font-bold tracking-tight text-highlighted">
+            <img
+              src="/pwa/pwa-192x192.png"
+              alt="AI Word2World"
+              class="size-5 shrink-0"
+              draggable="false"
+            >
+            AI Word2World
+          </div>
+          <p class="max-w-xs text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
+            把每一本小说,变成真实可互动的世界。
+          </p>
         </div>
-        <p class="mt-2 max-w-xs text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
-          把每一本小说,变成真实可互动的世界。上传的小说仅供生成与本地游玩,章节正文不离开你的设备。
-        </p>
       </template>
 
-      <template #default>
-        <div class="flex w-full flex-col gap-8 sm:w-auto sm:flex-row sm:gap-16">
+      <template #right>
+        <!-- 开始使用 / 了解我们:sp 端以下也保持两列并排,仅收窄间距;窄屏整体居中 -->
+        <div class="flex w-full flex-row justify-center gap-8 sm:w-auto sm:gap-16">
           <div>
             <p class="mb-3 text-xs font-semibold tracking-wider text-neutral-400 dark:text-neutral-500">
               开始使用
@@ -222,9 +255,11 @@ async function onLogout() {
       </template>
 
       <template #bottom>
-        <p class="text-xs text-neutral-500 dark:text-neutral-500 w-full">
-          © 2026 AI Word2World · 上传的小说仅供生成与本地游玩,章节正文不离开你的设备
-        </p>
+        <UContainer>
+          <p class="border-t border-neutral-200 pt-8 text-center text-xs text-neutral-500 lg:pt-12 dark:border-neutral-800 dark:text-neutral-400">
+            © 2026 AI Word2World · 
+          </p>
+        </UContainer>
       </template>
     </UFooter>
 

@@ -30,7 +30,7 @@ watch(session, (s) => {
         📖
       </div>
       <h1 class="text-2xl font-bold text-white">
-        AIWord2World
+        AI Word2World
       </h1>
       <p class="text-sm text-neutral-400 mt-1">
         登录后开始你的故事

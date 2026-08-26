@@ -529,11 +529,11 @@ watch(narrTemp, v => saveNarrTemp(v))
     <!-- 需求墙横幅 -->
     <NuxtLink
       to="/demand"
-      class="mb-6 block overflow-hidden rounded-2xl border border-primary-500/25 bg-gradient-to-br from-primary-500/10 via-transparent to-primary-400/10 px-5 py-4 transition-colors hover:border-primary-500/40 dark:border-primary-500/20 dark:from-primary-500/12 dark:to-primary-400/8"
+      class="mb-6 block overflow-hidden rounded-2xl border border-primary-500/25 bg-linear-to-br from-primary-500/10 via-transparent to-primary-400/10 px-5 py-4 transition-colors hover:border-primary-500/40 dark:border-primary-500/20 dark:from-primary-500/12 dark:to-primary-400/8"
     >
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p class="flex items-center gap-1.5 font-semibold text-(--ui-text-highlighted)">
+          <p class="flex items-center gap-1.5 font-semibold text-highlighted">
             <UIcon
               name="i-lucide-message-square-plus"
               class="size-4 text-primary"

@@ -9,7 +9,7 @@
   >
     <!-- 底部光晕,把"屏幕"托起来 -->
     <div
-      class="absolute -inset-x-6 -bottom-8 top-16 rounded-[3rem] bg-gradient-to-r from-primary-400/25 via-primary-300/20 to-primary-500/25 blur-3xl dark:from-primary-500/15 dark:via-primary-600/12 dark:to-primary-700/15"
+      class="absolute -inset-x-6 -bottom-8 top-16 rounded-[3rem] bg-linear-to-r from-primary-400/25 via-primary-300/20 to-primary-500/25 blur-3xl dark:from-primary-500/15 dark:via-primary-600/12 dark:to-primary-700/15"
     />
 
     <div class="relative overflow-hidden rounded-2xl border border-neutral-800/70 bg-neutral-950 shadow-[0_32px_80px_-32px_rgb(0_0_0/0.45)] ring-1 ring-black/5 dark:border-white/10 dark:ring-white/10">
@@ -58,7 +58,7 @@
 
         <!-- 角色卡 -->
         <div class="mb-4 flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-3">
-          <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary-400/40 to-primary-500/40 text-xl">
+          <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-primary-400/40 to-primary-500/40 text-xl">
             🧙
           </div>
           <div class="min-w-0 flex-1">

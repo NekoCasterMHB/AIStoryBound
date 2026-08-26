@@ -27,11 +27,11 @@ const items = computed<NavigationMenuItem[]>(() => [
       <template #header>
         <NuxtLink
           to="/"
-          class="flex min-w-0 items-center gap-1.5 px-2 font-bold tracking-tight text-(--ui-text-highlighted)"
+          class="flex min-w-0 items-center gap-1.5 px-2 font-bold tracking-tight text-highlighted"
         >
           <img
             src="/pwa/pwa-192x192.png"
-            alt="AIWord2World"
+            alt="AI Word2World"
             class="size-5 shrink-0"
             draggable="false"
           >

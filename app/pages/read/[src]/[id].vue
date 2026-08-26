@@ -620,7 +620,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
 })
 
-const pageTitle = computed(() => `${bookTitle.value || '阅读'} · AIWord2World`)
+const pageTitle = computed(() => `${bookTitle.value || '阅读'} · AI Word2World`)
 useSeoMeta({ title: pageTitle })
 </script>
 

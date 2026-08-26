@@ -149,7 +149,7 @@ async function updateSkill(s: AiSkill) {
           已下载技能
         </p>
         <p class="text-xs text-neutral-500">
-          来自 Skill 商城;开启的技能会注入游玩叙事提示词(未开启尽量不出现)。已开启 {{ enabledCount }}/{{ skills.length }}
+          来自 Skill 商城;开启后游玩时 AI 按技能 SOP 展开专业玩法,人格类技能可调教专属人设(未开启尽量不出现)。已开启 {{ enabledCount }}/{{ skills.length }}
         </p>
         <p
           v-if="enabledTokenEstimate > 0"
@@ -194,7 +194,7 @@ async function updateSkill(s: AiSkill) {
       还没有下载过技能——去 <NuxtLink
         to="/store"
         class="text-primary-500 underline"
-      >Skill 商城</NuxtLink> 选购一个,下载后会自动启用并加载
+      >Skill 商城</NuxtLink> 选购一个,下载即自动安装启用,专业玩法与专属人格随买随用
     </div>
 
     <div

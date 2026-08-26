@@ -65,7 +65,7 @@ Install [Renovate GitHub app](https://github.com/apps/renovate/installations/sel
 
 ---
 
-## AIWord2World 项目说明
+## AI Word2World 项目说明
 
 小说驱动互动游戏平台：预置小说（静态部署 public/txt/ + D1 索引）→ 预览阅读（全文自动缓存到浏览器 IndexedDB）→ 一键生成世界观 → 选角色进入 AI 互动故事。
 
