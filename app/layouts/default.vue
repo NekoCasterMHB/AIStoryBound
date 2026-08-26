@@ -38,7 +38,7 @@ async function onLogout() {
       <template #left>
         <NuxtLink
           to="/"
-          class="flex min-w-0 items-center gap-1.5 text-lg font-bold tracking-tight text-highlighted"
+          class="flex min-w-0 items-center gap-1.5 text-sm font-bold tracking-tight text-highlighted sm:text-lg"
         >
           <img
             src="/pwa/pwa-192x192.png"
