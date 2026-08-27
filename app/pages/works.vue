@@ -449,77 +449,77 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
             声明:推荐书架内的小说均由网友自发上传,仅用于个人学习与娱乐;若涉及版权问题,请联系我们删除。
           </p>
           <div class="mt-4">
-          <div
-            v-if="officialLoading && officialWorks.length === 0"
-            class="text-sm text-neutral-500"
-          >
-            正在加载推荐书架…
-          </div>
-          <div
-            v-else-if="officialWorks.length === 0"
-            class="rounded-xl border border-dashed border-neutral-300 p-6 text-center text-sm text-neutral-500 dark:border-neutral-700"
-          >
-            暂无预置小说
-          </div>
-          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <UCard
-              v-for="p in officialWorks"
-              :key="p.id"
-              class="flex flex-col"
+            <div
+              v-if="officialLoading && officialWorks.length === 0"
+              class="text-sm text-neutral-500"
             >
-              <p class="break-words font-semibold">
-                {{ p.title }}
-              </p>
-              <p class="truncate text-xs text-neutral-500">
-                {{ p.author || '佚名' }}
-              </p>
-              <div class="mt-2 flex flex-wrap gap-1.5">
-                <UBadge
-                  variant="subtle"
-                  size="sm"
-                >
-                  {{ fmtChars(p.char_count) }}
-                </UBadge>
-                <UBadge
-                  v-for="b in readBadges(progressFor('preset', p.id))"
-                  :key="b.label"
-                  :color="b.color"
-                  variant="soft"
-                  size="sm"
-                >
-                  {{ b.label }}
-                </UBadge>
-              </div>
-              <div class="mt-3 flex flex-wrap gap-2">
-                <UButton
-                  v-if="p.hasWorld"
-                  label="进入世界"
-                  icon="i-lucide-zap"
-                  color="primary"
-                  size="sm"
-                  :loading="directStartingId === p.id"
-                  @click="startPrebuilt(p)"
-                />
-                <UButton
-                  :label="readBtnLabel(progressFor('preset', p.id))"
-                  icon="i-lucide-book-open"
-                  color="primary"
-                  variant="soft"
-                  size="sm"
-                  :to="`/read/preset/${p.id}`"
-                />
-                <UButton
-                  label="查看详情"
-                  icon="i-lucide-sparkles"
-                  color="neutral"
-                  variant="soft"
-                  size="sm"
-                  :to="`/presets/${p.id}`"
-                />
-              </div>
-            </UCard>
+              正在加载推荐书架…
+            </div>
+            <div
+              v-else-if="officialWorks.length === 0"
+              class="rounded-xl border border-dashed border-neutral-300 p-6 text-center text-sm text-neutral-500 dark:border-neutral-700"
+            >
+              暂无预置小说
+            </div>
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <UCard
+                v-for="p in officialWorks"
+                :key="p.id"
+                class="flex flex-col"
+              >
+                <p class="break-words font-semibold">
+                  {{ p.title }}
+                </p>
+                <p class="truncate text-xs text-neutral-500">
+                  {{ p.author || '佚名' }}
+                </p>
+                <div class="mt-2 flex flex-wrap gap-1.5">
+                  <UBadge
+                    variant="subtle"
+                    size="sm"
+                  >
+                    {{ fmtChars(p.char_count) }}
+                  </UBadge>
+                  <UBadge
+                    v-for="b in readBadges(progressFor('preset', p.id))"
+                    :key="b.label"
+                    :color="b.color"
+                    variant="soft"
+                    size="sm"
+                  >
+                    {{ b.label }}
+                  </UBadge>
+                </div>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <UButton
+                    v-if="p.hasWorld"
+                    label="进入世界"
+                    icon="i-lucide-zap"
+                    color="primary"
+                    size="sm"
+                    :loading="directStartingId === p.id"
+                    @click="startPrebuilt(p)"
+                  />
+                  <UButton
+                    :label="readBtnLabel(progressFor('preset', p.id))"
+                    icon="i-lucide-book-open"
+                    color="primary"
+                    variant="soft"
+                    size="sm"
+                    :to="`/read/preset/${p.id}`"
+                  />
+                  <UButton
+                    label="查看详情"
+                    icon="i-lucide-sparkles"
+                    color="neutral"
+                    variant="soft"
+                    size="sm"
+                    :to="`/presets/${p.id}`"
+                  />
+                </div>
+              </UCard>
+            </div>
           </div>
-        </div>
         </div>
       </template>
 

@@ -42,7 +42,8 @@ export default defineEventHandler(async (event) => {
   const totalConsumed = totalUsersN * FREE_TOKEN_GRANT + paidTokens - totalBalance
 
   // ---- DeepSeek 账户余额(平台 Key) ----
-  let deepseek: { available: boolean, balanceInfos: { currency: string, totalBalance: string, grantedBalance: string, toppedUpBalance: string }[], error?: string } | null = null
+  // 所有分支都会赋值,无需初始值(no-useless-assignment)
+  let deepseek: { available: boolean, balanceInfos: { currency: string, totalBalance: string, grantedBalance: string, toppedUpBalance: string }[], error?: string } | null
   const ai = getAiConfig(event)
   if (ai.apiKey) {
     try {

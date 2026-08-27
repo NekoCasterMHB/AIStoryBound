@@ -175,7 +175,7 @@ const desireModel = computed({
 /** 性欲档位说明(输入框 description:空值时给五档总览,有值时给当前档位) */
 const desireDesc = computed(() => {
   const v = sel.value?.desire
-  if (v == null) return '0-100 分五档:懵懂无知/腼腆娇羞/情动意乱/欲念难抑/兽欲大发'
+  if (v == null) return '0-100 分五档:懵懂无知/腼腆娇羞/情动意乱/欲念难抑/兽欲大发;低强度=性冷淡,欲望波动小、难被挑起'
   const tier = desireTierName(v)
   const desc = DESIRE_TIERS.find(t => t.label === tier)?.desc ?? ''
   return tier ? `${tier}:${desc}` : '0-100'

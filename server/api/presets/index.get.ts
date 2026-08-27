@@ -6,7 +6,7 @@ import { hasPresetWorld } from '../../utils/preset-world'
 
 export default defineEventHandler(async (event) => {
   const rows = await listFeaturedPresets(event)
-  const withWorld = await Promise.all(rows.map(async (p) => ({
+  const withWorld = await Promise.all(rows.map(async p => ({
     ...p,
     hasWorld: await hasPresetWorld(event, p.id)
   })))

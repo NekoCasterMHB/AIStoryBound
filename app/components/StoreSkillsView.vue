@@ -559,7 +559,7 @@ async function onPreviewFile(i: number) {
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl px-4 py-6">
+  <div>
     <div class="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div>
         <h1 class="flex items-center gap-2 text-xl font-semibold">
@@ -693,7 +693,17 @@ async function onPreviewFile(i: number) {
                   {{ s.downloadCount }}
                 </span>
                 <UBadge
-                  v-if="s.price > 0"
+                  v-if="s.purchased"
+                  color="primary"
+                  variant="soft"
+                  size="sm"
+                  icon="i-lucide-circle-check"
+                  leading
+                >
+                  已购买
+                </UBadge>
+                <UBadge
+                  v-else-if="s.price > 0"
                   color="warning"
                   variant="soft"
                   size="sm"
@@ -854,7 +864,7 @@ async function onPreviewFile(i: number) {
                 >
                   购买版 v{{ p.purchasedVersion }}
                 </UBadge>
-                <UButtonGroup>
+                <UFieldGroup>
                   <UButton
                     color="primary"
                     variant="soft"
@@ -872,9 +882,10 @@ async function onPreviewFile(i: number) {
                       size="sm"
                       icon="i-lucide-chevron-down"
                       aria-label="选择下载版本"
+                      class="border-l border-white/30"
                     />
                   </UDropdownMenu>
-                </UButtonGroup>
+                </UFieldGroup>
               </div>
             </UCard>
           </li>

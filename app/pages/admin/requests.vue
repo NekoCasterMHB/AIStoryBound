@@ -29,14 +29,15 @@ async function loadRequests() {
     loading.value = false
   }
 }
-onMounted(() => { void loadRequests() })
+onMounted(() => {
+  void loadRequests()
+})
 
 function fmtTs(ts: number) {
   return new Date(ts).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
 }
 
 // ---- 状态切换 ----
-const statusMenu = ref<{ items: DropdownMenuItem[], id: string } | null>(null)
 
 function statusItems(r: DemandItem): DropdownMenuItem[] {
   return (Object.keys(DEMAND_STATUS_LABELS) as DemandStatus[]).map(s => ({
@@ -122,12 +123,18 @@ async function confirmDelete() {
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="6" class="py-6 text-center text-neutral-500">
+              <td
+                colspan="6"
+                class="py-6 text-center text-neutral-500"
+              >
                 加载中…
               </td>
             </tr>
             <tr v-else-if="!rows.length">
-              <td colspan="6" class="py-6 text-center text-neutral-500">
+              <td
+                colspan="6"
+                class="py-6 text-center text-neutral-500"
+              >
                 暂无需求
               </td>
             </tr>

@@ -3,7 +3,7 @@
 import type { H3Event } from 'h3'
 import { useD1 } from './d1'
 import { games, gameMessages, gameOptions } from '../db/schema'
-import { eq, asc } from 'drizzle-orm'
+import { eq, and, gt, asc } from 'drizzle-orm'
 import type { GameRow, GameMessageRow, GameOptionRow, MessageRole } from '../../shared/novel'
 
 function mapGame(r: typeof games.$inferSelect): GameRow {
@@ -125,7 +125,46 @@ export async function deleteMessagesByGame(event: H3Event, gameId: string) {
   return db.delete(gameMessages).where(eq(gameMessages.gameId, gameId)).run()
 }
 
+/** 删除某游戏序号 > fromIdx 的消息(增量同步时截断云端多余部分) */
+export async function deleteMessagesAfter(event: H3Event, gameId: string, fromIdx: number) {
+  const db = useD1(event)
+  return db.delete(gameMessages).where(and(eq(gameMessages.gameId, gameId), gt(gameMessages.idx, fromIdx))).run()
+}
+
 // ---- 选项(云端恢复时还原某条消息挂载的选项) ----
+
+export async function appendOption(event: H3Event, o: {
+  id: string
+  game_id: string
+  message_id: string
+  idx: number
+  text: string
+  effects?: string | null
+}) {
+  const db = useD1(event)
+  return db.insert(gameOptions).values({
+    id: o.id,
+    gameId: o.game_id,
+    messageId: o.message_id,
+    idx: o.idx,
+    text: o.text,
+    effects: o.effects ?? null
+  }).run()
+}
+
+export async function deleteOptionsByGame(event: H3Event, gameId: string) {
+  const db = useD1(event)
+  return db.delete(gameOptions).where(eq(gameOptions.gameId, gameId)).run()
+}
+
+/** 按消息 id 列表删除选项(消息被截断/重建时联动清理) */
+export async function deleteOptionsByMessages(event: H3Event, messageIds: string[]) {
+  if (!messageIds.length) return
+  const db = useD1(event)
+  for (const id of messageIds) {
+    await db.delete(gameOptions).where(eq(gameOptions.messageId, id)).run()
+  }
+}
 
 export async function listOptionsByMessage(event: H3Event, messageId: string): Promise<GameOptionRow[]> {
   const db = useD1(event)

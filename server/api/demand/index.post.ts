@@ -10,12 +10,9 @@ export default defineEventHandler(async (event) => {
   const user = await requireUser(event)
   const body = await readBody<{ title?: string, desc?: string }>(event).catch(() => null)
 
-  let title = ''
-  let desc = ''
+  let normalized: { title: string, desc: string }
   try {
-    const normalized = normalizeDemandInput(body?.title ?? '', body?.desc ?? '')
-    title = normalized.title
-    desc = normalized.desc
+    normalized = normalizeDemandInput(body?.title ?? '', body?.desc ?? '')
   } catch (e) {
     throw createError({ statusCode: 400, statusMessage: e instanceof Error ? e.message : '输入不合法' })
   }
@@ -26,10 +23,10 @@ export default defineEventHandler(async (event) => {
 
   // 需求 + 发起人自赞同批写入,任一步失败整体回滚
   await db.batch([
-    db.insert(featureRequests).values({ id, userId: user.id, title, desc, likeCount: 1, status: 'open', createdAt: now, updatedAt: now }),
+    db.insert(featureRequests).values({ id, userId: user.id, title: normalized.title, desc: normalized.desc, likeCount: 1, status: 'open', createdAt: now, updatedAt: now }),
     db.insert(featureRequestLikes).values({ id: newDemandId(), requestId: id, userId: user.id, createdAt: now })
   ])
 
-  const item: DemandItem = { id, title, desc, likeCount: 1, status: 'open', liked: true, authorName: user.name ?? '', createdAt: now.getTime() }
+  const item: DemandItem = { id, title: normalized.title, desc: normalized.desc, likeCount: 1, status: 'open', liked: true, authorName: user.name ?? '', createdAt: now.getTime() }
   return item
 })

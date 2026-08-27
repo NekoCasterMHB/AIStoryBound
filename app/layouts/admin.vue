@@ -11,6 +11,7 @@ const items = computed<NavigationMenuItem[]>(() => [
   { label: '兑换码管理', icon: 'i-lucide-ticket', to: '/admin/redeem', active: route.path === '/admin/redeem' },
   { label: '充值记录', icon: 'i-lucide-credit-card', to: '/admin/recharge', active: route.path === '/admin/recharge' },
   { label: 'Skill 审核', icon: 'i-lucide-shield-check', to: '/admin/skills', active: route.path === '/admin/skills' },
+  { label: '小说审核', icon: 'i-lucide-book-open', to: '/admin/novels', active: route.path === '/admin/novels' },
   { label: '需求管理', icon: 'i-lucide-list-checks', to: '/admin/requests', active: route.path === '/admin/requests' }
 ])
 </script>
@@ -51,7 +52,10 @@ const items = computed<NavigationMenuItem[]>(() => [
           to="/"
           class="flex items-center gap-1.5 px-2 py-1.5 text-sm text-neutral-500 hover:text-primary"
         >
-          <UIcon name="i-lucide-arrow-left" class="size-4" />
+          <UIcon
+            name="i-lucide-arrow-left"
+            class="size-4"
+          />
           <span>返回主站</span>
         </NuxtLink>
       </template>
@@ -66,7 +70,10 @@ const items = computed<NavigationMenuItem[]>(() => [
           aria-label="切换侧边栏"
           @click="open = !open"
         />
-        <NuxtLink to="/" class="text-sm text-neutral-500 transition-colors hover:text-primary">
+        <NuxtLink
+          to="/"
+          class="text-sm text-neutral-500 transition-colors hover:text-primary"
+        >
           返回主站
         </NuxtLink>
       </div>

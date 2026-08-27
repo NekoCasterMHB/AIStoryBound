@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { parseMarkdown } from '@nuxtjs/mdc/runtime'
-import { SKILL_STATUS_LABELS } from '#shared/store-skill'
+import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate'
+import { SKILL_STATUS_LABELS, extractSkillMeta, MAX_SKILL_ZIP_BYTES } from '#shared/store-skill'
 import type { SkillStatus } from '#shared/store-skill'
 
 // /admin/skills — Skill 审核(管理后台):商品列表 + 下载审核 + 通过/拒绝 + 推荐标记。
@@ -66,7 +67,7 @@ async function load() {
     loading.value = false
   }
 }
-onMounted(() => { void load() })
+onMounted(() => void load())
 
 function pickStatus(s: string) {
   statusFilter.value = s
@@ -197,6 +198,141 @@ async function renderPreview(i: number) {
     previewError.value = 'Markdown 解析失败'
   }
 }
+
+// ---- 直接发布(上传 zip + 在线编辑 md + 重新打包直接上架) ----
+const publishOpen = ref(false)
+const publishing = ref(false)
+const pubZipFiles = ref<Record<string, Uint8Array>>({})
+const pubFileNames = ref<string[]>([])
+const pubEditFile = ref('')
+const pubFileTexts = ref<Record<string, string>>({})
+const pubName = ref('')
+const pubPrice = ref('0')
+const pubTags = ref<string[]>([])
+const pubIcon = ref('')
+const pubFileName = ref('')
+
+function openPublish() {
+  publishOpen.value = true
+  publishError.value = ''
+  pubZipFiles.value = {}
+  pubFileNames.value = []
+  pubEditFile.value = ''
+  pubFileTexts.value = {}
+  pubName.value = ''
+  pubPrice.value = '0'
+  pubTags.value = []
+  pubIcon.value = ''
+  pubFileName.value = ''
+}
+
+const publishError = ref('')
+
+/** 从 SKILL.md frontmatter 提取 name(展示名兜底,可手动改) */
+function frontmatterName(md: string): string {
+  const m = /^name:\s*(.+)$/m.exec(md)
+  return m?.[1]?.trim() ?? ''
+}
+
+async function onPickPubZip(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  publishError.value = ''
+  if (file.size > MAX_SKILL_ZIP_BYTES) {
+    publishError.value = `压缩包超过 ${MAX_SKILL_ZIP_BYTES / 1024 / 1024}MB 上限`
+    return
+  }
+  try {
+    const files = unzipSync(new Uint8Array(await file.arrayBuffer()))
+    pubZipFiles.value = files
+    pubFileNames.value = Object.keys(files).filter(n => !n.endsWith('/'))
+    const texts: Record<string, string> = {}
+    for (const [name, b] of Object.entries(files)) {
+      if (name.endsWith('/')) continue
+      texts[name] = strFromU8(b)
+    }
+    pubFileTexts.value = texts
+    pubFileName.value = file.name
+    const skillMdName = pubFileNames.value.find(n => /SKILL\.md$/i.test(n))
+    if (!skillMdName) {
+      publishError.value = '压缩包内未找到 SKILL.md,请按标准 agent skill 格式打包'
+      return
+    }
+    pubEditFile.value = skillMdName
+    const { icon, tags } = extractSkillMeta(texts[skillMdName] ?? '', null)
+    pubIcon.value = icon ?? ''
+    pubTags.value = tags
+    pubName.value = frontmatterName(texts[skillMdName] ?? '') || file.name.replace(/\.zip$/i, '')
+  } catch {
+    publishError.value = '无法解析 zip 压缩包'
+  }
+}
+
+function isCoreFile(name: string) {
+  return /SKILL\.md$/i.test(name) || /^README(\.md)?$/i.test(name)
+}
+
+async function submitPublish() {
+  if (!Object.keys(pubZipFiles.value).length) {
+    publishError.value = '请先选择 zip 压缩包'
+    return
+  }
+  if (!pubName.value.trim()) {
+    publishError.value = '请填写 Skill 名称'
+    return
+  }
+  publishing.value = true
+  publishError.value = ''
+  try {
+    // 回填编辑内容并重新打包(未编辑文件保留原字节)
+    const out: Record<string, Uint8Array> = {}
+    for (const [name, b] of Object.entries(pubZipFiles.value)) {
+      if (name.endsWith('/')) continue
+      const text = pubFileTexts.value[name]
+      out[name] = text !== undefined ? strToU8(text) : b
+    }
+    const zipped = zipSync(out, { level: 6 })
+    const fd = new FormData()
+    fd.append('name', pubName.value.trim())
+    fd.append('price', pubPrice.value || '0')
+    fd.append('tags', JSON.stringify(pubTags.value))
+    fd.append('file', new Blob([zipped], { type: 'application/zip' }), pubFileName.value || 'skill.zip')
+    const res = await $fetch<{ id: string, version: number }>('/api/admin/skills/publish', {
+      method: 'POST',
+      body: fd
+    })
+    toast.add({ title: `已直接上架「${pubName.value.trim()}」 v${res.version}`, color: 'success' })
+    publishOpen.value = false
+    void load()
+  } catch (e) {
+    publishError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    publishing.value = false
+  }
+}
+
+// ---- 制作指导(展示 skill-guide.md:如何制作适合本项目的 Skill) ----
+const guideOpen = ref(false)
+const guideLoading = ref(false)
+const guideError = ref('')
+const guideAst = ref<MarkdownBody | null>(null)
+
+async function openGuide() {
+  guideOpen.value = true
+  guideLoading.value = true
+  guideError.value = ''
+  guideAst.value = null
+  try {
+    const md = await $fetch<string>('/skill-guide.md', { responseType: 'text' })
+    const { body } = await parseMarkdown(md)
+    guideAst.value = body
+  } catch {
+    guideError.value = '指导文档加载失败'
+  } finally {
+    guideLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -206,12 +342,21 @@ async function renderPreview(i: number) {
         Skill 审核
       </h1>
       <p class="text-sm text-neutral-500">
-        审核通过后商品在 Skill 商城上架;可下载压缩包核对内容,对优质 skill 可打「平台推荐」标
+        审核通过后商品在创意工坊「Skill包」上架;可下载压缩包核对内容,对优质 skill 可打「平台推荐」标
       </p>
     </div>
 
     <!-- 状态筛选 -->
     <div class="mb-4 flex flex-wrap items-center gap-2">
+      <UButton
+        color="primary"
+        variant="solid"
+        icon="i-lucide-upload"
+        class="mr-2"
+        @click="openPublish"
+      >
+        发布技能
+      </UButton>
       <UButton
         :color="statusFilter === '' ? 'primary' : 'neutral'"
         :variant="statusFilter === '' ? 'solid' : 'outline'"
@@ -262,12 +407,18 @@ async function renderPreview(i: number) {
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="7" class="py-6 text-center text-neutral-500">
+              <td
+                colspan="7"
+                class="py-6 text-center text-neutral-500"
+              >
                 加载中…
               </td>
             </tr>
             <tr v-else-if="!rows.length">
-              <td colspan="7" class="py-6 text-center text-neutral-500">
+              <td
+                colspan="7"
+                class="py-6 text-center text-neutral-500"
+              >
                 暂无待处理项
               </td>
             </tr>
@@ -279,10 +430,17 @@ async function renderPreview(i: number) {
               <td class="max-w-60 py-2.5 pr-3">
                 <p class="flex items-center gap-1.5 truncate font-medium">
                   {{ r.name }}
-                  <UBadge size="sm" variant="subtle">
+                  <UBadge
+                    size="sm"
+                    variant="subtle"
+                  >
                     v{{ r.version }}
                   </UBadge>
-                  <UBadge v-if="r.featured === 1" color="primary" size="sm">
+                  <UBadge
+                    v-if="r.featured === 1"
+                    color="primary"
+                    size="sm"
+                  >
                     推荐
                   </UBadge>
                 </p>
@@ -308,7 +466,10 @@ async function renderPreview(i: number) {
                 <p :class="STATUS_COLORS[r.status]">
                   {{ SKILL_STATUS_LABELS[r.status] }}
                 </p>
-                <p v-if="r.status === 'rejected' && r.rejectReason" class="max-w-40 truncate text-xs text-red-400/80">
+                <p
+                  v-if="r.status === 'rejected' && r.rejectReason"
+                  class="max-w-40 truncate text-xs text-red-400/80"
+                >
                   原因:{{ r.rejectReason }}
                 </p>
               </td>
@@ -381,16 +542,37 @@ async function renderPreview(i: number) {
     </UCard>
 
     <!-- 拒绝弹窗 -->
-    <UModal v-model:open="rejectOpen" :title="`拒绝「${rejectRow?.name ?? ''}」`">
+    <UModal
+      v-model:open="rejectOpen"
+      :title="`拒绝「${rejectRow?.name ?? ''}」`"
+    >
       <template #body>
-        <UFormField label="拒绝原因(将展示给发布者)" required>
-          <UTextarea v-model="rejectReason" :rows="3" autoresize :maxrows="8" class="w-full" placeholder="如:压缩包缺 SKILL.md 或 README / 内容与描述不符" />
+        <UFormField
+          label="拒绝原因(将展示给发布者)"
+          required
+        >
+          <UTextarea
+            v-model="rejectReason"
+            :rows="3"
+            autoresize
+            :maxrows="8"
+            class="w-full"
+            placeholder="如:压缩包缺 SKILL.md 或 README / 内容与描述不符"
+          />
         </UFormField>
         <div class="mt-4 flex justify-end gap-2">
-          <UButton color="neutral" variant="outline" @click="rejectOpen = false">
+          <UButton
+            color="neutral"
+            variant="outline"
+            @click="rejectOpen = false"
+          >
             取消
           </UButton>
-          <UButton color="error" :loading="rejecting" @click="submitReject">
+          <UButton
+            color="error"
+            :loading="rejecting"
+            @click="submitReject"
+          >
             确认拒绝
           </UButton>
         </div>
@@ -398,22 +580,37 @@ async function renderPreview(i: number) {
     </UModal>
 
     <!-- 文件清单弹窗 -->
-    <UModal v-model:open="entriesOpen" :title="`文件清单 · ${entriesRow?.name ?? ''}`">
+    <UModal
+      v-model:open="entriesOpen"
+      :title="`文件清单 · ${entriesRow?.name ?? ''}`"
+    >
       <template #body>
-        <p v-if="!entriesRow?.fileEntries.length" class="py-4 text-center text-sm text-neutral-500">
+        <p
+          v-if="!entriesRow?.fileEntries.length"
+          class="py-4 text-center text-sm text-neutral-500"
+        >
           无文件清单
         </p>
-        <ul v-else class="max-h-80 divide-y divide-neutral-100 overflow-y-auto font-mono text-xs dark:divide-neutral-900">
+        <ul
+          v-else
+          class="max-h-80 divide-y divide-neutral-100 overflow-y-auto font-mono text-xs dark:divide-neutral-900"
+        >
           <li
             v-for="e in entriesRow.fileEntries"
             :key="e.name"
             class="flex items-center justify-between gap-3 py-1.5"
           >
-            <span class="truncate" :class="e.isDirectory ? 'text-neutral-400' : ''">
+            <span
+              class="truncate"
+              :class="e.isDirectory ? 'text-neutral-400' : ''"
+            >
               {{ e.isDirectory ? '📁' : '📄' }} {{ e.name }}
             </span>
             <span class="flex shrink-0 items-center gap-2">
-              <span v-if="!e.isDirectory" class="text-neutral-500">
+              <span
+                v-if="!e.isDirectory"
+                class="text-neutral-500"
+              >
                 {{ e.size.toLocaleString() }} B
               </span>
               <UButton
@@ -441,15 +638,27 @@ async function renderPreview(i: number) {
       }"
     >
       <template #body>
-        <p v-if="previewLoading" class="py-6 text-center text-sm text-neutral-500">
+        <p
+          v-if="previewLoading"
+          class="py-6 text-center text-sm text-neutral-500"
+        >
           加载中…
         </p>
-        <p v-else-if="previewError" class="py-6 text-center text-sm text-red-500">
+        <p
+          v-else-if="previewError"
+          class="py-6 text-center text-sm text-red-500"
+        >
           {{ previewError }}
         </p>
-        <div v-else-if="previewFiles.length" class="grid grid-cols-[170px_1fr] gap-4">
+        <div
+          v-else-if="previewFiles.length"
+          class="grid grid-cols-[170px_1fr] gap-4"
+        >
           <ul class="max-h-[65vh] divide-y divide-neutral-100 overflow-y-auto font-mono text-xs dark:divide-neutral-900">
-            <li v-for="(f, i) in previewFiles" :key="f.name">
+            <li
+              v-for="(f, i) in previewFiles"
+              :key="f.name"
+            >
               <button
                 type="button"
                 class="w-full truncate px-2 py-1.5 text-left transition-colors"
@@ -463,11 +672,194 @@ async function renderPreview(i: number) {
             </li>
           </ul>
           <article class="md-preview max-h-[65vh] overflow-y-auto pr-1 text-sm leading-relaxed text-neutral-700 dark:text-neutral-300">
-            <MDCRenderer v-if="previewAst" :body="previewAst" />
+            <MDCRenderer
+              v-if="previewAst"
+              :body="previewAst"
+            />
           </article>
         </div>
-        <p v-else class="py-6 text-center text-sm text-neutral-500">
+        <p
+          v-else
+          class="py-6 text-center text-sm text-neutral-500"
+        >
           压缩包内没有 markdown 文件
+        </p>
+      </template>
+    </UModal>
+
+    <!-- 直接发布弹窗(上传 zip + 在线编辑 md + 重新打包直接上架) -->
+    <UModal
+      v-model:open="publishOpen"
+      title="直接发布 Skill"
+      :ui="{
+        content: 'max-w-4xl'
+      }"
+    >
+      <template #body>
+        <div class="flex flex-col gap-4">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-xs text-neutral-500">
+              支持上传任意合规 zip;首次制作可先查看生成指导
+            </p>
+            <UButton
+              size="xs"
+              color="neutral"
+              variant="soft"
+              icon="i-lucide-book-open"
+              @click="openGuide"
+            >
+              如何制作 Skill
+            </UButton>
+          </div>
+          <UFormField label="选择 zip 压缩包(须含 SKILL.md 与 README)">
+            <input
+              type="file"
+              accept=".zip"
+              class="block w-full text-sm text-neutral-500 file:mr-3 file:rounded-md file:border-0 file:bg-primary/10 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-primary"
+              @change="onPickPubZip"
+            >
+          </UFormField>
+
+          <template v-if="pubFileNames.length">
+            <p class="text-xs text-neutral-500">
+              已解包 {{ pubFileName }}({{ pubFileNames.length }} 个文件);编辑后自动重新打包上架,未编辑文件保持原样
+            </p>
+            <div class="grid grid-cols-[170px_1fr] gap-4">
+              <ul class="max-h-[45vh] divide-y divide-neutral-100 overflow-y-auto font-mono text-xs dark:divide-neutral-900">
+                <li
+                  v-for="n in pubFileNames"
+                  :key="n"
+                >
+                  <button
+                    type="button"
+                    class="w-full truncate px-2 py-1.5 text-left transition-colors"
+                    :class="n === pubEditFile
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-900'"
+                    @click="pubEditFile = n"
+                  >
+                    <span
+                      v-if="isCoreFile(n)"
+                      class="mr-1"
+                    >★</span>{{ n }}
+                  </button>
+                </li>
+              </ul>
+              <UTextarea
+                v-model="pubFileTexts[pubEditFile]"
+                class="w-full font-mono text-xs"
+                :rows="18"
+                autoresize
+                :maxrows="24"
+                :placeholder="pubEditFile ? `编辑 ${pubEditFile} 内容` : '选择左侧文件进行编辑'"
+              />
+            </div>
+          </template>
+
+          <div class="grid grid-cols-2 gap-4">
+            <UFormField
+              label="商城名称"
+              required
+            >
+              <UInput
+                v-model="pubName"
+                placeholder="如:小圈·管教与情感陪伴"
+              />
+            </UFormField>
+            <UFormField label="售价(token,0=免费)">
+              <UInput
+                v-model="pubPrice"
+                type="number"
+                min="0"
+              />
+            </UFormField>
+            <UFormField label="展示标签(≤6 个)">
+              <UInputTags
+                v-model="pubTags"
+                :max="6"
+              />
+            </UFormField>
+            <UFormField label="展示图标(frontmatter 自动读取)">
+              <UInput
+                :model-value="pubIcon"
+                disabled
+                placeholder="未设置"
+              />
+            </UFormField>
+          </div>
+
+          <p
+            v-if="publishError"
+            class="text-sm text-red-500"
+          >
+            {{ publishError }}
+          </p>
+          <div class="flex justify-end gap-2">
+            <UButton
+              color="neutral"
+              variant="outline"
+              @click="publishOpen = false"
+            >
+              取消
+            </UButton>
+            <UButton
+              color="primary"
+              :loading="publishing"
+              icon="i-lucide-rocket"
+              @click="submitPublish"
+            >
+              直接上架
+            </UButton>
+          </div>
+        </div>
+      </template>
+    </UModal>
+
+    <!-- 制作指导弹窗(展示 skill-guide.md 全文) -->
+    <UModal
+      v-model:open="guideOpen"
+      title="如何制作 Skill"
+      :ui="{
+        content: 'max-w-3xl'
+      }"
+    >
+      <template #body>
+        <div class="mb-4 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm text-primary">
+          将本指导文档(md)直接交给 AI,即可生成更贴合本项目机制(性欲双参数 / 强度阶梯 / 注入裁剪 / 上架规范)的 Skill。
+        </div>
+        <div class="mb-3 flex justify-end">
+          <a
+            href="/skill-guide.md"
+            download="skill-guide.md"
+            class="inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
+          >
+            <span class="i-lucide-download" />
+            下载文档
+          </a>
+        </div>
+        <p
+          v-if="guideLoading"
+          class="py-6 text-center text-sm text-neutral-500"
+        >
+          加载中…
+        </p>
+        <p
+          v-else-if="guideError"
+          class="py-6 text-center text-sm text-red-500"
+        >
+          {{ guideError }}
+        </p>
+        <article
+          v-else-if="guideAst"
+          class="md-preview max-h-[60vh] overflow-y-auto pr-1 text-sm leading-relaxed text-neutral-700 dark:text-neutral-300"
+        >
+          <MDCRenderer :body="guideAst" />
+        </article>
+        <p
+          v-else
+          class="py-6 text-center text-sm text-neutral-500"
+        >
+          暂无内容
         </p>
       </template>
     </UModal>

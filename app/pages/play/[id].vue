@@ -3,6 +3,7 @@
 import { getWork, touchWork } from '../../utils/worldGen'
 import { createLocalGame } from '../../utils/gameStore'
 import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
+import { ensureDesires } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { GameState } from '#shared/novel'
 
@@ -36,7 +37,7 @@ async function startAs(characterName: string) {
     for (const c of cards.value) {
       if (c.name !== characterName) relationships[c.name] = 0
     }
-    const state: GameState = { location: '', time: '', health: '良好', mood: '平静', relationships, quests: [], flags: {} }
+    const state: GameState = ensureDesires({ location: '', time: '', health: '良好', mood: '平静', relationships, quests: [], flags: {} }, cards.value)
     const gameId = uuid()
     await createLocalGame({ id: gameId, workId, playerName: characterName, characterName, state })
     router.push(`/games/${gameId}`)
@@ -95,7 +96,7 @@ function roleColor(role: string | undefined) {
             成人模式
           </p>
           <p class="text-xs text-neutral-500">
-            开启后,本场游玩中成人内容出现频率大幅上升,并明显偏向训诫、BDSM、打屁股、捆绑、强制等亚文化题材,按角色性欲强度档位推进;可在个人中心随时调整
+            开启后,本场游玩中成人内容出现频率大幅上升,并明显偏向训诫、BDSM、打屁股、捆绑、强制等亚文化题材,按角色性欲强度与当前性欲值推进;可在个人中心随时调整
           </p>
         </div>
         <USwitch v-model="adultOn" />

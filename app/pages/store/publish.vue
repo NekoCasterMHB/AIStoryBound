@@ -42,12 +42,14 @@ const guideOpen = ref(false)
 
 if (isUpdate) {
   // 更新模式:校验商品归属并预填最新已提交版本的名称/说明/售价(售价仅展示,提交沿用)
+  // 用 useRequestFetch:SSR 直链加载时服务端请求也能带上会话 cookie,避免 401 误判非本人商品
   try {
-    const mine = await $fetch<{ published: import('#shared/store-skill').MyPublishedSkill[] }>('/api/store/mine')
+    const rf = useRequestFetch()
+    const mine = await rf<{ published: import('#shared/store-skill').MyPublishedSkill[] }>('/api/store/mine')
     const found = mine.published.find(s => s.id === skillId)
     if (!found) {
       toast.add({ title: 'Skill 不存在或不属于你', color: 'error' })
-      await navigateTo('/store')
+      await navigateTo('/workshop?tab=skills')
     } else {
       name.value = found.name
       tags.value = found.tags ?? []
@@ -56,7 +58,7 @@ if (isUpdate) {
     }
   } catch (e) {
     toast.add({ title: '加载失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
-    await navigateTo('/store')
+    await navigateTo('/workshop?tab=skills')
   }
 }
 
@@ -138,7 +140,7 @@ async function submit() {
       description: isUpdate ? '审核通过后会替换商店版本,审核期间商店继续展示现有版本' : '管理员审核通过后将在商城上架',
       color: 'success'
     })
-    await navigateTo('/store')
+    await navigateTo('/workshop?tab=skills')
   } catch (e) {
     toast.add({ title: isUpdate ? '更新失败' : '发布失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
   } finally {
@@ -175,8 +177,16 @@ async function submit() {
 
     <UCard>
       <div class="flex flex-col gap-4">
-        <UFormField label="Skill 名称" required>
-          <UInput v-model="name" :maxlength="MAX_SKILL_NAME_CHARS" class="w-full" placeholder="如:文案润色助手" />
+        <UFormField
+          label="Skill 名称"
+          required
+        >
+          <UInput
+            v-model="name"
+            :maxlength="MAX_SKILL_NAME_CHARS"
+            class="w-full"
+            placeholder="如:文案润色助手"
+          />
         </UFormField>
 
         <UFormField label="标签(商城展示)">
@@ -194,7 +204,11 @@ async function submit() {
           </p>
         </UFormField>
 
-        <UFormField v-if="!isUpdate" label="售价(token)" required>
+        <UFormField
+          v-if="!isUpdate"
+          label="售价(token)"
+          required
+        >
           <UFieldGroup class="w-full">
             <UInput
               v-model="price"
@@ -224,7 +238,10 @@ async function submit() {
             </template>
           </p>
         </UFormField>
-        <p v-else class="text-xs text-neutral-500">
+        <p
+          v-else
+          class="text-xs text-neutral-500"
+        >
           更新版本沿用当前售价
           <span class="font-semibold text-highlighted">{{ currentPrice.toLocaleString() }} tokens</span>
           ,不可修改;如确需改价请通过其他渠道联系管理员
@@ -257,10 +274,16 @@ async function submit() {
             class="w-full"
             :ui="{ base: 'min-h-48' }"
           />
-          <p v-if="fileError" class="mt-1 text-xs text-red-500">
+          <p
+            v-if="fileError"
+            class="mt-1 text-xs text-red-500"
+          >
             {{ fileError }}
           </p>
-          <p v-else-if="fileEntries.length" class="mt-1 text-xs text-neutral-500">
+          <p
+            v-else-if="fileEntries.length"
+            class="mt-1 text-xs text-neutral-500"
+          >
             已识别 {{ fileEntries.length }} 个文件,含 SKILL.md 与 README ✓
           </p>
         </UFormField>

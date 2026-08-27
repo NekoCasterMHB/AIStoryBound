@@ -196,11 +196,16 @@ async function confirmPayResult(orderNo: string, tradeStatus: string, attempt: n
     return
   }
   payResult.value = { state: 'pending', orderNo, msg: '支付回调处理中,正在确认到账…' }
-  payResultTimer = setTimeout(() => { void confirmPayResult(orderNo, tradeStatus, attempt + 1) }, 5000)
+  payResultTimer = setTimeout(() => {
+    void confirmPayResult(orderNo, tradeStatus, attempt + 1)
+  }, 5000)
 }
 
 function closePayResult() {
-  if (payResultTimer) { clearTimeout(payResultTimer); payResultTimer = null }
+  if (payResultTimer) {
+    clearTimeout(payResultTimer)
+    payResultTimer = null
+  }
   payResultOpen.value = false
   payResult.value = null
   // 清理 URL 上的回调参数,避免刷新重复弹窗(保留 tab 直达参数)

@@ -8,13 +8,13 @@ import { isAdultModeEnabled } from '../../utils/adultMode'
 import { loadScenePrefs } from '../../utils/scenePrefs'
 import { loadNarrTemp } from '../../utils/narrPrefs'
 import { loadEnabledAiSkillObjects } from '../../utils/aiSkills'
-import { buildTurnPrompt, mergeState, TURN_OPTIONS_SCHEMA } from '#shared/game'
+import { buildTurnPrompt, ensureDesires, mergeState, TURN_OPTIONS_SCHEMA } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
 import { getLocalGame, saveLocalGame, syncGameToCloud } from '../../utils/gameStore'
 import { isCloudSaveEnabled } from '../../utils/cloudSave'
 import { getWork, touchWork, addWorkTokens } from '../../utils/worldGen'
-import { saveGamePoint, listGamePoints, pruneGamePoints } from '../../utils/gameSaveStore'
+import { saveGamePoint, listGamePoints, pruneGamePoints, capGamePoints } from '../../utils/gameSaveStore'
 import { downloadGameAsTxt } from '../../utils/exportStory'
 import { downloadGameAsZip } from '../../utils/shareZip'
 
@@ -54,7 +54,7 @@ onMounted(async () => {
   game.value = g
   work.value = g.workId ? await getWork(g.workId) : null
   if (g.workId) void touchWork(g.workId)
-  state.value = g.state
+  state.value = ensureDesires(g.state, cards.value)
   messages.value = g.messages
   currentChapter.value = g.currentChapter ?? null
   const last = g.messages.at(-1)
@@ -104,6 +104,7 @@ async function savePointNow() {
     messages: JSON.parse(JSON.stringify(messages.value)),
     savedAt: new Date().toISOString()
   }).catch(() => {})
+  await capGamePoints(gameId)
 }
 
 async function sendTurn(choice?: string) {
@@ -163,16 +164,16 @@ async function sendTurn(choice?: string) {
     // 叙事已上屏,进入选项生成阶段:显示骨架屏等待
     awaitingOptions.value = true
 
-    // 2) 选项 + 状态变化(结构化)
+    // 2) 选项 + 状态变化 + 剧情摘要(结构化)
     const optRes = await aiChatJson<TurnStructured>(
       [
         {
           role: 'system',
-          content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3 个下一回合的行动选项,以及本轮对游戏状态的增量变化(相对当前值)。\n输出 JSON:\n${TURN_OPTIONS_SCHEMA}`
+          content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3 个下一回合的行动选项、本轮对游戏状态的增量变化(相对当前值),以及整局剧情摘要。\n输出 JSON:\n${TURN_OPTIONS_SCHEMA}`
         },
         {
           role: 'user',
-          content: `当前状态:${JSON.stringify(state.value)}\n上文剧情:\n${messages.value.slice(-8).map(m => m.content).join('\n')}`
+          content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(state.value)}\n上文剧情:\n${messages.value.slice(-12).map(m => m.content).join('\n')}`
         }
       ],
       { maxTokens: 1200, temperature: 0.5, thinking: false }
@@ -181,8 +182,9 @@ async function sendTurn(choice?: string) {
     void addWorkTokens(game.value.workId, optRes.usage?.totalTokens ?? 0)
     const turn = optRes.data
 
-    state.value = mergeState(state.value, turn.state_delta)
+    state.value = mergeState(state.value, turn.state_delta, cards.value)
     if (turn.current_chapter) currentChapter.value = turn.current_chapter
+    if (turn.summary) game.value.summary = { idx: narratorMsg.idx, text: turn.summary }
     options.value = (turn.options ?? []).map((t, i) => ({ idx: i, text: String(t) }))
     if (!game.value.optionsByMessage) game.value.optionsByMessage = {}
     game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(options.value))
@@ -244,7 +246,7 @@ async function rollbackAction() {
   if (!target) return
 
   messages.value = JSON.parse(JSON.stringify(target.messages))
-  state.value = JSON.parse(JSON.stringify(target.state))
+  state.value = ensureDesires(JSON.parse(JSON.stringify(target.state)), cards.value)
   currentChapter.value = target.currentChapter
   streamText.value = ''
   options.value = []
@@ -397,7 +399,7 @@ watch([messages, streamText], async () => {
       />
 
       <!-- 公开状态面板 -->
-      <div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
+      <div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-6">
         <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
           <p class="text-neutral-500">
             地点
@@ -441,6 +443,23 @@ watch([messages, streamText], async () => {
                 :key="k"
                 class="mr-1.5"
               >{{ k }} {{ v > 0 ? '+' : '' }}{{ v }}</span>
+            </template>
+            <template v-else>
+              —
+            </template>
+          </p>
+        </div>
+        <div class="col-span-2 rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800 sm:col-span-1">
+          <p class="text-neutral-500">
+            性欲
+          </p>
+          <p class="truncate tabular-nums">
+            <template v-if="state.desires && Object.keys(state.desires).length">
+              <span
+                v-for="(v, k) in state.desires"
+                :key="k"
+                class="mr-1.5"
+              >{{ k }} {{ v }}</span>
             </template>
             <template v-else>
               —

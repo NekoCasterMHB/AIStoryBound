@@ -12,7 +12,7 @@ const rows = computed(() =>
   [
     (presets.value ?? []).filter((_, i) => i % 2 === 0),
     (presets.value ?? []).filter((_, i) => i % 2 === 1)
-  ].filter((row) => row.length > 0)
+  ].filter(row => row.length > 0)
 )
 
 // 作品名:有的标题带括号标注(如「救命索(年上 强制 调教 H)」),只取括号前的部分并加书名号

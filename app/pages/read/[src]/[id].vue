@@ -992,7 +992,10 @@ useSeoMeta({ title: pageTitle })
               </div>
 
               <!-- 背景图(归属自定义区) -->
-              <div class="mt-3 rounded-xl border p-3" :style="{ borderColor: 'var(--reader-border)' }">
+              <div
+                class="mt-3 rounded-xl border p-3"
+                :style="{ borderColor: 'var(--reader-border)' }"
+              >
                 <p class="mb-2 text-sm font-semibold opacity-90">
                   背景图
                 </p>

@@ -10,7 +10,7 @@ const src = join(root, 'public', 'pwa', '图标.png')
 
 const meta = await sharp(src).metadata()
 const { channels } = await sharp(src).stats()
-const [r, g, b] = channels.slice(0, 3).map((c) => Math.round(c.mean))
+const [r, g, b] = channels.slice(0, 3).map(c => Math.round(c.mean))
 console.log(`源图 ${meta.width}x${meta.height},主色 rgb(${r},${g},${b})`)
 
 // 普通图标:等比缩放,保留透明底
@@ -41,7 +41,7 @@ console.log('已生成: pwa/pwa-192x192.png / pwa/pwa-512x512.png / pwa/apple-to
 
 // favicon.ico:ICO 容器内嵌 16/32/48 PNG(Vista+ 格式,保留圆角透明,浏览器均支持)
 const icoSizes = [16, 32, 48]
-const pngs = await Promise.all(icoSizes.map((s) => sharp(src).resize(s, s).png().toBuffer()))
+const pngs = await Promise.all(icoSizes.map(s => sharp(src).resize(s, s).png().toBuffer()))
 const ico = Buffer.alloc(6 + 16 * icoSizes.length)
 ico.writeUInt16LE(0, 0) // reserved
 ico.writeUInt16LE(1, 2) // type: icon

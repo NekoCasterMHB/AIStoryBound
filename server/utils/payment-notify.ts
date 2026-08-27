@@ -14,7 +14,7 @@ import { uuid } from '../../shared/novel'
 function decodeHtmlEntities(s: string): string {
   return s
     .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
+    .replace(/&apos;/g, '\'')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&amp;/g, '&')

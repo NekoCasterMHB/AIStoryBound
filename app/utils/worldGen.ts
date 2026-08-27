@@ -4,7 +4,7 @@
 // 进度由本地状态驱动;中间产物仅内存(单章失败=跳过+告警,>1/3 失败中止)。
 import { detectEncoding, extractFrontMatter, segmentChapters, uuid } from '#shared/novel'
 import type {
-  ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, LocalWork, WorldEntities
+  ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, LocalWork
 } from '#shared/novel'
 import {
   buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,

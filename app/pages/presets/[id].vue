@@ -217,7 +217,7 @@ function fmtChars(n?: number) {
               />
             </div>
           </div>
-          </div>
+        </div>
 
         <!-- 阅读区 -->
         <div

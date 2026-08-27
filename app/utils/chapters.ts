@@ -24,7 +24,7 @@ function isAuthorLine(line: string): boolean {
   const t = line.trim()
   if (!t) return false
   if (/^作者\s*[:：]\s*\S/.test(t)) return true
-  if (/^[【\[]\s*作者\s*[】\]]/.test(t)) return true
+  if (/^[【[]\s*作者\s*[】\]]/.test(t)) return true
   return /^[（(]?[\u4e00-\u9fa5A-Za-z0-9·]{1,20}[）)]?\s*(?:著|編|编|译|譯)\s*$/.test(t)
 }
 

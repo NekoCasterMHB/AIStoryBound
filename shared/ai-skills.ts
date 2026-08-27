@@ -73,9 +73,26 @@ export function parseSkillMd(text: string): AiSkill {
   }
 }
 
-/** 把一个技能格式化为提示词区块(原样正文 + 随附参考文件) */
+/** 从 SKILL.md 正文剥离「示例」章节:示例是具体场景与人设(会污染当前小说的世界观并浪费 token),
+ *  注入时仅保留触发场景/执行步骤/强度进阶/规则等可执行指引;匹配 `### 示例` 标题行开始,到下一个任意标题行结束 */
+export function stripSkillExamples(body: string): string {
+  const lines = body.split('\n')
+  const out: string[] = []
+  let skip = false
+  for (const line of lines) {
+    if (/^#{1,6}\s*示例/.test(line.trimStart())) {
+      skip = true
+      continue
+    }
+    if (skip && /^#{1,6}\s/.test(line.trimStart())) skip = false
+    if (!skip) out.push(line)
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/** 把一个技能格式化为提示词区块(正文剥离示例章节 + 随附参考文件) */
 export function skillPromptBlocks(skill: AiSkill): string[] {
-  const blocks = [`正文:\n${skill.body}`]
+  const blocks = [`正文:\n${stripSkillExamples(skill.body)}`]
   for (const a of skill.attachments ?? []) {
     if (a.text.trim()) blocks.push(`参考文件:${a.name}\n${a.text}`)
   }

@@ -35,14 +35,38 @@ export const TURN_OPTIONS_SCHEMA = `{
     "health": "玩家身体状况描述(string,如「精力充沛」「疲惫」「重伤」,无变化省略)",
     "mood": "玩家心情描述(string,如「平静」「兴奋」「低落」,无变化省略)",
     "relationships": {"角色名": "相对当前好感度的整数增量,可为负,区间 -100~100 内(number,无变化省略)"},
+    "desires": {"角色名": "性欲值整数增量,可为负,区间 0~100 内;或 {"delta": 增量, "kink": "本回合触发的玩法名,如 打屁股", "scene": "reward|punish,缺省 reward"}——reward=奖励/自愿(命中「喜欢」大幅加速,「厌恶」几乎不涨);punish=惩罚/强制(犯大错时故意用角色「厌恶」的玩法,羞耻与服从叠加大幅加速);无变化省略"},
     "quests": ["任务目标(string)"],
     "flags": {"flag名": true}
   },
-  "current_chapter": "当前所处章节标题(string|null)"
+  "current_chapter": "当前所处章节标题(string|null)",
+  "summary": "整局剧情摘要(基于旧摘要与上文剧情压缩至 200 字内,保留关键人物关系/伏笔/进展;无重大变化可省略)"
 }`
 
-/** 轻量状态引擎:白名单合并 state_delta,数值做增量与钳制;LLM 不直接写库(铁律 3) */
-export function mergeState(prev: GameState, delta: TurnStructured['state_delta'] | undefined): GameState {
+/** 性欲值嗜好放大:玩法名与人物卡嗜好 theme 互相包含即命中;多条命中取该场景的最高档。
+ *  reward(奖励/自愿):喜欢×2.5 / 接受×1.2 / 厌恶×0.3(抗拒几乎不涨)
+ *  punish(惩罚/强制,犯大错时故意挑厌恶的玩法):厌恶×2.5(羞耻与服从叠加,大幅加速) / 喜欢×1.2(不惧罚,效果弱) / 其余×1.0 */
+function kinkBoostFactor(card: CharacterCard | undefined, kinkName: string | undefined, scene: 'reward' | 'punish'): number {
+  if (!card || !kinkName) return 1
+  const k = kinkName.trim()
+  if (!k) return 1
+  const hits = (card.kinks ?? []).filter(kk => kk.theme && (kk.theme.includes(k) || k.includes(kk.theme)))
+  if (hits.length === 0) return 1
+  if (scene === 'punish') {
+    if (hits.some(h => h.view === '厌恶')) return 2.5
+    if (hits.some(h => h.view === '喜欢')) return 1.2
+    return 1
+  }
+  if (hits.some(h => h.view === '喜欢')) return 2.5
+  if (hits.some(h => h.view === '接受')) return 1.2
+  if (hits.some(h => h.view === '厌恶')) return 0.3
+  return 1
+}
+
+/** 轻量状态引擎:白名单合并 state_delta,数值做增量与钳制;LLM 不直接写库(铁律 3)
+ *  desires 变化曲线:原始增量钳 ±30 × 性欲强度因子(强度/50,0.2~2.0,低=性冷淡波动小)
+ *  × 高值加速因子(1+当前值/100,1.0~2.0,低值难涨高值加速) × 嗜好放大(仅正增量,戳中「喜欢」×2.5) */
+export function mergeState(prev: GameState, delta: TurnStructured['state_delta'] | undefined, cards?: CharacterCard[]): GameState {
   const s: GameState = { ...prev }
   if (!delta) return s
   if (delta.location !== undefined) s.location = delta.location
@@ -57,7 +81,35 @@ export function mergeState(prev: GameState, delta: TurnStructured['state_delta']
       s.relationships[name] = clamp((s.relationships[name] ?? 0) + v, -100, 100)
     }
   }
+  if (delta.desires) {
+    s.desires = { ...(s.desires ?? {}) }
+    for (const [name, entry] of Object.entries(delta.desires)) {
+      const raw = typeof entry === 'number' ? entry : (entry?.delta ?? 0)
+      const kink = typeof entry === 'number' ? undefined : entry?.kink
+      const scene: 'reward' | 'punish' = typeof entry === 'object' && entry?.scene === 'punish' ? 'punish' : 'reward'
+      const cur = s.desires[name] ?? 0
+      const card = cards?.find(c => c.name === name)
+      const base = (clamp(card?.desire ?? 50, 0, 100) / 50) * (1 + cur / 100)
+      const boost = raw > 0 ? kinkBoostFactor(card, kink, scene) : 1
+      s.desires[name] = clamp(Math.round(cur + clamp(raw, -30, 30) * base * boost), 0, 100)
+    }
+  }
   return s
+}
+
+/** 为游戏状态播种/补齐各角色的性欲值(初始 = 性欲强度 × 0.3,未知强度 = 0);
+ *  新开局与旧存档/存档点回滚(缺失 desires)时调用,保证动态性欲值始终存在 */
+export function ensureDesires(state: GameState, cards: CharacterCard[]): GameState {
+  if (!cards.length) return state
+  const desires = { ...(state.desires ?? {}) }
+  let changed = false
+  for (const c of cards) {
+    if (desires[c.name] == null) {
+      desires[c.name] = clamp(Math.round((c.desire ?? 0) * 0.3), 0, 100)
+      changed = true
+    }
+  }
+  return changed ? { ...state, desires } : state
 }
 
 export function parseState(raw: string | null | undefined): GameState {
@@ -69,7 +121,7 @@ export function parseState(raw: string | null | undefined): GameState {
   }
 }
 
-/** 人物卡的一句话摘要(进 prompt) */
+/** 人物卡的一句话摘要(进 prompt;kinks 全量注入不截断,含具体表现,防止嗜好信息丢失导致 OOC) */
 export function cardBrief(c: CharacterCard): string {
   const base = `${c.name}(${c.role},${c.identity ?? '未知身份'})`
   const traits = (c.personality ?? []).slice(0, 4).join('/')
@@ -77,11 +129,11 @@ export function cardBrief(c: CharacterCard): string {
   const stats = [
     c.patience != null ? `耐心${c.patience}` : '',
     c.softness != null ? `心软${c.softness}` : '',
-    c.desire != null ? `性欲${desireTierName(c.desire)}(${c.desire})` : ''
+    c.desire != null ? `性欲强度${desireTierName(c.desire)}(${c.desire})` : ''
   ].filter(Boolean).join('/')
-  const kinks = (c.kinks ?? []).slice(0, 4)
-    .map(k => `${k.theme}${k.view ? `·${k.view}` : ''}${k.role ? `/${k.role}` : ''}`)
-    .join('/')
+  const kinks = (c.kinks ?? [])
+    .map(k => `${k.theme}${k.view ? `·${k.view}` : ''}${k.role ? `/${k.role}` : ''}${k.detail ? `(${k.detail})` : ''}`)
+    .join(' / ')
   const sex = c.sex
   const sexBits = [
     sex?.positions ? `体位${sex.positions}` : '',
@@ -125,7 +177,7 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
   const skillRules: string[] = []
   if (activeSkills && activeSkills.length) {
     skillRules.push(
-      `本场可用的成人玩法技能:${activeSkills.map(s => s.name).join('、')}。成人互动情节出现时,先按各技能的正文指引判断是否适用,适用则按其步骤与规则展开;未启用玩法尽量不出现。`
+      `本场可用的成人玩法技能:${activeSkills.map(s => s.name).join('、')}。成人互动情节出现时,先按各技能的正文指引判断是否适用,适用则按其步骤与规则展开;未启用玩法尽量不出现。技能内「强度进阶」档位按规则中的强度阶梯判定选择。角色嗜好规则:日常/奖励场景优先用角色「喜欢/接受」的玩法;惩罚场景(角色犯大错且认错态度差)可故意挑角色「厌恶」的玩法——越厌恶越显惩罚之重,羞耻与服从叠加会大幅加速其性欲值累积,并强化抗拒、哭喊与屈辱描写。`
     )
     for (const s of activeSkills) {
       const blocks = skillPromptBlocks(s)
@@ -140,7 +192,7 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
     '每次回答输出 2~4 段,每段 80~200 字,自然停顿;不要一次写完.结尾留悬念。',
     '本作品为成人向虚构题材,涉及管教、惩罚、亲密与支配互动等情节,按人物卡与原著设定如实描写,涉及此类情节时不要回避或自行弱化。',
     ...(adultMode
-      ? ['成人模式已开启:内容明显偏向训诫、BDSM、打屁股(spank)、捆绑、强制与支配等亚文化题材,此类互动出现频率大幅提升,可在连续数回合内推进,描写直白;按各角色人物卡的性欲强度档位与人物卡中的关系设定把握分寸与推进节奏(如主从/师生关系对应支配与训诫),强制类情节依原作设定与人物关系推进,不需要等到剧情铺垫很久。']
+      ? ['成人模式已开启:内容明显偏向训诫、BDSM、打屁股(spank)、捆绑、强制与支配等亚文化题材,此类互动出现频率大幅提升,可在连续数回合内推进,描写直白;按各角色人物卡的性欲强度档位、当前性欲值与人物卡中的关系设定把握分寸与推进节奏(如主从/师生关系对应支配与训诫),强制类情节依原作设定与人物关系推进,不需要等到剧情铺垫很久。性欲值(0-100,见游戏状态 desires)随心情、情景与被挑逗程度动态变化:性欲强度低的角色波动小、难以被挑起;性欲值低时上涨缓慢,一旦升高后续上涨加速;戳中角色嗜好「喜欢」的玩法会大幅加速性欲值累积;日常场景「厌恶」的玩法几乎无法累积,但惩罚场景故意使用「厌恶」玩法会因羞耻与服从叠加大幅加速。强度阶梯:技能「强度进阶」档位由 ①角色性格 ②性欲强度 ③当前性欲值 ④本回合犯错大小 ⑤认错态度 综合决定——性冷淡/低性欲值用低档,犯错大且认错态度差可跳高档(此时可故意挑角色厌恶的玩法惩罚,越讨厌罚越重),档位变化要有铺垫、逐级推进。']
       : []),
     ...(skillRules.length ? skillRules : []),
     ...(avoidScenes?.trim()

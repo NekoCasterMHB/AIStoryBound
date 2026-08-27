@@ -58,7 +58,9 @@ async function loadCodes() {
     codesLoading.value = false
   }
 }
-onMounted(() => { void loadCodes() })
+onMounted(() => {
+  void loadCodes()
+})
 
 // ---- 生成表单 ----
 type RuleValue = 'activity' | 'limited' | 'oneTime'
@@ -217,7 +219,10 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
     </div>
 
     <!-- 校验完成前只显示加载态;非管理员会在校验失败时被重定向回首页 -->
-    <div v-if="!isAdmin" class="py-10 text-center text-sm text-neutral-500">
+    <div
+      v-if="!isAdmin"
+      class="py-10 text-center text-sm text-neutral-500"
+    >
       正在校验管理权限…
     </div>
 
@@ -228,9 +233,18 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
           生成兑换码
         </p>
         <div class="grid gap-4 sm:grid-cols-2">
-          <UFormField label="每个码可兑换 token 数" required>
+          <UFormField
+            label="每个码可兑换 token 数"
+            required
+          >
             <div class="flex gap-2">
-              <UInput v-model="form.tokens" type="number" min="1" placeholder="自定义数量" class="flex-1" />
+              <UInput
+                v-model="form.tokens"
+                type="number"
+                min="1"
+                placeholder="自定义数量"
+                class="flex-1"
+              />
               <UButton
                 v-for="p in TOKEN_QUICK"
                 :key="p.label"
@@ -242,12 +256,23 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
               </UButton>
             </div>
           </UFormField>
-          <UFormField label="生成数量" required>
-            <UInput v-model="form.count" type="number" min="1" max="100" />
+          <UFormField
+            label="生成数量"
+            required
+          >
+            <UInput
+              v-model="form.count"
+              type="number"
+              min="1"
+              max="100"
+            />
           </UFormField>
         </div>
 
-        <UFormField label="核销规则" class="mt-4">
+        <UFormField
+          label="核销规则"
+          class="mt-4"
+        >
           <URadioGroup
             v-model="form.rule"
             color="primary"
@@ -257,11 +282,25 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
         </UFormField>
 
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
-          <UFormField v-if="form.rule === 'limited'" label="总用量上限(可兑换总次数)" required>
-            <UInput v-model="form.maxUses" type="number" min="1" placeholder="如 100" />
+          <UFormField
+            v-if="form.rule === 'limited'"
+            label="总用量上限(可兑换总次数)"
+            required
+          >
+            <UInput
+              v-model="form.maxUses"
+              type="number"
+              min="1"
+              placeholder="如 100"
+            />
           </UFormField>
           <UFormField label="有效期(天,留空 = 永不过期)">
-            <UInput v-model="form.expireDays" type="number" min="1" placeholder="如 30" />
+            <UInput
+              v-model="form.expireDays"
+              type="number"
+              min="1"
+              placeholder="如 30"
+            />
           </UFormField>
         </div>
 
@@ -278,7 +317,10 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
       </UCard>
 
       <!-- 生成结果(仅本次生成可见) -->
-      <UCard v-if="createdCodes.length" class="mb-6">
+      <UCard
+        v-if="createdCodes.length"
+        class="mb-6"
+      >
         <div class="mb-3 flex items-center justify-between gap-3">
           <p class="font-semibold">
             本次生成的兑换码(共 {{ createdCodes.length }} 个,请立即复制保存)
@@ -330,12 +372,18 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
             </thead>
             <tbody>
               <tr v-if="codesLoading">
-                <td colspan="7" class="py-6 text-center text-neutral-500">
+                <td
+                  colspan="7"
+                  class="py-6 text-center text-neutral-500"
+                >
                   加载中…
                 </td>
               </tr>
               <tr v-else-if="!codes.length">
-                <td colspan="7" class="py-6 text-center text-neutral-500">
+                <td
+                  colspan="7"
+                  class="py-6 text-center text-neutral-500"
+                >
                   还没有兑换码,先在上面生成
                 </td>
               </tr>
@@ -345,7 +393,10 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
                 class="border-b border-neutral-100 last:border-0 dark:border-neutral-900"
               >
                 <td class="py-2.5 pr-3 font-mono text-xs">
-                  <button class="hover:underline" @click="copyCode(row)">
+                  <button
+                    class="hover:underline"
+                    @click="copyCode(row)"
+                  >
                     {{ row.code }}
                   </button>
                 </td>
@@ -395,16 +446,28 @@ function statusOf(row: RedeemCodeRow): { text: string, cls: string } {
       </UCard>
 
       <!-- 兑换明细 -->
-      <UModal v-model:open="detailOpen" :title="`兑换明细 · ${detail?.code ?? ''}`">
+      <UModal
+        v-model:open="detailOpen"
+        :title="`兑换明细 · ${detail?.code ?? ''}`"
+      >
         <template #body>
-          <div v-if="detailLoading" class="py-6 text-center text-sm text-neutral-500">
+          <div
+            v-if="detailLoading"
+            class="py-6 text-center text-sm text-neutral-500"
+          >
             加载中…
           </div>
           <template v-else>
-            <p v-if="!detail?.redemptions.length" class="py-4 text-center text-sm text-neutral-500">
+            <p
+              v-if="!detail?.redemptions.length"
+              class="py-4 text-center text-sm text-neutral-500"
+            >
               还没有人兑换
             </p>
-            <ul v-else class="divide-y divide-neutral-100 dark:divide-neutral-900">
+            <ul
+              v-else
+              class="divide-y divide-neutral-100 dark:divide-neutral-900"
+            >
               <li
                 v-for="r in detail.redemptions"
                 :key="r.id"

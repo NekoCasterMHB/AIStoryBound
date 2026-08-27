@@ -9,8 +9,8 @@ export const SELLER_RATIO = 0.8
 /** 平台手续费比例 */
 export const PLATFORM_RATIO = 0.2
 
-/** 单个 skill 压缩包大小上限(字节,10MB) */
-export const MAX_SKILL_ZIP_BYTES = 10 * 1024 * 1024
+/** 单个 skill 压缩包大小上限(字节,1MB) */
+export const MAX_SKILL_ZIP_BYTES = 1024 * 1024
 /** 名称字数上限 */
 export const MAX_SKILL_NAME_CHARS = 60
 /** 单个标签字数上限 */
@@ -49,6 +49,8 @@ export interface StoreSkillSummary {
   purchaseCount: number
   createdAt: number
   owned: boolean
+  /** 是否已购买(自己发布的商品不算;卡片售价区显示「已购买」tag) */
+  purchased: boolean
   /** SKILL.md frontmatter 图标(emoji,可空) */
   icon: string | null
   /** SKILL.md frontmatter 标签(卡片展示) */

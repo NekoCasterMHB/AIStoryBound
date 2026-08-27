@@ -64,14 +64,6 @@ function syncInput() {
   input.value = v ? (format.value === 'hex' ? v : toRgba(parseHex(v) ?? { r: 0, g: 0, b: 0, a: 1 })) : ''
 }
 
-/** 切换格式时把当前颜色转成对应写法显示在输入框 */
-function switchFormat(f: 'hex' | 'rgba') {
-  format.value = f
-  const cur = props.modelValue ?? (parseColor(input.value) ? toHex(parseColor(input.value)!) : null)
-  input.value = cur ? (f === 'hex' ? cur : toRgba(parseHex(cur) ?? { r: 0, g: 0, b: 0, a: 1 })) : ''
-  invalid.value = false
-}
-
 function applyInput() {
   const p = parseColor(input.value)
   if (!p) {
@@ -94,8 +86,12 @@ const pickerModel = computed({
   set: (v: string) => onPicker(v || undefined)
 })
 
-watch(open, (o) => { if (o) syncInput() })
-watch(() => props.modelValue, () => { if (open.value) syncInput() })
+watch(open, (o) => {
+  if (o) syncInput()
+})
+watch(() => props.modelValue, () => {
+  if (open.value) syncInput()
+})
 </script>
 
 <template>

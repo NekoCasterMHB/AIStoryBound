@@ -21,7 +21,7 @@ import {
   buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
   buildSynthesizeMessages, finalizeCards, mergeExtractions, normalizeExtraction,
   quoteByChapter, splitUnits, verifyQuotes,
-  ADULT_GENRE, CHECK_MAX_TOKENS, ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS,
+  CHECK_MAX_TOKENS, ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS,
   SYNTH_MAX_TOKENS, TOP_CHARACTERS
 } from '../shared/world-build'
 
@@ -98,7 +98,7 @@ async function callAI(
       signal: AbortSignal.timeout(RELAY_TIMEOUT_MS)
     })
   } catch (e) {
-    throw new Error(`AI 上游请求失败: ${(e as Error).message}`)
+    throw new Error(`AI 上游请求失败: ${(e as Error).message}`, { cause: e })
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -209,7 +209,7 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
   // 1) 分块提取(并发 4,瞬时错误退避 1.5s 重试一次后记为该单元失败)
   const units = splitUnits(chapters)
   const extracts: (ChapterExtraction | null)[] = new Array(units.length)
-  const results = await pool(units, EXTRACT_CONCURRENCY, async (unit, index) => {
+  const results = await pool(units, EXTRACT_CONCURRENCY, async (unit) => {
     const attempt = async (): Promise<ChapterExtraction> => {
       const { data, totalTokens } = await callAI(buildExtractMessages(title, unit, eco), {
         maxTokens: eco ? Math.min(ECO_EXTRACT_MAX_TOKENS, 10000) : 10000,
@@ -348,7 +348,7 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
       })
       synthData = (data ?? {}) as { title?: string, summary?: string, characters?: CharacterCard[] }
     } catch (e) {
-      if (!isRetryable(e)) throw new Error(`成书失败: ${(e as Error).message}`)
+      if (!isRetryable(e)) throw new Error(`成书失败: ${(e as Error).message}`, { cause: e })
       await sleep(1500)
       try {
         const { data } = await callAI(buildSynthesizeMessages(title, entities, conflicts, warnings), {
@@ -357,7 +357,7 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
         })
         synthData = (data ?? {}) as { title?: string, summary?: string, characters?: CharacterCard[] }
       } catch (e2) {
-        throw new Error(`成书失败: ${(e2 as Error).message}`)
+        throw new Error(`成书失败: ${(e2 as Error).message}`, { cause: e2 })
       }
     }
     overlay = {

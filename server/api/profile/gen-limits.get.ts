@@ -14,13 +14,15 @@ export default defineEventHandler(async (event) => {
   const db = useD1(event)
   const row = await db.select().from(usersTable).where(eq(usersTable.id, sessUser.id)).get()
   const stored = row !== undefined && GEN_LIMIT_KEYS.some(k => row[GEN_LIMIT_COLUMNS[k]] != null)
-  const limits: GenLimits = normalizeGenLimits(row ? {
-    unitMaxChars: row[GEN_LIMIT_COLUMNS.unitMaxChars],
-    unitOverlapChars: row[GEN_LIMIT_COLUMNS.unitOverlapChars],
-    extractMaxTokens: row[GEN_LIMIT_COLUMNS.extractMaxTokens],
-    checkMaxTokens: row[GEN_LIMIT_COLUMNS.checkMaxTokens],
-    synthMaxTokens: row[GEN_LIMIT_COLUMNS.synthMaxTokens],
-    relayTimeoutSec: row[GEN_LIMIT_COLUMNS.relayTimeoutSec]
-  } : null)
+  const limits: GenLimits = normalizeGenLimits(row
+    ? {
+        unitMaxChars: row[GEN_LIMIT_COLUMNS.unitMaxChars],
+        unitOverlapChars: row[GEN_LIMIT_COLUMNS.unitOverlapChars],
+        extractMaxTokens: row[GEN_LIMIT_COLUMNS.extractMaxTokens],
+        checkMaxTokens: row[GEN_LIMIT_COLUMNS.checkMaxTokens],
+        synthMaxTokens: row[GEN_LIMIT_COLUMNS.synthMaxTokens],
+        relayTimeoutSec: row[GEN_LIMIT_COLUMNS.relayTimeoutSec]
+      }
+    : null)
   return { ...limits, stored, hasDefaults: GEN_LIMIT_KEYS.every(k => limits[k] === DEFAULT_GEN_LIMITS[k]) }
 })

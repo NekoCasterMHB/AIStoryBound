@@ -48,7 +48,9 @@ async function load() {
     refreshing.value = false
   }
 }
-onMounted(() => { void load() })
+onMounted(() => {
+  void load()
+})
 
 function fmtTokens(n: number) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
@@ -89,7 +91,10 @@ const cards = computed(() => {
       </UButton>
     </div>
 
-    <div v-if="!isAdmin" class="py-10 text-center text-sm text-neutral-500">
+    <div
+      v-if="!isAdmin"
+      class="py-10 text-center text-sm text-neutral-500"
+    >
       正在校验管理权限…
     </div>
 
@@ -140,7 +145,10 @@ const cards = computed(() => {
             {{ data?.deepseek?.available ? '可用' : '不可用' }}
           </UBadge>
         </div>
-        <div v-if="loading" class="py-6 text-center text-sm text-neutral-500">
+        <div
+          v-if="loading"
+          class="py-6 text-center text-sm text-neutral-500"
+        >
           加载中…
         </div>
         <template v-else-if="data?.deepseek">
@@ -171,7 +179,10 @@ const cards = computed(() => {
             余额查询失败:{{ data.deepseek.error || '未知错误' }}
           </p>
         </template>
-        <p v-else class="text-sm text-neutral-500">
+        <p
+          v-else
+          class="text-sm text-neutral-500"
+        >
           加载中…
         </p>
       </UCard>

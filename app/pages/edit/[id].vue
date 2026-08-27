@@ -239,7 +239,7 @@ async function flushSave() {
     dirty.value = false
     saveState.value = 'saved'
     lastSavedAt.value = Date.now()
-  } catch (e) {
+  } catch {
     // 正文为空或无法切分章节时保留改动,等下一次输入再自动重试
     saveState.value = 'error'
   } finally {

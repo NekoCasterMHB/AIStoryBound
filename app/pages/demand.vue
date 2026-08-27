@@ -7,7 +7,7 @@ import type { DemandItem, DemandStatus } from '#shared/demand'
 // /demand — 需求墙(游客可浏览;发起需求与点赞需登录)。按点赞数排序,高赞需求优先实现。
 useHead({ title: 'AI Word2World · 需求墙' })
 
-const { data: session } = await useAuthSession()
+await useAuthSession()
 const { requireLogin } = useAuthModal()
 const toast = useToast()
 

@@ -237,6 +237,100 @@ export const skillPurchases = sqliteTable('skill_purchases', {
   index('idx_skill_purchase_buyer').on(t.buyerId)
 ])
 
+// ---- 小说商城商品(TXT 存 R2,见 wrangler.toml SKILL_FILES 绑定;购买拆账 80/20,同 Skill 商城) ----
+export const novelProducts = sqliteTable('novel_products', {
+  id: text('id').primaryKey(),
+  /** 发布者 */
+  sellerId: text('seller_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** 书名 */
+  title: text('title').notNull(),
+  /** 原著作者(发布者填写,可空) */
+  author: text('author'),
+  /** 一句话简介(商城卡片展示) */
+  desc: text('desc').notNull(),
+  /** 售价(token,整数) */
+  price: integer('price').notNull(),
+  /** 可预览字数(买家未购买时可免费阅读正文前 N 字,0=不可预览) */
+  previewChars: integer('preview_chars').notNull(),
+  /** 全书字数(最新已上架版本快照) */
+  totalChars: integer('total_chars').notNull(),
+  /** R2 key: novels/<sellerId>/<id>.txt */
+  fileKey: text('file_key').notNull(),
+  /** 上传的原始文件名(下载时回填) */
+  fileName: text('file_name').notNull(),
+  /** 字节数 */
+  fileSize: integer('file_size').notNull(),
+  /** pending=待审核 | approved=已上架 | rejected=已拒绝 | removed=已下架 */
+  status: text('status').notNull().default('pending'),
+  /** 审核驳回原因 */
+  rejectReason: text('reject_reason'),
+  /** 手动指定的主版本(商城展示快照来源版本);为空 = 最新已上架版本 */
+  mainVersion: integer('main_version'),
+  /** 1=平台推荐(优质小说推荐标识) */
+  featured: integer('featured').notNull().default(0),
+  downloadCount: integer('download_count').notNull().default(0),
+  purchaseCount: integer('purchase_count').notNull().default(0),
+  reviewedBy: text('reviewed_by').references(() => user.id),
+  reviewedAt: integer('reviewed_at', { mode: 'timestamp_ms' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  index('idx_novel_seller').on(t.sellerId),
+  index('idx_novel_status').on(t.status, t.featured)
+])
+
+// ---- 小说版本(每次发布/更新生成一条;审核、购买锁定与下载都以版本为准) ----
+export const novelProductVersions = sqliteTable('novel_product_versions', {
+  id: text('id').primaryKey(),
+  novelId: text('novel_id').notNull().references(() => novelProducts.id, { onDelete: 'cascade' }),
+  /** 版本号,从 1 自动递增 */
+  version: integer('version').notNull(),
+  /** 本次提交的书名/作者/简介/售价/预览字数快照(审核通过后同步到主表) */
+  title: text('title').notNull(),
+  author: text('author'),
+  desc: text('desc').notNull(),
+  price: integer('price').notNull(),
+  previewChars: integer('preview_chars').notNull(),
+  totalChars: integer('total_chars').notNull(),
+  /** R2 key(每个版本独立文件,不覆盖) */
+  fileKey: text('file_key').notNull(),
+  /** 上传的原始文件名(下载时回填) */
+  fileName: text('file_name').notNull(),
+  /** 字节数 */
+  fileSize: integer('file_size').notNull(),
+  /** pending=待审核 | approved=已上架 | rejected=已拒绝(版本级状态) */
+  status: text('status').notNull().default('pending'),
+  /** 审核驳回原因 */
+  rejectReason: text('reject_reason'),
+  /** 1=启用(用户侧版本菜单可见)| 0=禁用(卖家在版本管理中关闭,用户侧隐藏,已购者仍可下载锁定版本) */
+  enabled: integer('enabled').notNull().default(1),
+  reviewedBy: text('reviewed_by').references(() => user.id),
+  reviewedAt: integer('reviewed_at', { mode: 'timestamp_ms' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  uniqueIndex('idx_novel_version_unique').on(t.novelId, t.version),
+  index('idx_novel_version_status').on(t.novelId, t.status)
+])
+
+// ---- 小说购买记录(唯一(novel, buyer)= 一次购买永久可下载,不可重购) ----
+export const novelPurchases = sqliteTable('novel_purchases', {
+  id: text('id').primaryKey(),
+  novelId: text('novel_id').notNull().references(() => novelProducts.id, { onDelete: 'cascade' }),
+  buyerId: text('buyer_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** 成交价快照(token) */
+  price: integer('price').notNull(),
+  /** 发布者所得(售价 80%,round 取整) */
+  sellerShare: integer('seller_share').notNull(),
+  /** 平台手续费(售价 20%) */
+  platformFee: integer('platform_fee').notNull(),
+  /** 购买时锁定的版本记录 id(旧数据为 null 时回退 v1) */
+  novelVersionId: text('novel_version_id').references(() => novelProductVersions.id, { onDelete: 'set null' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  uniqueIndex('idx_novel_purchase_unique').on(t.novelId, t.buyerId),
+  index('idx_novel_purchase_buyer').on(t.buyerId)
+])
+
 // ---- 小说 ----
 export const novels = sqliteTable('novels', {
   id: text('id').primaryKey(),

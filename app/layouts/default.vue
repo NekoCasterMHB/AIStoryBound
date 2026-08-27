@@ -6,6 +6,15 @@ import { authClient, useAuthSession } from '~/utils/auth-client'
 // 全局导航栏右侧:生成世界入口 + 登录(未登录)/用户菜单(已登录)
 const { data: session } = await useAuthSession()
 const user = computed(() => session.value?.user)
+
+// 管理后台入口:仅当登录邮箱与 ADMIN_EMAIL 配置一致时在用户菜单中显示。
+// ADMIN_EMAIL 不暴露给客户端,统一调 /api/admin/me 由服务端判定(与 middleware/admin.ts 同源)。
+const { data: adminMe } = await useFetch('/api/admin/me', {
+  immediate: !!user.value,
+  watch: [user]
+})
+const isAdmin = computed(() => !!adminMe.value?.isAdmin)
+
 const { requireLogin } = useAuthModal()
 
 async function onStartGenerate() {
@@ -23,6 +32,15 @@ async function onLogout() {
   await authClient.signOut()
   navigateTo('/')
 }
+
+// 用户下拉菜单(管理后台入口仅管理员可见)
+const menuItems = computed(() => [
+  [{ label: `你好, ${user.value?.name || ''}`, disabled: true }],
+  [{ label: '个人中心', icon: 'i-lucide-user-round', onSelect: () => navigateTo('/profile') }],
+  [{ label: '我的书架', icon: 'i-lucide-library-big', onSelect: () => navigateTo('/works') }],
+  ...(isAdmin.value ? [[{ label: '管理后台', icon: 'i-lucide-shield', onSelect: () => navigateTo('/admin') }]] : []),
+  [{ label: '退出登录', icon: 'i-lucide-log-out', onSelect: onLogout }]
+])
 </script>
 
 <template>
@@ -84,23 +102,23 @@ async function onLogout() {
 
         <div class="lg:hidden">
           <UButton
-            to="/store"
-            icon="i-lucide-store"
+            to="/workshop"
+            icon="i-lucide-gem"
             variant="subtle"
             size="sm"
             square
-            aria-label="Skill商城"
+            aria-label="创意工坊"
           />
         </div>
         <div class="hidden lg:block">
           <UButton
-            to="/store"
-            icon="i-lucide-store"
+            to="/workshop"
+            icon="i-lucide-gem"
             variant="subtle"
             size="sm"
-            aria-label="Skill商城"
+            aria-label="创意工坊"
           >
-            <span>Skill商城</span>
+            <span>创意工坊</span>
           </UButton>
         </div>
 
@@ -140,12 +158,7 @@ async function onLogout() {
         </template>
         <template v-else>
           <UDropdownMenu
-            :items="[
-              [{ label: `你好, ${user.name || ''}`, disabled: true }],
-              [{ label: '个人中心', icon: 'i-lucide-user-round', onSelect: () => navigateTo('/profile') }],
-              [{ label: '我的书架', icon: 'i-lucide-library-big', onSelect: () => navigateTo('/works') }],
-              [{ label: '退出登录', icon: 'i-lucide-log-out', onSelect: onLogout }]
-            ]"
+            :items="menuItems"
           >
             <UButton
               color="neutral"
@@ -171,7 +184,7 @@ async function onLogout() {
         container: 'flex flex-col py-8 lg:py-4 lg:flex-row lg:items-center lg:justify-between lg:gap-x-3',
         left: 'order-1 flex items-center justify-center lg:justify-start lg:flex-1 gap-x-1.5 mt-3 lg:mt-0',
         center: 'hidden',
-        right: 'order-2 flex items-center justify-center lg:justify-end lg:flex-1 gap-x-1.5 mt-8 lg:mt-0',
+        right: 'order-2 flex items-center justify-center lg:justify-end lg:flex-1 gap-x-1.5 mt-8 lg:mt-0'
       }"
     >
       <template #left>
@@ -225,10 +238,10 @@ async function onLogout() {
               </li>
               <li>
                 <NuxtLink
-                  to="/store"
+                  to="/workshop"
                   class="text-neutral-600 transition-colors hover:text-primary dark:text-neutral-400 dark:hover:text-primary-400"
                 >
-                  Skill商城
+                  创意工坊
                 </NuxtLink>
               </li>
               <li>
@@ -270,7 +283,7 @@ async function onLogout() {
       <template #bottom>
         <UContainer>
           <p class="border-t border-neutral-200 pt-8 text-center text-xs text-neutral-500 lg:pt-12 dark:border-neutral-800 dark:text-neutral-400">
-            © 2026 AI Word2World · 
+            © 2026 AI Word2World ·
           </p>
         </UContainer>
       </template>

@@ -120,7 +120,7 @@ export interface CharacterCard {
   patience?: number | null
   /** 心软程度,0-100 整数(数值越大越容易心软妥协) */
   softness?: number | null
-  /** 性欲强度,0-100 整数(数值越大欲望越强、理智越弱;影响 AI 演绎的互动分寸) */
+  /** 性欲强度,0-100 整数(静态特质:数值越小越性冷淡、欲望波动越小越难挑起;数值越大欲望越强;影响 AI 演绎的互动分寸) */
   desire?: number | null
   /** 成人题材玩法喜好(theme=玩法,view=喜好态度,role=承受/施予/双方,detail=具体表现与敏感度) */
   kinks?: { theme: string, view: string | null, role: string | null, detail: string | null }[]
@@ -402,6 +402,8 @@ export interface LocalGame {
   optionsByMessage?: Record<string, { idx: number, text: string }[]>
   currentChapter?: string | null
   summary?: { idx: number, text: string } | null
+  /** 云端同步进度:上次成功同步的最后一条消息 idx(-1=从未同步;回滚后失效,下次同步自动转全量重建) */
+  lastSyncedIdx?: number
   status: 'active' | 'ended'
   createdAt: string
   updatedAt: string
@@ -430,6 +432,8 @@ export interface GameState {
   mood?: string
   /** 角色名 -> 好感度(-100..100) */
   relationships?: Record<string, number>
+  /** 角色名 -> 性欲值(0-100,动态状态:随心情/情景/挑逗变化,戳中嗜好大幅加速,低强度角色波动小、高值后上涨加速) */
+  desires?: Record<string, number>
   quests?: string[]
   flags?: Record<string, boolean | string | number>
   /** AI 内部状态(不展示给玩家,仅进 prompt) */
@@ -492,8 +496,12 @@ export interface TurnStructured {
     flags?: Record<string, boolean | string | number>
     /** 角色名 -> 相对当前好感度的增量(-100..100 区间内) */
     relationships?: Record<string, number>
+    /** 角色名 -> 性欲值增量(0-100 区间内);可附触发玩法名与场景,引擎按人物卡嗜好放大 */
+    desires?: Record<string, number | { delta: number, kink?: string, scene?: 'reward' | 'punish' }>
   }
   current_chapter?: string | null
+  /** 整局剧情摘要(覆盖式更新:基于旧摘要+近期剧情压缩,保留关键关系/伏笔/进展) */
+  summary?: string
 }
 
 // ---- 简单工具 ----
@@ -546,7 +554,7 @@ export function isAnonymousAuthor(name: string): boolean {
 export function parseAuthorName(line: string): string | null {
   const t = line.trim()
   if (!t) return null
-  const labeled = /^作者\s*[:：]\s*(.+)$/.exec(t) ?? /^[【\[]\s*作者\s*[】\]]\s*[:：]?\s*(.+)$/.exec(t)
+  const labeled = /^作者\s*[:：]\s*(.+)$/.exec(t) ?? /^[【[]\s*作者\s*[】\]]\s*[:：]?\s*(.+)$/.exec(t)
   if (labeled) {
     const name = (labeled[1] ?? '').replace(/[。;；,，]$/, '').trim()
     return isAnonymousAuthor(name) ? null : (name || null)

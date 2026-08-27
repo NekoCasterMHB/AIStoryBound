@@ -89,6 +89,7 @@ export async function installStoreSkillZip(zip: Uint8Array, storeId: string, ver
   if (storeName?.trim()) skill.name = storeName.trim()
 
   // 随附文件:SKILL.md 之外的小文本文件(单文件上限 200KB,最多 20 个)
+  // README/LICENSE 为上架/版权文件,不注入提示词(README 只供商城说明区展示)
   let files: Record<string, Uint8Array>
   try {
     files = unzipSync(zip)
@@ -98,6 +99,7 @@ export async function installStoreSkillZip(zip: Uint8Array, storeId: string, ver
   const attachments: { name: string, text: string }[] = []
   for (const [name, buf] of Object.entries(files)) {
     if (/SKILL\.md$/i.test(name) || name.endsWith('/') || buf.length === 0) continue
+    if (/^README(\.md)?$/i.test(name) || /^LICENSE(\.txt)?$/i.test(name)) continue
     if (buf.length > 200 * 1024) continue
     attachments.push({ name, text: new TextDecoder().decode(buf) })
     if (attachments.length >= 20) break

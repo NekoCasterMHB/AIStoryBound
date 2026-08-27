@@ -300,6 +300,71 @@ CREATE TABLE IF NOT EXISTS `skill_purchases` (
 	FOREIGN KEY (`buyer_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
 
+-- ---- 小说商城商品(创意工坊「书架」;TXT 存 R2 SKILL_FILES;购买拆账 80/20,同 Skill 商城) ----
+CREATE TABLE IF NOT EXISTS `novel_products` (
+	`id` text PRIMARY KEY NOT NULL,
+	`seller_id` text NOT NULL,
+	`title` text NOT NULL,
+	`author` text,
+	`desc` text NOT NULL,
+	`price` integer NOT NULL,
+	`preview_chars` integer NOT NULL,
+	`total_chars` integer NOT NULL,
+	`file_key` text NOT NULL,
+	`file_name` text NOT NULL,
+	`file_size` integer NOT NULL,
+	`status` text DEFAULT 'pending' NOT NULL,
+	`reject_reason` text,
+	`main_version` integer,
+	`featured` integer DEFAULT 0 NOT NULL,
+	`download_count` integer DEFAULT 0 NOT NULL,
+	`purchase_count` integer DEFAULT 0 NOT NULL,
+	`reviewed_by` text,
+	`reviewed_at` integer,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL,
+	FOREIGN KEY (`seller_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`reviewed_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE no action
+);
+
+-- ---- 小说版本(每次发布/更新生成一条;审核、购买锁定与下载都以版本为准) ----
+CREATE TABLE IF NOT EXISTS `novel_product_versions` (
+	`id` text PRIMARY KEY NOT NULL,
+	`novel_id` text NOT NULL,
+	`version` integer NOT NULL,
+	`title` text NOT NULL,
+	`author` text,
+	`desc` text NOT NULL,
+	`price` integer NOT NULL,
+	`preview_chars` integer NOT NULL,
+	`total_chars` integer NOT NULL,
+	`file_key` text NOT NULL,
+	`file_name` text NOT NULL,
+	`file_size` integer NOT NULL,
+	`status` text DEFAULT 'pending' NOT NULL,
+	`reject_reason` text,
+	`enabled` integer DEFAULT 1 NOT NULL,
+	`reviewed_by` text,
+	`reviewed_at` integer,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`novel_id`) REFERENCES `novel_products`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`reviewed_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE no action
+);
+
+-- ---- 小说购买记录(唯一(novel_id,buyer_id)= 一次购买永久可下载,不可重购) ----
+CREATE TABLE IF NOT EXISTS `novel_purchases` (
+	`id` text PRIMARY KEY NOT NULL,
+	`novel_id` text NOT NULL,
+	`buyer_id` text NOT NULL,
+	`price` integer NOT NULL,
+	`seller_share` integer NOT NULL,
+	`platform_fee` integer NOT NULL,
+	`novel_version_id` text,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`novel_id`) REFERENCES `novel_products`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`buyer_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+
 -- ---- 需求墙(用户提交功能需求并按点赞数排序,高赞优先实现) ----
 CREATE TABLE IF NOT EXISTS `feature_requests` (
 	`id` text PRIMARY KEY NOT NULL,
@@ -368,6 +433,11 @@ CREATE INDEX IF NOT EXISTS `idx_jobs_status` ON `jobs` (`status`);
 CREATE INDEX IF NOT EXISTS `idx_skill_seller` ON `skill_products` (`seller_id`);
 CREATE INDEX IF NOT EXISTS `idx_skill_status` ON `skill_products` (`status`,`featured`);
 CREATE UNIQUE INDEX IF NOT EXISTS `idx_skill_purchase_unique` ON `skill_purchases` (`skill_id`,`buyer_id`);
+CREATE INDEX IF NOT EXISTS `idx_novel_seller` ON `novel_products` (`seller_id`);
+CREATE INDEX IF NOT EXISTS `idx_novel_status` ON `novel_products` (`status`,`featured`);
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_novel_version_unique` ON `novel_product_versions` (`novel_id`,`version`);
+CREATE INDEX IF NOT EXISTS `idx_novel_version_status` ON `novel_product_versions` (`novel_id`,`status`);
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_novel_purchase_unique` ON `novel_purchases` (`novel_id`,`buyer_id`);
 CREATE INDEX IF NOT EXISTS `idx_fr_status_likes` ON `feature_requests` (`status`,`like_count`);
 CREATE INDEX IF NOT EXISTS `idx_fr_user` ON `feature_requests` (`user_id`);
 CREATE UNIQUE INDEX IF NOT EXISTS `idx_frl_unique` ON `feature_request_likes` (`request_id`,`user_id`);

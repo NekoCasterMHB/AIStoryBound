@@ -33,15 +33,21 @@ for (const dir of dirs) {
   const unzipped = unzipSync(readFileSync(join(dirPath, zipName)))
   const entries = Object.keys(unzipped)
   const hasSkillMd = entries.some(p => /(^|\/)SKILL\.md$/i.test(p))
-  if (!hasSkillMd) { console.error(`  ✘ ${zipName}: 缺少 SKILL.md`); fail++; continue }
+  if (!hasSkillMd) {
+    console.error(`  ✘ ${zipName}: 缺少 SKILL.md`)
+    fail++
+    continue
+  }
 
   // 校验 2:SKILL.md 能被 parseSkillMd 解析(key/name/desc/正文)
   const skillMdPath = entries.find(p => /(^|\/)SKILL\.md$/i.test(p))
-  let parsed = null
+  let parsed
   try {
     parsed = parseSkillMd(new TextDecoder().decode(unzipped[skillMdPath]))
   } catch (e) {
-    console.error(`  ✘ ${zipName}: parseSkillMd 失败: ${e.message}`); fail++; continue
+    console.error(`  ✘ ${zipName}: parseSkillMd 失败: ${e.message}`)
+    fail++
+    continue
   }
 
   const size = statSync(join(dirPath, zipName)).size

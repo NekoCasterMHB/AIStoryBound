@@ -164,7 +164,7 @@ async function updateSkill(s: AiSkill) {
           color="neutral"
           variant="soft"
           icon="i-lucide-shopping-bag"
-          to="/store"
+          to="/workshop?tab=skills"
         >
           去商城
         </UButton>
@@ -192,9 +192,9 @@ async function updateSkill(s: AiSkill) {
       class="rounded-xl border border-dashed border-neutral-300 p-6 text-center text-sm text-neutral-500 dark:border-neutral-700"
     >
       还没有下载过技能——去 <NuxtLink
-        to="/store"
+        to="/workshop?tab=skills"
         class="text-primary-500 underline"
-      >Skill 商城</NuxtLink> 选购一个,下载即自动安装启用,专业玩法与专属人格随买随用
+      >创意工坊 · Skill包</NuxtLink> 选购一个,下载即自动安装启用,专业玩法与专属人格随买随用
     </div>
 
     <div

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // /generate — 生成世界页(游客可见,但生成需要登录):未登录显示引导卡 + 弹出登录模态框;
 // 登录后选择 TXT → 本地编排生成(实时 token 消耗)→ 完成 → 跳选角页。
-// 也支持预置小说详情页跳转(?from=preset&id=xxx&eco=0|1):自动加载该小说为附件,直接进入确认页由用户确认。
-import { parseLocalNovel, generateWorld } from '../utils/worldGen'
+// 也支持预置小说详情页跳转(?from=preset&id=xxx&eco=0|1):自动加载该小说为附件,直接进入确认页由用户确认;
+// 支持创意工坊「书架」购买的本地作品跳转(?from=work&id=xxx):从本地书架加载章节进入确认页。
+import { parseLocalNovel, generateWorld, getWork } from '../utils/worldGen'
 import { CancelledError } from '../utils/aiRelay'
 import { checkWorldGenQuota, estimateWorldGenTokens } from '../utils/tokenQuota'
 import { loadPresetChapters } from '../utils/chapters'
@@ -24,6 +25,13 @@ const presetSource = computed(() => {
   const from = route.query.from
   const id = route.query.id
   return from === 'preset' && typeof id === 'string' && id.trim() ? id.trim() : null
+})
+
+/** 创意工坊「书架」购买小说安装到本地后的跳转目标(?from=work&id=xxx) */
+const workSource = computed(() => {
+  const from = route.query.from
+  const id = route.query.id
+  return from === 'work' && typeof id === 'string' && id.trim() ? id.trim() : null
 })
 
 /** 当前附件是否来自预置小说库(确认页展示来源徽章;改选其他文件/取消后清除) */
@@ -162,6 +170,17 @@ let runSeq = 0
 // 未登录访问:引导登录(不强制跳页)
 const askingLogin = ref(false)
 onMounted(async () => {
+  // 本地作品跳转(创意工坊书架购买的小说):先引导登录,再加载本地章节,直接进入确认页
+  if (workSource.value) {
+    if (!loggedIn.value && !askingLogin.value) {
+      askingLogin.value = true
+      await requireLogin()
+      askingLogin.value = false
+    }
+    if (route.query.eco === '1') ecoMode.value = true
+    await loadWorkIntoConfirm(workSource.value)
+    return
+  }
   // 预置小说详情页跳转:先引导登录,再自动加载该小说为附件,直接进入确认页
   if (presetSource.value) {
     if (!loggedIn.value && !askingLogin.value) {
@@ -292,6 +311,46 @@ async function loadPresetIntoConfirm(presetId: string) {
     genState.value = {
       phase: 'error',
       title: '预置小说',
+      progress: null,
+      error: err instanceof Error ? err.message : String(err),
+      resultId: null,
+      tokensUsed: 0
+    }
+  }
+}
+
+/** 本地作品跳转场景(创意工坊「书架」购买的小说安装到本地后):从 IndexedDB 加载章节并进入确认页,与上传同一管线 */
+async function loadWorkIntoConfirm(workId: string) {
+  const seq = ++runSeq
+  quotaWarn.value = null
+  pendingGen.value = null
+  fromPreset.value = false
+  prebuiltWorld.value = null
+  presetMeta.value = null
+  // 重置平滑计数,开始新一轮展示
+  cancelAnimationFrame(shownRaf)
+  shownCur = 0
+  liveShown.value = 0
+  genState.value = { phase: 'parsing', title: '本地作品', progress: null, error: null, resultId: null, tokensUsed: 0 }
+  try {
+    const work = await getWork(workId)
+    if (seq !== runSeq) return // 加载期间已被取消
+    if (!work || !work.chapters.length) {
+      throw new Error('本地作品不存在或没有章节内容,请先在书架获取小说')
+    }
+    pendingGen.value = { title: work.title, chapters: work.chapters, frontMatter: '' }
+    // 本地作品自带作者(商城购买的小说记录发布者填写):直接采用,跳过联网识别(省 token)
+    presetAuthor.value = work.author ?? null
+    genState.value.title = work.title
+    // 先展示字数与预估消耗,用户确认后才进入生成管线
+    genState.value.phase = 'confirm'
+    quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco: ecoMode.value })
+  } catch (err) {
+    if (seq !== runSeq) return // 已取消或被新任务接管
+    fromPreset.value = false
+    genState.value = {
+      phase: 'error',
+      title: '本地作品',
       progress: null,
       error: err instanceof Error ? err.message : String(err),
       resultId: null,

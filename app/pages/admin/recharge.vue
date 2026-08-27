@@ -62,7 +62,9 @@ async function load(pageNum = page.value) {
     loading.value = false
   }
 }
-onMounted(() => { void load(1) })
+onMounted(() => {
+  void load(1)
+})
 
 // ---- 充值开关(存 app_config 表,即时生效,无需重新部署) ----
 const paymentDisabled = ref(false)
@@ -92,7 +94,9 @@ async function togglePayment() {
     configBusy.value = false
   }
 }
-onMounted(() => { void loadConfig() })
+onMounted(() => {
+  void loadConfig()
+})
 
 function pickStatus(s: string) {
   statusFilter.value = s
@@ -236,12 +240,18 @@ function fmtTs(ts: number | null) {
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="8" class="py-6 text-center text-neutral-500">
+              <td
+                colspan="8"
+                class="py-6 text-center text-neutral-500"
+              >
                 加载中…
               </td>
             </tr>
             <tr v-else-if="!rows.length">
-              <td colspan="8" class="py-6 text-center text-neutral-500">
+              <td
+                colspan="8"
+                class="py-6 text-center text-neutral-500"
+              >
                 暂无充值记录
               </td>
             </tr>
@@ -292,7 +302,10 @@ function fmtTs(ts: number | null) {
       </div>
 
       <!-- 分页 -->
-      <div v-if="total > pageSize" class="mt-4 flex items-center justify-between gap-3 border-t border-neutral-100 pt-4 dark:border-neutral-900">
+      <div
+        v-if="total > pageSize"
+        class="mt-4 flex items-center justify-between gap-3 border-t border-neutral-100 pt-4 dark:border-neutral-900"
+      >
         <p class="text-xs text-neutral-500">
           共 {{ total }} 条
         </p>

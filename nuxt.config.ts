@@ -2,7 +2,7 @@
 export default defineNuxtConfig({
   // 开发端口(生产部署与端口无关)
 
-modules: [
+  modules: [
     '@nuxt/eslint',
     '@nuxt/ui',
     // 管理端在线预览 SKILL.md:提供 MDCRenderer 组件与 parseMarkdown
@@ -13,47 +13,6 @@ modules: [
     // PWA:可安装 + Workbox 预缓存离线壳。dev 下不注册 SW(devOptions.enabled: false),build 产物里生成 sw.js
     '@vite-pwa/nuxt'
   ],
-
-  pwa: {
-    registerType: 'autoUpdate',
-    manifest: {
-      name: 'AI Word2World',
-      short_name: 'AI W2W',
-      description: 'AI 互动小说与文字冒险平台',
-      lang: 'zh-CN',
-      display: 'standalone',
-      start_url: '/',
-      theme_color: '#00DC82',
-      background_color: '#ffffff',
-      icons: [
-        { src: '/pwa/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-        { src: '/pwa/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
-        { src: '/pwa/maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
-      ]
-    },
-    workbox: {
-      // txt 是 public 下的预设小说,预缓存后离线也能读
-      globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,txt}'],
-      // 图标.png 是 scripts/generate-pwa-icons.mjs 的 1.7MB 源图,不应进 SW 预缓存
-      globIgnores: ['**/图标.png'],
-      cleanupOutdatedCaches: true,
-      // Nuxt SSR 没有静态 index.html(nitro 运行时渲染),precache 里不存在 "/",
-      // 若保留 @vite-pwa/nuxt 默认 navigateFallback:'/' 会在导航时报 non-precached-url。
-      // 显式关闭导航兜底:导航请求走网络(SSR 正常渲染),API 请求也不受 SW 影响。
-      navigateFallback: undefined
-    },
-    devOptions: {
-      enabled: false
-    }
-  },
-
-  // 图标:构建时扫描源码中用到的图标并打进客户端 bundle,避免运行时回退请求在线
-  // Iconify API(离线/弱网下会失败并报 [Icon] failed to load icon,图标也不渲染)
-  icon: {
-    clientBundle: {
-      scan: true
-    }
-  },
 
   devtools: {
     enabled: true
@@ -113,6 +72,47 @@ modules: [
         commaDangle: 'never',
         braceStyle: '1tbs'
       }
+    }
+  },
+
+  // 图标:构建时扫描源码中用到的图标并打进客户端 bundle,避免运行时回退请求在线
+  // Iconify API(离线/弱网下会失败并报 [Icon] failed to load icon,图标也不渲染)
+  icon: {
+    clientBundle: {
+      scan: true
+    }
+  },
+
+  pwa: {
+    registerType: 'autoUpdate',
+    manifest: {
+      name: 'AI Word2World',
+      short_name: 'AI W2W',
+      description: 'AI 互动小说与文字冒险平台',
+      lang: 'zh-CN',
+      display: 'standalone',
+      start_url: '/',
+      theme_color: '#00DC82',
+      background_color: '#ffffff',
+      icons: [
+        { src: '/pwa/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+        { src: '/pwa/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+        { src: '/pwa/maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+      ]
+    },
+    workbox: {
+      // txt 是 public 下的预设小说,预缓存后离线也能读
+      globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,txt}'],
+      // 图标.png 是 scripts/generate-pwa-icons.mjs 的 1.7MB 源图,不应进 SW 预缓存
+      globIgnores: ['**/图标.png'],
+      cleanupOutdatedCaches: true,
+      // Nuxt SSR 没有静态 index.html(nitro 运行时渲染),precache 里不存在 "/",
+      // 若保留 @vite-pwa/nuxt 默认 navigateFallback:'/' 会在导航时报 non-precached-url。
+      // 显式关闭导航兜底:导航请求走网络(SSR 正常渲染),API 请求也不受 SW 影响。
+      navigateFallback: undefined
+    },
+    devOptions: {
+      enabled: false
     }
   }
 })

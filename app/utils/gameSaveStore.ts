@@ -54,3 +54,18 @@ export async function pruneGamePoints(gameId: string, fromIdx: number): Promise<
     }
   }
 }
+
+/** 每局存档点数量上限(仅保留最近 N 个,防长局无限膨胀 IndexedDB) */
+export const MAX_SAVE_POINTS = 50
+
+/** 截断某游戏的存档点:只保留序号最新的 MAX_SAVE_POINTS 个 */
+export async function capGamePoints(gameId: string): Promise<void> {
+  if (typeof indexedDB === 'undefined') return
+  const d = await db()
+  const all = await d.getAll(STORE)
+  const mine = all.filter(p => p.gameId === gameId).sort((a, b) => b.idx - a.idx)
+  if (mine.length <= MAX_SAVE_POINTS) return
+  for (const p of mine.slice(MAX_SAVE_POINTS)) {
+    await d.delete(STORE, p.key)
+  }
+}
