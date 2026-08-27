@@ -1,0 +1,37 @@
+{
+  "_comment": "适配器 manifest 模板(Tier 1 声明式)。字段说明见 README.md。复制本文件为 manifest.json,按你的玩具改配置即可——Tier 1 适配器不需要写任何代码。",
+  "id": "demo-toys",
+  "name": "示例玩具 (DemoFun)",
+  "version": "1.0.0",
+  "scanNames": ["DEMOFUN"],
+  "functionNames": {
+    "vibration": "震动",
+    "heating": "加热"
+  },
+  "protocol": {
+    "gatt": {
+      "serviceUuid": "0000ff01-0000-1000-8000-00805f9b34fb",
+      "writeUuid": "0000ff03-0000-1000-8000-00805f9b34fb",
+      "notifyUuid": "0000ff02-0000-1000-8000-00805f9b34fb",
+      "writeWithResponse": true
+    },
+    "frame": {
+      "_comment": "token 序列:字面量 0xNN(十六进制)或纯数字(十进制);占位符 [SEQ] [MODE1] [MODE2] [INTENSITY] [MODE]",
+      "template": ["0xAA", "[SEQ]", "0x01", "[MODE1]", "[INTENSITY]", "0x00", "[MODE2]", "[MODE]"],
+      "seqRandom": true,
+      "intensityRange": [0, 100],
+      "modeRange": [1, 4]
+    },
+    "functions": {
+      "vibration": { "mode1": "0x01", "mode2": "0x02", "supportsMode": true },
+      "heating": { "mode1": "0x03", "mode2": "0x04", "supportsMode": false }
+    },
+    "init": {
+      "frame": ["0xAA", "[SEQ]", "0x01", "0x00", "0xC8", "0x11", "0x01"],
+      "notifyFragments": 4,
+      "waitMs": 2000
+    },
+    "perFunctionPair": true,
+    "_comment2": "逐功能一对通道发包:一次只发当前在调的那个功能的通道对。多数玩具把多组通道塞进一个包会无视,保持 true。"
+  }
+}

@@ -237,6 +237,41 @@ export const skillPurchases = sqliteTable('skill_purchases', {
   index('idx_skill_purchase_buyer').on(t.buyerId)
 ])
 
+// ---- 功能插件商品(平台官方上架;适配器为内置功能,购买 = 解锁「详细配置」入口,无文件/版本,无卖家分成) ----
+export const pluginProducts = sqliteTable('plugin_products', {
+  id: text('id').primaryKey(),
+  /** 展示名称 */
+  name: text('name').notNull(),
+  /** 说明文(商城卡片展示) */
+  desc: text('desc').notNull(),
+  /** 售价(token;0=免费) */
+  price: integer('price').notNull().default(0),
+  /** 图标(emoji,商城卡片展示) */
+  icon: text('icon'),
+  /** pending=待审核 | approved=已上架 | removed=已下架 */
+  status: text('status').notNull().default('pending'),
+  /** 1=平台推荐 */
+  featured: integer('featured').notNull().default(0),
+  purchaseCount: integer('purchase_count').notNull().default(0),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  index('idx_plugin_status').on(t.status, t.featured)
+])
+
+// ---- 功能插件购买记录(唯一(plugin, buyer)= 一次购买永久解锁,不可重购) ----
+export const pluginPurchases = sqliteTable('plugin_purchases', {
+  id: text('id').primaryKey(),
+  pluginId: text('plugin_id').notNull().references(() => pluginProducts.id, { onDelete: 'cascade' }),
+  buyerId: text('buyer_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** 成交价快照(token) */
+  price: integer('price').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  uniqueIndex('idx_plugin_purchase_unique').on(t.pluginId, t.buyerId),
+  index('idx_plugin_purchase_buyer').on(t.buyerId)
+])
+
 // ---- 小说商城商品(TXT 存 R2,见 wrangler.toml SKILL_FILES 绑定;购买拆账 80/20,同 Skill 商城) ----
 export const novelProducts = sqliteTable('novel_products', {
   id: text('id').primaryKey(),

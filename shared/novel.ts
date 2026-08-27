@@ -404,6 +404,19 @@ export interface LocalGame {
   summary?: { idx: number, text: string } | null
   /** 云端同步进度:上次成功同步的最后一条消息 idx(-1=从未同步;回滚后失效,下次同步自动转全量重建) */
   lastSyncedIdx?: number
+  /** 开局设定(仅对首回合生效;旧存档无此字段=原有自由开场) */
+  opening?: {
+    /** ai=AI 生成开场供选择 chapter=从小说章节开始 custom=玩家输入背景故事 */
+    mode: 'ai' | 'chapter' | 'custom'
+    /** mode=chapter:所选章节标题 */
+    chapterTitle?: string
+    /** mode=chapter:该章节完整正文 */
+    chapterText?: string
+    /** mode=ai:玩家选定的开场设定;mode=custom:玩家输入的背景故事 */
+    scene?: string
+    /** 是否已按起始情节初始化过性欲值(避免回滚开局后重复调用) */
+    desiresSeeded?: boolean
+  }
   status: 'active' | 'ended'
   createdAt: string
   updatedAt: string
@@ -502,6 +515,8 @@ export interface TurnStructured {
   current_chapter?: string | null
   /** 整局剧情摘要(覆盖式更新:基于旧摘要+近期剧情压缩,保留关键关系/伏笔/进展) */
   summary?: string
+  /** 设备事件(可选;仅在用户开启设备控制时注入 schema,引擎校验后执行) */
+  device_events?: import('./toy').DeviceEvent[]
 }
 
 // ---- 简单工具 ----

@@ -37,7 +37,7 @@ function onTabChange(v: string | number) {
         创意工坊
       </h1>
       <p class="mt-1 text-sm text-neutral-500">
-        社区创作的集中地:书架买卖小说、Skill包买卖玩法技能,功能插件即将开放
+        社区创作的集中地:书架买卖小说、Skill包买卖玩法技能、功能插件解锁硬件联动能力
       </p>
     </div>
 
@@ -59,42 +59,9 @@ function onTabChange(v: string | number) {
         <StoreSkillsView />
       </template>
 
-      <!-- 功能插件:开发中占位 -->
+      <!-- 功能插件:硬件联动插件商城(购买解锁详细配置;平台官方上架) -->
       <template #plugins>
-        <UCard>
-          <div class="flex flex-col items-center gap-3 py-14 text-center">
-            <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
-              <UIcon
-                name="i-lucide-plug-zap"
-                class="size-8 text-primary"
-              />
-            </div>
-            <p class="text-lg font-semibold">
-              功能插件 · 开发中
-            </p>
-            <p class="max-w-md text-sm leading-relaxed text-neutral-500">
-              功能插件将赋予 AI 操作外部设备的能力(小玩具联动等 你懂的对吧~),
-              让游玩体验突破屏幕。敬请期待,欢迎在需求墙提出你想要的联动功能。
-            </p>
-            <div class="mt-2 flex items-center gap-3">
-              <UButton
-                to="/demand"
-                color="primary"
-                variant="soft"
-                icon="i-lucide-lightbulb"
-              >
-                去需求墙提建议
-              </UButton>
-              <UBadge
-                color="neutral"
-                variant="outline"
-                size="lg"
-              >
-                敬请期待
-              </UBadge>
-            </div>
-          </div>
-        </UCard>
+        <StorePluginsView />
       </template>
     </UTabs>
   </div>

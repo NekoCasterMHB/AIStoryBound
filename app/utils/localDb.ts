@@ -5,7 +5,7 @@
 import { openDB } from 'idb'
 
 export const DB_NAME = 'aiSpankWorld-local'
-const DB_VERSION = 6
+const DB_VERSION = 7
 const STORE_WORLDS = 'worlds'
 const STORE_SAVES = 'saves'
 const STORE_PRESETS = 'presets'
@@ -13,6 +13,10 @@ const STORE_WORKS = 'works'
 const STORE_GAMES = 'games'
 const STORE_READING = 'reading'
 const STORE_SKILLS = 'ai-skills'
+/** 玩具控制:设备设置(单条记录,key='default') */
+export const STORE_TOY_SETTINGS = 'toy-settings'
+/** 玩具控制:玩家导入的适配器(manifest + Tier 2 代码,keyPath=id) */
+export const STORE_TOY_ADAPTERS = 'toy-adapters'
 
 let dbPromise: Promise<import('idb').IDBPDatabase> | null = null
 
@@ -43,6 +47,13 @@ export function db() {
         // v6:用户通过链接导入的 AI Skill(自定义成人玩法,keyPath=key)
         if (!d.objectStoreNames.contains(STORE_SKILLS)) {
           d.createObjectStore(STORE_SKILLS, { keyPath: 'key' })
+        }
+        // v7:玩具控制——设备设置(单条)与玩家导入的适配器(manifest+代码)
+        if (!d.objectStoreNames.contains(STORE_TOY_SETTINGS)) {
+          d.createObjectStore(STORE_TOY_SETTINGS, { keyPath: 'key' })
+        }
+        if (!d.objectStoreNames.contains(STORE_TOY_ADAPTERS)) {
+          d.createObjectStore(STORE_TOY_ADAPTERS, { keyPath: 'id' })
         }
       }
     })

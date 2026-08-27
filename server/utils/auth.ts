@@ -53,16 +53,20 @@ function createAuth(db: D1Database, cfg: AuthEnvConfig, emailCtx: ReturnType<typ
       // 邮箱未验证前不允许登录(验证走验证码,见 emailOTP.overrideDefaultEmailVerification)
       requireEmailVerification: true
     },
-    // 关闭 signUp 隐式发码:requireEmailVerification 会让注册自动触发 sendVerificationEmail,
-    // 而 emailOTP 插件已将该回调替换为发送验证码(overrideDefaultEmailVerification),
-    // 若不关闭,前端 onSendRegOtp 再显式调 sendVerificationOtp 会一次注册发两封邮件且第二封覆盖第一封。
+    // 注册即发码:signUp 自动触发 sendVerificationEmail(被 emailOTP 插件经
+    // overrideDefaultEmailVerification 替换为发送验证码),前端不再显式调 sendVerificationOtp,
+    // 发送入口唯一化,从机制上避免一次注册发两封邮件(旧 bug:两封邮件 + 两条 verification 记录,
+    // 校验只认最新一条,用户收到先发的码必然失败)。
+    // 注意:此开关与 overrideDefaultEmailVerification 耦合,两者需同时保持;
+    // 若去掉 override,注册将退回发送"验证码链接邮件"而非数字验证码。
     emailVerification: {
-      sendOnSignUp: false
+      sendOnSignUp: true
     },
     plugins: [
       emailOTP({
-        // 验证码 10 分钟有效(邮件送达可能有数分钟延迟,见前端提示)
-        expiresIn: 600,
+        // 验证码 15 分钟有效(邮件送达可能延迟数分钟,太短会导致用户收到时已过期
+        // 且过期校验会删除记录,表现为"邮件里的码在库里找不到")
+        expiresIn: 900,
         // 验证码邮件走 Cloudflare Email Service — Email Sending REST API;未配置密钥时打印日志
         sendVerificationOTP: async ({ email, otp, type }) => {
           await sendOtpEmail(email, otp, type, emailCtx)

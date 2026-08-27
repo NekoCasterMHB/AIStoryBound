@@ -41,6 +41,8 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = 10
 const stats = ref<{ status: string, n: number }[]>([])
+/** 收入统计(分):总收入/近30天/近24小时 */
+const revenue = ref<{ total: number, day30: number, day24: number }>({ total: 0, day30: 0, day24: 0 })
 const loading = ref(false)
 const statusFilter = ref('')
 
@@ -49,12 +51,13 @@ async function load(pageNum = page.value) {
   try {
     const query = new URLSearchParams({ page: String(pageNum), pageSize: String(pageSize) })
     if (statusFilter.value) query.set('status', statusFilter.value)
-    const res = await $fetch<{ rows: RechargeRow[], total: number, stats: { status: string, n: number }[] }>(
+    const res = await $fetch<{ rows: RechargeRow[], total: number, stats: { status: string, n: number }[], revenue: { total: number, day30: number, day24: number } }>(
       `/api/admin/recharge/list?${query}`
     )
     rows.value = res.rows
     total.value = res.total
     stats.value = res.stats
+    revenue.value = res.revenue
     page.value = pageNum
   } catch (e) {
     toast.add({ title: '加载充值记录失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
@@ -65,6 +68,11 @@ async function load(pageNum = page.value) {
 onMounted(() => {
   void load(1)
 })
+
+/** 分 → 元 */
+function fmtYuan(fen: number) {
+  return (fen / 100).toFixed(2)
+}
 
 // ---- 充值开关(存 app_config 表,即时生效,无需重新部署) ----
 const paymentDisabled = ref(false)
@@ -183,6 +191,64 @@ function fmtTs(ts: number | null) {
           充值测试(0.1 元)
         </UButton>
       </div>
+    </div>
+
+    <!-- 收入统计(已支付订单实付金额) -->
+    <div class="mb-4 grid gap-4 sm:grid-cols-3">
+      <UCard>
+        <div class="flex items-center gap-3">
+          <div class="flex size-10 shrink-0 items-center justify-center rounded-lg bg-neutral-100 dark:bg-neutral-900">
+            <UIcon
+              name="i-lucide-wallet"
+              class="size-5 text-emerald-600"
+            />
+          </div>
+          <div class="min-w-0">
+            <p class="text-xs text-neutral-500">
+              总收入
+            </p>
+            <p class="truncate text-xl font-bold tabular-nums">
+              ¥{{ fmtYuan(revenue.total) }}
+            </p>
+          </div>
+        </div>
+      </UCard>
+      <UCard>
+        <div class="flex items-center gap-3">
+          <div class="flex size-10 shrink-0 items-center justify-center rounded-lg bg-neutral-100 dark:bg-neutral-900">
+            <UIcon
+              name="i-lucide-calendar-days"
+              class="size-5 text-primary"
+            />
+          </div>
+          <div class="min-w-0">
+            <p class="text-xs text-neutral-500">
+              近 30 天收入
+            </p>
+            <p class="truncate text-xl font-bold tabular-nums">
+              ¥{{ fmtYuan(revenue.day30) }}
+            </p>
+          </div>
+        </div>
+      </UCard>
+      <UCard>
+        <div class="flex items-center gap-3">
+          <div class="flex size-10 shrink-0 items-center justify-center rounded-lg bg-neutral-100 dark:bg-neutral-900">
+            <UIcon
+              name="i-lucide-activity"
+              class="size-5 text-rose-500"
+            />
+          </div>
+          <div class="min-w-0">
+            <p class="text-xs text-neutral-500">
+              近 24 小时收入
+            </p>
+            <p class="truncate text-xl font-bold tabular-nums">
+              ¥{{ fmtYuan(revenue.day24) }}
+            </p>
+          </div>
+        </div>
+      </UCard>
     </div>
 
     <!-- 状态筛选(计数来自接口统计) -->

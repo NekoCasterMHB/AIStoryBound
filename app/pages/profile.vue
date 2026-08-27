@@ -21,14 +21,19 @@ import {
   DEFAULT_GEN_LIMITS, GEN_LIMIT_RANGE, loadGenLimits, resetGenLimits, saveGenLimits, fetchGenLimits
 } from '../utils/genSettings'
 import type { GenLimits } from '../utils/genSettings'
+import { DEFAULT_TOY_SETTINGS, isAdapterEnabled, toggleAdapterEnabled } from '#shared/toy'
+import type { ToyAdapter, ToySettings } from '#shared/toy'
+import { toyController } from '../toy/api'
+import { listImportedAdapters, loadToySettings, saveToySettings } from '../toy/store'
+import { loadAllAdapters, removeImportedAdapter } from '../toy/runtime/adapter-loader'
 
 useHead({ title: 'AI Word2World · 个人中心' })
 
-/** 设置区分三类标签页:模型配置 / 游玩偏好 / 技能管理(商城下载技能开关) */
+/** 设置区分四类标签页:模型配置 / 游玩偏好 / 技能管理(商城下载技能开关)/ 功能插件(硬件联动插件) */
 const profileTabs = ref<TabsItem[]>([
-  { label: '模型配置', value: 'model', slot: 'model', icon: 'i-lucide-cpu' },
-  { label: '游玩偏好', value: 'play', slot: 'play', icon: 'i-lucide-gamepad-2' },
-  { label: '技能管理', value: 'skills', slot: 'skills', icon: 'i-lucide-package' }
+  { label: '模型设置', value: 'model', slot: 'model', icon: 'i-lucide-cpu' },
+  { label: '技能管理', value: 'skills', slot: 'skills', icon: 'i-lucide-package' },
+  { label: '功能插件', value: 'plugins', slot: 'plugins', icon: 'i-lucide-plug' }
 ])
 // 支持 /profile?tab=skills 等直达指定页签(商城「已获取」跳转用)
 const route = useRoute()
@@ -39,6 +44,7 @@ const activeTab = ref(
 )
 
 const { data: session } = await useAuthSession()
+const toast = useToast()
 
 interface MeInfo {
   id: string
@@ -79,7 +85,65 @@ onMounted(() => {
   void fetchPaymentConfig()
   void refreshOneTimePackStatus()
   detectPaymentResult()
+  void loadOwnedPlugins()
+  void loadAdapters()
 })
+
+// ---- 功能插件(创意工坊「功能插件」购买后在此显示) ----
+interface OwnedPlugin {
+  id: string
+  name: string
+  desc: string
+  price: number
+  icon: string | null
+  owned: boolean
+}
+const ownedPlugins = ref<OwnedPlugin[]>([])
+const configOpen = ref(false)
+const configPluginId = ref('sosexy')
+
+async function loadOwnedPlugins() {
+  if (!session.value) {
+    ownedPlugins.value = []
+    return
+  }
+  ownedPlugins.value = await $fetch<OwnedPlugin[]>('/api/store/plugins')
+    .then(list => list.filter(p => p.owned))
+    .catch(() => [])
+}
+
+function openPluginConfig(id: string) {
+  configPluginId.value = id
+  configOpen.value = true
+}
+
+// ---- 适配器管理(与啵啵贝同级:内置 + 玩家导入,可多选启用;导入功能开发中,入口已禁用) ----
+const allAdapters = ref<ToyAdapter[]>([])
+const importedAdapterIds = ref<string[]>([])
+/** 玩家导入的适配器(本地实体,与已购插件同款卡片展示) */
+const importedAdapters = computed(() => allAdapters.value.filter(a => importedAdapterIds.value.includes(a.manifest.id)))
+const adapterSettings = ref<ToySettings>({ ...DEFAULT_TOY_SETTINGS })
+const sdkOpen = ref(false)
+
+async function loadAdapters() {
+  adapterSettings.value = await loadToySettings()
+  allAdapters.value = await loadAllAdapters()
+  importedAdapterIds.value = (await listImportedAdapters()).map(r => r.id)
+}
+
+function toggleAdapter(a: ToyAdapter, on: boolean) {
+  adapterSettings.value.enabledAdapters = toggleAdapterEnabled(adapterSettings.value, a.manifest.id, on)
+  void saveToySettings(adapterSettings.value)
+}
+
+async function onRemoveAdapter(id: string) {
+  if (toyController.state.adapterId === id) {
+    await toyController.disconnect()
+  }
+  await removeImportedAdapter(id)
+  await loadAdapters()
+  toast.add({ title: '适配器已删除', color: 'neutral' })
+}
 
 const balance = computed(() => me.value?.aiTokenBalance ?? 0)
 const balanceText = computed(() => balance.value.toLocaleString())
@@ -1151,9 +1215,8 @@ watch(narrTemp, v => saveNarrTemp(v))
             </div>
           </UCard>
         </div>
-      </template>
 
-      <template #play>
+        <!-- 游玩偏好(原独立 tab,已并入设置) -->
         <div class="mt-4">
           <!-- 成人模式:游玩时成人内容频率开关(本地偏好,默认关闭) -->
           <UCard class="mb-6">
@@ -1289,7 +1352,173 @@ watch(narrTemp, v => saveNarrTemp(v))
           <SkillManager />
         </div>
       </template>
+
+      <!-- 功能插件:适配器管理(内置与导入同级) + 已购插件列表;「详细配置」弹出该适配器的设置与控制 -->
+      <template #plugins>
+        <div class="mt-4 space-y-3">
+          <!-- 功能插件:已购插件与玩家导入的适配器,统一卡片形式;导入/接入文档在顶部工具栏 -->
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <p class="text-sm text-neutral-500">
+              已解锁插件与本地导入的适配器;未解锁的插件可到
+              <NuxtLink
+                to="/workshop?tab=plugins"
+                class="text-primary underline"
+              >创意工坊 → 功能插件</NuxtLink>
+              解锁(限时免费中)。
+            </p>
+            <div class="flex gap-2">
+              <UButton
+                size="xs"
+                variant="soft"
+                icon="i-lucide-book-open"
+                @click="sdkOpen = true"
+              >
+                接入文档
+              </UButton>
+              <div class="flex items-center gap-1.5">
+                <UButton
+                  size="xs"
+                  color="primary"
+                  icon="i-lucide-upload"
+                  disabled
+                >
+                  导入适配器
+                </UButton>
+                <UBadge
+                  size="xs"
+                  color="warning"
+                  variant="soft"
+                >
+                  开发中
+                </UBadge>
+              </div>
+            </div>
+          </div>
+
+          <!-- 已购插件卡片 -->
+          <div
+            v-if="ownedPlugins.length"
+            class="grid gap-3 md:grid-cols-2"
+          >
+            <UCard
+              v-for="p in ownedPlugins"
+              :key="p.id"
+              class="flex flex-col"
+            >
+              <div class="flex items-start gap-3">
+                <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-2xl">
+                  {{ p.icon ?? '🧩' }}
+                </div>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2">
+                    <span class="font-semibold">{{ p.name }}</span>
+                    <UBadge
+                      size="xs"
+                      color="success"
+                      variant="soft"
+                    >
+                      已解锁
+                    </UBadge>
+                  </div>
+                  <p class="mt-1 line-clamp-2 text-sm text-neutral-500">
+                    {{ p.desc }}
+                  </p>
+                </div>
+              </div>
+              <div class="mt-3">
+                <UButton
+                  block
+                  size="sm"
+                  color="primary"
+                  variant="soft"
+                  icon="i-lucide-settings-2"
+                  @click="openPluginConfig(p.id)"
+                >
+                  详细配置
+                </UButton>
+              </div>
+            </UCard>
+          </div>
+
+          <!-- 玩家导入的适配器卡片(本地实体,与已购插件同级卡片) -->
+          <div
+            v-if="importedAdapters.length"
+            class="grid gap-3 md:grid-cols-2"
+          >
+            <UCard
+              v-for="a in importedAdapters"
+              :key="a.manifest.id"
+              class="flex flex-col"
+            >
+              <div class="flex items-start gap-3">
+                <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-2xl">
+                  🧩
+                </div>
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="font-semibold">{{ a.manifest.name }}</span>
+                    <UBadge
+                      size="xs"
+                      variant="soft"
+                    >
+                      {{ a.manifest.protocol ? 'Tier 1 配置' : 'Tier 2 代码' }}
+                    </UBadge>
+                    <span class="text-xs text-neutral-400">v{{ a.manifest.version }}</span>
+                  </div>
+                  <p class="mt-1 line-clamp-2 text-sm text-neutral-500">
+                    本地导入 · 功能:{{ (a.manifest.capabilities?.functions ?? []).map(f => f.name).join(' / ') || '无' }}
+                  </p>
+                </div>
+              </div>
+              <div class="mt-3 flex items-center justify-between">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-xs text-neutral-500">启用</span>
+                  <USwitch
+                    size="sm"
+                    :model-value="isAdapterEnabled(adapterSettings, a.manifest.id)"
+                    @update:model-value="(v: boolean) => toggleAdapter(a, v)"
+                  />
+                </div>
+                <div class="flex gap-2">
+                  <UButton
+                    size="sm"
+                    color="error"
+                    variant="ghost"
+                    icon="i-lucide-trash-2"
+                    @click="onRemoveAdapter(a.manifest.id)"
+                  >
+                    删除
+                  </UButton>
+                  <UButton
+                    size="sm"
+                    color="primary"
+                    variant="soft"
+                    icon="i-lucide-settings-2"
+                    @click="openPluginConfig(a.manifest.id)"
+                  >
+                    详细配置
+                  </UButton>
+                </div>
+              </div>
+            </UCard>
+          </div>
+
+          <div
+            v-if="!ownedPlugins.length && !importedAdapters.length"
+            class="rounded-lg border border-dashed border-neutral-300 p-8 text-center text-sm text-neutral-500 dark:border-neutral-700"
+          >
+            还没有解锁任何功能插件或导入适配器
+          </div>
+        </div>
+      </template>
     </UTabs>
+    <!-- 功能插件详细配置弹窗(该适配器的设置 + 模拟/真机切换 + 手动控制) -->
+    <ToyConfigModal
+      v-model:open="configOpen"
+      :plugin-id="configPluginId"
+    />
+    <!-- 适配器 SDK 接入文档弹窗 -->
+    <SdkDocsModal v-model:open="sdkOpen" />
     <!-- 购买弹窗 -->
     <UModal
       v-model:open="buyOpen"

@@ -300,6 +300,34 @@ CREATE TABLE IF NOT EXISTS `skill_purchases` (
 	FOREIGN KEY (`buyer_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
 
+-- ---- 功能插件商品(创意工坊「功能插件」;平台官方上架,适配器为内置功能,购买 = 解锁配置入口,无文件/版本) ----
+CREATE TABLE IF NOT EXISTS `plugin_products` (
+	`id` text PRIMARY KEY NOT NULL,
+	`name` text NOT NULL,
+	`desc` text NOT NULL,
+	`price` integer DEFAULT 0 NOT NULL,
+	`icon` text,
+	`status` text DEFAULT 'pending' NOT NULL,
+	`featured` integer DEFAULT 0 NOT NULL,
+	`purchase_count` integer DEFAULT 0 NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL
+);
+CREATE INDEX IF NOT EXISTS `idx_plugin_status` ON `plugin_products` (`status`,`featured`);
+
+-- ---- 功能插件购买记录(唯一(plugin_id,buyer_id)= 一次购买永久解锁,不可重购) ----
+CREATE TABLE IF NOT EXISTS `plugin_purchases` (
+	`id` text PRIMARY KEY NOT NULL,
+	`plugin_id` text NOT NULL,
+	`buyer_id` text NOT NULL,
+	`price` integer NOT NULL,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`plugin_id`) REFERENCES `plugin_products`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`buyer_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_plugin_purchase_unique` ON `plugin_purchases` (`plugin_id`,`buyer_id`);
+CREATE INDEX IF NOT EXISTS `idx_plugin_purchase_buyer` ON `plugin_purchases` (`buyer_id`);
+
 -- ---- 小说商城商品(创意工坊「书架」;TXT 存 R2 SKILL_FILES;购买拆账 80/20,同 Skill 商城) ----
 CREATE TABLE IF NOT EXISTS `novel_products` (
 	`id` text PRIMARY KEY NOT NULL,

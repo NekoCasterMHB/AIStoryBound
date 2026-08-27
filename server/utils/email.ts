@@ -55,7 +55,7 @@ export async function sendOtpEmail(email: string, otp: string, type: OtpType | s
       <h2 style="color: #1f2937;">AI Word2World</h2>
       <p style="color: #374151;">你的${label}是:</p>
       <p style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #0f172a;">${otp}</p>
-      <p style="color: #6b7280; font-size: 13px;">验证码 10 分钟内有效。若非本人操作请忽略本邮件。</p>
+      <p style="color: #6b7280; font-size: 13px;">验证码 15 分钟内有效。若非本人操作请忽略本邮件。</p>
     </div>`
   try {
     const res = await fetch(`${CF_API_BASE}/accounts/${encodeURIComponent(accountId)}/email/sending/send`, {
@@ -69,7 +69,7 @@ export async function sendOtpEmail(email: string, otp: string, type: OtpType | s
         from,
         subject: `【AI Word2World】${label}`,
         html,
-        text: `你的${label}是: ${otp},5 分钟内有效。若非本人操作请忽略本邮件。`
+        text: `你的${label}是: ${otp},15 分钟内有效。若非本人操作请忽略本邮件。`
       })
     })
     const data = await res.json().catch(() => null) as { success?: boolean, errors?: Array<{ code?: number, message?: string }> } | null

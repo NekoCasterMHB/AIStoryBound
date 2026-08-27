@@ -41,6 +41,9 @@ importers:
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
+      vue:
+        specifier: 3.5.41
+        version: 3.5.41(typescript@5.9.3)
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^5.20260820.1

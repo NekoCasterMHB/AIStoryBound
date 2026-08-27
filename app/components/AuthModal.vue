@@ -127,12 +127,8 @@ async function onSendRegOtp() {
       regError.value = friendlyAuthError(error.code || error.message)
       return
     }
-    const otpRes = await authClient.emailOtp.sendVerificationOtp({ email: regForm.email, type: 'email-verification' })
-    if (otpRes.error) {
-      if (otpRes.error.status === 429) regCountdownTick()
-      regError.value = otpSendError(otpRes.error, regCountdown.value || 180)
-      return
-    }
+    // signUp 成功后服务端已自动发送验证码(见 server/utils/auth.ts emailVerification.sendOnSignUp),
+    // 此处不再显式调 sendVerificationOtp,避免一次注册发两封邮件;若邮件延迟未到,可点"重新发送"
     regStep.value = 'code'
     regCountdownTick()
   } finally {
@@ -214,7 +210,7 @@ function friendlyAuthError(code: string | undefined): string {
     USER_NOT_FOUND: '该邮箱未注册,请先注册',
     INVALID_OTP: '验证码错误,请检查后重试',
     OTP_EXPIRED: '验证码已过期,请重新获取',
-    TOO_MANY_ATTEMPTS: '尝试次数过多,请稍后再试',
+    TOO_MANY_ATTEMPTS: '尝试次数过多,请重新发送验证码后再试',
     EMAIL_NOT_VERIFIED: '邮箱未验证,请先通过注册流程完成验证'
   }
   return map[code ?? ''] || (code ? `操作失败:${code}` : '操作失败,请稍后再试')
@@ -343,6 +339,8 @@ const tabs = ref<TabsItem[]>([
                 </UButton>
               </div>
               <p class="text-xs text-neutral-500">
+                若邮箱已注册,验证码将发送至邮箱;未注册则不会收到邮件。
+                <br>
                 收邮件有 3 分钟左右延迟,请耐心等待
               </p>
               <UButton
@@ -477,7 +475,7 @@ const tabs = ref<TabsItem[]>([
           class="space-y-3"
         >
           <p class="text-sm text-neutral-500 dark:text-neutral-400">
-            验证码已发送至 <b class="font-semibold text-highlighted">{{ regForm.email }}</b>,10 分钟内有效。
+            验证码已发送至 <b class="font-semibold text-highlighted">{{ regForm.email }}</b>,15 分钟内有效。
             <br>
             收邮件有 3 分钟左右延迟,请耐心等待
           </p>

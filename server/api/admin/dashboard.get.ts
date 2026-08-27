@@ -1,13 +1,21 @@
 // server/api/admin/dashboard.get.ts
 // 管理仪表盘(requireAdmin):注册用户数(总量/近24h)、token 消耗(总量/近24h)、DeepSeek 账户余额。
-// - 总消耗 = 注册赠送总量 + 已支付订单发放总量 - 当前全站余额(存量恒等式,含全部历史,精确)
-// - 近24h 消耗 = ai_usage 表 SUM(自 ai_usage 部署起记录,历史数据无时间维度无法回填)
+// - 总消耗 = 注册赠送总量 + 已支付订单发放总量 + 兑换码已兑换总量 − 商城购买烧掉的手续费 − 当前全站余额
+//   (存量恒等式,含全部历史,精确;商城手续费 = 买家全额扣款 − 卖家 80% 分成,20% 流出系统非 AI 消耗)
+// - 近24h 消耗 = ai_usage 表 SUM(ai_usage 自 2026-08-27 起记录,更早的消耗无明细、由上面的恒等式兜底覆盖)
 import { requireAdmin } from '../../utils/authz'
 import { useD1 } from '../../utils/d1'
 import { getAiConfig } from '../../utils/ai'
 import { FREE_TOKEN_GRANT } from '../../utils/auth'
 import { getTokenPackageById } from '../../../shared/quota-packages'
-import { user as usersTable, quotaPackageOrder, aiUsage } from '../../db/schema'
+import {
+  user as usersTable,
+  quotaPackageOrder,
+  redeemCodeRedemptions,
+  skillPurchases,
+  novelPurchases,
+  aiUsage
+} from '../../db/schema'
 import { eq, gte, count, sql } from 'drizzle-orm'
 
 export default defineEventHandler(async (event) => {
@@ -28,6 +36,19 @@ export default defineEventHandler(async (event) => {
     .all()
   const paidTokens = paidOrders.reduce((acc, o) => acc + (getTokenPackageById(o.packageId)?.tokens ?? 0), 0)
 
+  // ---- 兑换码已兑换总量(redemptions 逐条快照,兑换即入账;漏算会让总消耗低估甚至为负) ----
+  const redeemed = await db.select({ total: sql<number>`COALESCE(SUM(${redeemCodeRedemptions.tokens}), 0)` })
+    .from(redeemCodeRedemptions)
+    .all()
+
+  // ---- 商城购买烧掉的手续费(买家全额扣款、卖家只得 80%,20% 手续费流出系统,不是 AI 消耗) ----
+  const skillFees = await db.select({ total: sql<number>`COALESCE(SUM(${skillPurchases.platformFee}), 0)` })
+    .from(skillPurchases)
+    .all()
+  const novelFees = await db.select({ total: sql<number>`COALESCE(SUM(${novelPurchases.platformFee}), 0)` })
+    .from(novelPurchases)
+    .all()
+
   // ---- 当前全站余额 ----
   const balance = await db.select({ total: sql<number>`COALESCE(SUM(${usersTable.aiTokenBalance}), 0)` }).from(usersTable).all()
 
@@ -39,7 +60,9 @@ export default defineEventHandler(async (event) => {
 
   const totalUsersN = totalUsers[0]?.n ?? 0
   const totalBalance = balance[0]?.total ?? 0
-  const totalConsumed = totalUsersN * FREE_TOKEN_GRANT + paidTokens - totalBalance
+  const redeemedTokens = redeemed[0]?.total ?? 0
+  const platformFees = (skillFees[0]?.total ?? 0) + (novelFees[0]?.total ?? 0)
+  const totalConsumed = totalUsersN * FREE_TOKEN_GRANT + paidTokens + redeemedTokens - platformFees - totalBalance
 
   // ---- DeepSeek 账户余额(平台 Key) ----
   // 所有分支都会赋值,无需初始值(no-useless-assignment)
@@ -84,7 +107,7 @@ export default defineEventHandler(async (event) => {
     tokens: {
       totalConsumed: Math.max(0, totalConsumed),
       day24Consumed: dayUsage[0]?.total ?? 0,
-      /** 近24h 消耗自 ai_usage 表部署起记录;此前无时间维度数据 */
+      /** 近24h 消耗自 ai_usage 表部署后开始记录(2026-08-27 前无明细,由总消耗恒等式覆盖) */
       day24From: 'ai_usage 表部署后开始记录'
     },
     deepseek

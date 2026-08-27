@@ -67,9 +67,32 @@ function fmtDay(ts: number) {
   return new Date(ts).toLocaleDateString('zh-CN')
 }
 
-/** 正文第一段(按空行分段;无空行时取整段,展示行数由 line-clamp 限制) */
+/** 卡片说明 = README 正文的第一段纯文本:跳过标题/引用/列表/表格/分隔线等结构段,
+ *  以及入库时已脱去 # 的短标题行(如「类定义」),取第一个真正的正文段;
+ *  再剥离段内行首符号与内联 markdown 符号(加粗、行内代码、链接等),返回不含符号的纯正文。 */
 function firstParagraph(md: string) {
-  return (md.split(/\n\s*\n/)[0] ?? '').trim()
+  const blocks = md.split(/\n\s*\n/)
+  for (const block of blocks) {
+    const lines = block.split('\n').map(l => l.trim()).filter(l => l.length)
+    if (!lines.length) continue
+    // 整段都是结构符号(标题/引用/列表/有序列表/勾选列表/表格/分隔线/代码围栏)→ 跳过
+    const allStructural = lines.every(l =>
+      /^(#{1,6}\s|>\s?|[-*+]\s|\d+\.\s|```|~~~|\[[ x]\])\s*/.test(l)
+      || /^\|/.test(l)
+      || /^[-*_]{3,}$/.test(l))
+    if (allStructural) continue
+    // 无句读的短标题行(单行、较短、不以句号/感叹号/问号结尾)→ 跳过
+    if (lines.length === 1 && (lines[0] ?? '').length <= 30 && !/[。！？.!?]$/.test(lines[0] ?? '')) continue
+    // 去掉段内行首的标题/引用/列表符号,剥离内联 markdown 符号,拼成纯文本
+    return lines
+      .map(l => l.replace(/^(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/, ''))
+      .join(' ')
+      .replace(/\*\*|__|~~|`/g, '')
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+  return ''
 }
 
 // ---- Tab ----

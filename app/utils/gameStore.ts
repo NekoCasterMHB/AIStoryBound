@@ -41,6 +41,10 @@ export async function createLocalGame(args: {
   playerName: string
   characterName: string
   state: GameState
+  /** 开局设定(仅首回合生效) */
+  opening?: LocalGame['opening']
+  /** 初始章节(从小说章节开始时预填顶栏) */
+  currentChapter?: string | null
 }): Promise<LocalGame> {
   const game: LocalGame = {
     id: args.id,
@@ -50,6 +54,8 @@ export async function createLocalGame(args: {
     state: args.state,
     messages: [],
     summary: null,
+    opening: args.opening,
+    currentChapter: args.currentChapter ?? null,
     status: 'active',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
