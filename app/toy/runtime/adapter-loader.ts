@@ -3,8 +3,8 @@
 // - 内置适配器(啵啵贝)静态注册;
 // - 玩家适配器通过文件选择器导入(manifest.json + 可选 adapter.js),校验后存 IndexedDB;
 //   Tier 1(声明式 protocol)→ createProtocolAdapter 零代码;Tier 2(adapter.js)→ Worker 沙箱执行。
-import { createProtocolAdapter, validateAdapterManifest } from '../../../shared/toy'
-import type { ToyAdapter, ToyAdapterManifest } from '../../../shared/toy'
+import { createProtocolAdapter, validateAdapterManifest } from '#shared/toy'
+import type { ToyAdapter, ToyAdapterManifest } from '#shared/toy'
 import { SOSEXY_ADAPTER } from '../builtin/sosexy/adapter'
 import { deleteImportedAdapter, listImportedAdapters, saveImportedAdapter } from '../store'
 import type { ImportedToyAdapterRecord } from '../store'

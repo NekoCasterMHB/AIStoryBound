@@ -15,8 +15,8 @@ import {
   stepToward,
   trainPatternValue,
   validateDeviceEvent
-} from '../../shared/toy'
-import type { DeviceEvent, ToyAdapter, ToySettings, TrainPattern, TrainPatternParams, WavePick, WaveRegime } from '../../shared/toy'
+} from '#shared/toy'
+import type { DeviceEvent, ToyAdapter, ToySettings, TrainPattern, TrainPatternParams, WavePick, WaveRegime } from '#shared/toy'
 import type { ToyTransport, ToyTransportDevice } from './transports/transport'
 
 export type ToyExecuteResult

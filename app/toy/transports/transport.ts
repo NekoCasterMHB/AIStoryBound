@@ -3,7 +3,7 @@
 // - web-bluetooth:浏览器直连(桌面/Android Chrome);iOS 无 Web Bluetooth,暂不支持
 // - mock:模拟设备(无硬件开发/演示/验收)
 // 未来加网关/中继时新增实现即可,适配器与 ToyApi 无需改动。
-import type { ToyProtocolConfig } from '../../../shared/toy'
+import type { ToyProtocolConfig } from '#shared/toy'
 
 export interface ToyTransportDevice {
   id: string

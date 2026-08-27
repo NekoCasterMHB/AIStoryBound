@@ -2,8 +2,8 @@
 // 玩具控制的本地持久化:设备设置(硬限制/总开关)与玩家导入的适配器。
 // 全部存 IndexedDB(不经过服务端:执行路径在浏览器,设置只对本地生效)。
 // SSR/非浏览器环境一律返回默认值或空列表。
-import { DEFAULT_TOY_SETTINGS } from '../../shared/toy'
-import type { ToyAdapterManifest, ToySettings } from '../../shared/toy'
+import { DEFAULT_TOY_SETTINGS } from '#shared/toy'
+import type { ToyAdapterManifest, ToySettings } from '#shared/toy'
 import { db, STORE_TOY_ADAPTERS, STORE_TOY_SETTINGS } from '../utils/localDb'
 
 const SETTINGS_KEY = 'default'

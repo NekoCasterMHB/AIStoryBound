@@ -2,7 +2,7 @@
 // Tier 2 玩家适配器沙箱:适配器代码(纯函数 buildFrames/buildInitFrames/buildStopFrames)
 // 在 Web Worker 里执行——拿不到蓝牙/网络/DOM,主线程只与它交换结构化数据。
 // 约定:玩家代码在 Worker 全局作用域定义 self.buildFrames 等函数(见 sdk-template)。
-import type { DeviceEvent, ToyAdapter, ToyAdapterManifest } from '../../../shared/toy'
+import type { DeviceEvent, ToyAdapter, ToyAdapterManifest } from '#shared/toy'
 
 interface WorkerRequest {
   id: number

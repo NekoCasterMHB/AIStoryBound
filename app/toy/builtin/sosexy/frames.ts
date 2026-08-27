@@ -8,6 +8,6 @@ export {
   buildProtocolInitFrame,
   buildProtocolStopFrames,
   framesToHex
-} from '../../../../shared/toy'
-export type { ToyProtocolConfig } from '../../../../shared/toy'
+} from '#shared/toy'
+export type { ToyProtocolConfig } from '#shared/toy'
 export const sosexyProtocol = protocol
