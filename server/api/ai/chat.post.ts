@@ -4,12 +4,12 @@
 //  - 未带 config → 用平台密钥转发,并按流尾 usage 扣减 ai_token_balance(余额≤0 前置拦截 402)
 // 自建配置支持三种 API 格式(chat/anthropic/responses),上游流统一翻译成 OpenAI 兼容 SSE
 // 透传给前端(含流尾 usage 分片);前端自行解析 delta 与 usage。
-// 模型选择不信任请求体:平台模式用 env AI_MODEL;用户模式模型取自请求 config(用用户自己的 key,选什么模型都由用户自己付费)。
+// 模型选择不信任请求体:平台模式用后台配置(ai_provider_configs,未配置回退 env AI_MODEL);用户模式模型取自请求 config(用用户自己的 key,选什么模型都由用户自己付费)。
 import { eq, sql } from 'drizzle-orm'
 import { useD1 } from '../../utils/d1'
 import { requireUser } from '../../utils/authz'
 import { getAiConfig } from '../../utils/ai'
-import { buildUpstreamRequest, relaySse } from '../../utils/ai-relay'
+import { buildUpstreamRequest, relaySse, maskApiKey } from '../../utils/ai-relay'
 import { isAiApiFormat, RELAY_TIMEOUT_DEFAULT_MS, RELAY_TIMEOUT_MIN_MS, RELAY_TIMEOUT_MAX_MS } from '../../../shared/ai-config'
 import { user as usersTable, aiUsage } from '../../db/schema'
 import { uuid } from '../../../shared/novel'
@@ -59,9 +59,9 @@ export default defineEventHandler(async (event) => {
       userKey: true
     }
   } else {
-    const ai = getAiConfig(event)
+    const ai = await getAiConfig(event)
     if (!ai.apiKey) {
-      throw createError({ statusCode: 500, statusMessage: '平台 AI 未配置(缺少 AI_API_KEY)' })
+      throw createError({ statusCode: 500, statusMessage: '平台 AI 未配置,请联系管理员在后台配置' })
     }
     const balance = row?.aiTokenBalance ?? 0
     if (balance <= 0) {
@@ -70,7 +70,7 @@ export default defineEventHandler(async (event) => {
         statusMessage: 'token 余额不足,请到个人中心购买加油包或配置自己的 API Key'
       })
     }
-    relay = { format: 'chat', baseUrl: ai.baseUrl, apiKey: ai.apiKey, model: ai.model, userKey: false }
+    relay = { format: ai.format, baseUrl: ai.baseUrl, apiKey: ai.apiKey, model: ai.model, userKey: false }
   }
 
   // ---- 按格式构建上游请求并转发 ----
@@ -98,7 +98,7 @@ export default defineEventHandler(async (event) => {
     const detail = await upstream.text().catch(() => '')
     throw createError({
       statusCode: 502,
-      statusMessage: `AI 上游错误 (${upstream.status}): ${detail.slice(0, 300)}`
+      statusMessage: `AI 上游错误 (${upstream.status}): ${maskApiKey(detail.slice(0, 300), relay.apiKey)}`
     })
   }
 

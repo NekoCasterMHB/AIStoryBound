@@ -8,6 +8,8 @@ const route = useRoute()
 
 const items = computed<NavigationMenuItem[]>(() => [
   { label: '仪表盘', icon: 'i-lucide-layout-dashboard', to: '/admin', active: route.path === '/admin' },
+  { label: '用户管理', icon: 'i-lucide-users', to: '/admin/users', active: route.path === '/admin/users' },
+  { label: 'AI 配置', icon: 'i-lucide-bot', to: '/admin/ai-config', active: route.path === '/admin/ai-config' },
   { label: '兑换码管理', icon: 'i-lucide-ticket', to: '/admin/redeem', active: route.path === '/admin/redeem' },
   { label: '充值记录', icon: 'i-lucide-credit-card', to: '/admin/recharge', active: route.path === '/admin/recharge' },
   { label: 'Skill 审核', icon: 'i-lucide-shield-check', to: '/admin/skills', active: route.path === '/admin/skills' },

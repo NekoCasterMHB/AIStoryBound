@@ -318,6 +318,12 @@ export async function relaySse(
   return { sse, usage }
 }
 
+/** 把文本中出现的 apiKey 替换为 ***,防止上游错误信息回显 key 时泄露给前端 */
+export function maskApiKey(text: string, apiKey: string): string {
+  if (!apiKey) return text
+  return text.split(apiKey).join('***')
+}
+
 /** 发送一条非流式测试请求(三种格式通用),返回可读结果 */
 export async function testRelay(cfg: RelayTarget): Promise<{ ok: boolean, message: string }> {
   try {
@@ -335,7 +341,7 @@ export async function testRelay(cfg: RelayTarget): Promise<{ ok: boolean, messag
     })
     const detail = await res.text().catch(() => '')
     if (!res.ok) {
-      return { ok: false, message: `连接失败 (HTTP ${res.status}): ${detail.slice(0, 200)}` }
+      return { ok: false, message: `连接失败 (HTTP ${res.status}): ${maskApiKey(detail.slice(0, 200), cfg.apiKey)}` }
     }
     return { ok: true, message: '连接成功' }
   } catch (e) {

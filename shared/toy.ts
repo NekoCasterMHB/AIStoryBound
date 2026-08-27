@@ -44,19 +44,17 @@ export interface DeviceEvent {
 /** 适配器收到的命令 = AI 事件同构(纯函数输入) */
 export type NormalizedCommand = DeviceEvent
 
-/** 单功能的限制覆盖(按能力单独设置;缺省 = 回落默认) */
+/** 单功能的限制覆盖(按能力单独设置;缺省 = 初始默认 100) */
 export interface ToyFunctionLimit {
   maxIntensity?: number
 }
 
-/** 用户硬限制设置(IndexedDB 持久化;所有来源的命令都受限制约束) */
+/** 用户硬限制设置(IndexedDB 持久化;AI 来源受强度上限约束,时长上限对所有来源生效) */
 export interface ToySettings {
   /** AI 控制总开关(关 = 拒绝所有 AI 来源的 device_events;手动面板控制不受此限) */
   aiEnabled: boolean
   /** AI 可控制的功能 id 列表(分能力单独启用;缺省/undefined = 全部允许;空数组 = 全部禁止) */
   aiEnabledFunctions?: string[]
-  /** 默认最大强度(0-100;超限命令直接拒绝;被 functionLimits 按能力覆盖) */
-  maxIntensity: number
   /** 默认最大持续时长秒(0=不限制;超限拒绝) */
   maxDuration: number
   /** 按能力单独的限制(功能 id -> 覆盖值;未设置的功能用默认值) */
@@ -67,10 +65,12 @@ export interface ToySettings {
 
 export const DEFAULT_TOY_SETTINGS: ToySettings = {
   aiEnabled: false,
-  maxIntensity: 50,
   /** 全局时长上限(安全链:到期自动归零;AI 事件超 300s 拒绝) */
   maxDuration: 300
 }
+
+/** 能力最大强度的初始默认值(未单独设置时每项能力的上限;仅约束 AI 来源,手动控制不受限) */
+export const DEFAULT_FUNCTION_MAX_INTENSITY = 100
 
 /** 适配器是否启用(设置缺省 = 全部启用) */
 export function isAdapterEnabled(settings: ToySettings, adapterId: string): boolean {
@@ -215,10 +215,10 @@ export type ToyLimitResult
     | { ok: false, reason: string }
 
 /** AI 来源命令额外受 aiEnabled 总开关约束(手动面板控制不检查此开关) */
-/** 生效限制(按能力覆盖,未设置字段回落全局默认) */
+/** 生效限制:只取按能力单独设置的值,未设置的能力初始默认 100 */
 export function functionLimitOf(settings: ToySettings, fnId: string): { maxIntensity: number } {
   const f = settings.functionLimits?.[fnId]
-  return { maxIntensity: f?.maxIntensity ?? settings.maxIntensity }
+  return { maxIntensity: f?.maxIntensity ?? DEFAULT_FUNCTION_MAX_INTENSITY }
 }
 
 export function checkHardLimits(event: DeviceEvent, settings: ToySettings, source: 'ai' | 'manual'): ToyLimitResult {
@@ -228,10 +228,11 @@ export function checkHardLimits(event: DeviceEvent, settings: ToySettings, sourc
     if (settings.aiEnabledFunctions != null && !settings.aiEnabledFunctions.includes(event.function)) {
       return { ok: false, reason: `功能「${event.function}」未开启 AI 控制,请在详细配置中启用` }
     }
-  }
-  const lim = functionLimitOf(settings, event.function)
-  if (event.intensity > lim.maxIntensity) {
-    return { ok: false, reason: `强度 ${event.intensity} 超过最大限制 ${lim.maxIntensity}` }
+    // 最大强度是 AI 的安全限制;手动控制直发设备能力全范围(0-100 由适配器钳制)
+    const lim = functionLimitOf(settings, event.function)
+    if (event.intensity > lim.maxIntensity) {
+      return { ok: false, reason: `强度 ${event.intensity} 超过最大限制 ${lim.maxIntensity}` }
+    }
   }
   // 时长上限为全局默认(安全链:到期自动归零),不做能力级区分
   if (settings.maxDuration > 0 && event.duration != null && event.duration > settings.maxDuration) {

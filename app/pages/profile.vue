@@ -117,6 +117,43 @@ function openPluginConfig(id: string) {
   configOpen.value = true
 }
 
+/** 该适配器是否正处于连接中(卡片右上角显示绿色「已连接」tag) */
+function isConnectedTo(id: string): boolean {
+  return toyController.state.connected && toyController.state.adapterId === id
+}
+
+// ---- 卡片右上角标签:未连接 → 打开自定义设备选择器;已连接 → 确认框断开 ----
+
+const pickerOpen = ref(false)
+const pickerId = ref('')
+const pickerName = ref('')
+
+function openQuickPicker(id: string, name: string) {
+  pickerId.value = id
+  pickerName.value = name
+  pickerOpen.value = true
+}
+
+const tagAction = ref<{ id: string, name: string } | null>(null)
+const tagBusy = ref(false)
+const tagConfirmOpen = computed({
+  get: () => tagAction.value != null,
+  set: (v: boolean) => { if (!v) tagAction.value = null }
+})
+
+async function doTagAction() {
+  const act = tagAction.value
+  if (!act || tagBusy.value) return
+  tagBusy.value = true
+  try {
+    await toyController.disconnect()
+    toast.add({ title: '已断开', color: 'neutral' })
+  } finally {
+    tagBusy.value = false
+    tagAction.value = null
+  }
+}
+
 // ---- 适配器管理(与啵啵贝同级:内置 + 玩家导入,可多选启用;导入功能开发中,入口已禁用) ----
 const allAdapters = ref<ToyAdapter[]>([])
 const importedAdapterIds = ref<string[]>([])
@@ -378,6 +415,65 @@ async function submitRedeem() {
     redeemMsg.value = { kind: 'error', text: errText(e) }
   } finally {
     redeemBusy.value = false
+  }
+}
+
+// ---- 修改密码(better-auth changePassword:校验当前密码后更新,可撤销其它设备会话) ----
+const pwOpen = ref(false)
+const pwBusy = ref(false)
+const pwError = ref('')
+const pwForm = reactive({ current: '', next: '', confirm: '' })
+const pwShow = reactive({ current: false, next: false })
+
+function openChangePassword() {
+  pwError.value = ''
+  pwForm.current = ''
+  pwForm.next = ''
+  pwForm.confirm = ''
+  pwOpen.value = true
+}
+
+function changePasswordError(code: string | undefined): string {
+  const map: Record<string, string> = {
+    INVALID_PASSWORD: '当前密码错误,请重新输入',
+    PASSWORD_TOO_SHORT: '新密码至少 8 位',
+    PASSWORD_TOO_LONG: '新密码过长',
+    CREDENTIAL_ACCOUNT_NOT_FOUND: '该账号未设置密码,暂不支持修改'
+  }
+  return map[code ?? ''] || '修改失败,请稍后重试'
+}
+
+async function submitChangePassword() {
+  pwError.value = ''
+  if (!pwForm.current || !pwForm.next || !pwForm.confirm) {
+    pwError.value = '请填写完整'
+    return
+  }
+  if (pwForm.next.length < 8) {
+    pwError.value = '新密码至少 8 位'
+    return
+  }
+  if (pwForm.next !== pwForm.confirm) {
+    pwError.value = '两次输入的新密码不一致'
+    return
+  }
+  pwBusy.value = true
+  try {
+    const { error } = await authClient.changePassword({
+      currentPassword: pwForm.current,
+      newPassword: pwForm.next,
+      revokeOtherSessions: true
+    })
+    if (error) {
+      pwError.value = changePasswordError(error.code)
+      return
+    }
+    toast.add({ title: '密码已修改', color: 'success' })
+    pwOpen.value = false
+  } catch {
+    pwError.value = '网络异常,请稍后重试'
+  } finally {
+    pwBusy.value = false
   }
 }
 
@@ -719,6 +815,14 @@ watch(narrTemp, v => saveNarrTemp(v))
           {{ me?.name || session?.user?.name || '—' }} · {{ me?.email || '' }}
         </p>
       </div>
+      <UButton
+        color="neutral"
+        variant="outline"
+        icon="i-lucide-key-round"
+        @click="openChangePassword"
+      >
+        修改密码
+      </UButton>
     </div>
 
     <UAlert
@@ -846,6 +950,81 @@ watch(narrTemp, v => saveNarrTemp(v))
           >
             {{ redeemMsg.text }}
           </p>
+        </div>
+      </template>
+    </UModal>
+
+    <!-- 修改密码模态框 -->
+    <UModal
+      v-model:open="pwOpen"
+      title="修改密码"
+    >
+      <template #body>
+        <div class="flex flex-col gap-3">
+          <p class="text-sm text-neutral-500">
+            修改成功后其它设备的登录会话将失效,需重新登录
+          </p>
+          <div>
+            <p class="mb-1 text-sm font-medium">
+              当前密码
+            </p>
+            <UInput
+              v-model="pwForm.current"
+              :type="pwShow.current ? 'text' : 'password'"
+              placeholder="输入当前密码"
+              :disabled="pwBusy"
+              @keyup.enter="submitChangePassword"
+            />
+          </div>
+          <div>
+            <p class="mb-1 text-sm font-medium">
+              新密码
+            </p>
+            <UInput
+              v-model="pwForm.next"
+              :type="pwShow.next ? 'text' : 'password'"
+              placeholder="至少 8 位"
+              :disabled="pwBusy"
+              @keyup.enter="submitChangePassword"
+            />
+          </div>
+          <div>
+            <p class="mb-1 text-sm font-medium">
+              确认新密码
+            </p>
+            <UInput
+              v-model="pwForm.confirm"
+              :type="pwShow.next ? 'text' : 'password'"
+              placeholder="再输入一次"
+              :disabled="pwBusy"
+              @keyup.enter="submitChangePassword"
+            />
+          </div>
+          <UButton
+            color="neutral"
+            variant="outline"
+            size="xs"
+            icon="i-lucide-eye"
+            class="self-end"
+            @click="pwShow.current = !pwShow.current; pwShow.next = !pwShow.next"
+          >
+            {{ pwShow.next ? '隐藏密码' : '显示密码' }}
+          </UButton>
+          <p
+            v-if="pwError"
+            class="text-sm text-red-500"
+          >
+            {{ pwError }}
+          </p>
+          <UButton
+            color="primary"
+            block
+            icon="i-lucide-key-round"
+            :loading="pwBusy"
+            @click="submitChangePassword"
+          >
+            确认修改
+          </UButton>
         </div>
       </template>
     </UModal>
@@ -1403,8 +1582,28 @@ watch(narrTemp, v => saveNarrTemp(v))
             <UCard
               v-for="p in ownedPlugins"
               :key="p.id"
-              class="flex flex-col"
+              class="relative flex flex-col"
             >
+              <UBadge
+                v-if="isConnectedTo(p.id)"
+                size="sm"
+                color="success"
+                variant="solid"
+                class="absolute right-3 top-3 cursor-pointer transition hover:opacity-80"
+                @click="tagAction = { id: p.id, name: p.name }"
+              >
+                已连接
+              </UBadge>
+              <UBadge
+                v-else
+                size="sm"
+                color="neutral"
+                variant="soft"
+                class="absolute right-3 top-3 cursor-pointer transition hover:opacity-80"
+                @click="openQuickPicker(p.id, p.name)"
+              >
+                未连接
+              </UBadge>
               <div class="flex items-start gap-3">
                 <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-2xl">
                   {{ p.icon ?? '🧩' }}
@@ -1413,8 +1612,8 @@ watch(narrTemp, v => saveNarrTemp(v))
                   <div class="flex items-center gap-2">
                     <span class="font-semibold">{{ p.name }}</span>
                     <UBadge
-                      size="xs"
-                      color="success"
+                      size="sm"
+                      color="primary"
                       variant="soft"
                     >
                       已解锁
@@ -1448,8 +1647,28 @@ watch(narrTemp, v => saveNarrTemp(v))
             <UCard
               v-for="a in importedAdapters"
               :key="a.manifest.id"
-              class="flex flex-col"
+              class="relative flex flex-col"
             >
+              <UBadge
+                v-if="isConnectedTo(a.manifest.id)"
+                size="sm"
+                color="success"
+                variant="solid"
+                class="absolute right-3 top-3 cursor-pointer transition hover:opacity-80"
+                @click="tagAction = { id: a.manifest.id, name: a.manifest.name }"
+              >
+                已连接
+              </UBadge>
+              <UBadge
+                v-else
+                size="sm"
+                color="neutral"
+                variant="soft"
+                class="absolute right-3 top-3 cursor-pointer transition hover:opacity-80"
+                @click="openQuickPicker(a.manifest.id, a.manifest.name)"
+              >
+                未连接
+              </UBadge>
               <div class="flex items-start gap-3">
                 <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-2xl">
                   🧩
@@ -1517,8 +1736,43 @@ watch(narrTemp, v => saveNarrTemp(v))
       v-model:open="configOpen"
       :plugin-id="configPluginId"
     />
+    <!-- 快捷连接自定义设备选择器(已授权设备列表 + 电量;新设备才走系统选择器) -->
+    <ToyQuickConnectModal
+      v-model:open="pickerOpen"
+      :adapter-id="pickerId"
+      :adapter-name="pickerName"
+    />
     <!-- 适配器 SDK 接入文档弹窗 -->
     <SdkDocsModal v-model:open="sdkOpen" />
+    <!-- 卡片标签断开确认框 -->
+    <UModal
+      v-model:open="tagConfirmOpen"
+      title="断开连接"
+    >
+      <template #body>
+        <p class="text-sm text-neutral-500">
+          确认断开「{{ tagAction?.name }}」?
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            variant="soft"
+            :disabled="tagBusy"
+            @click="tagAction = null"
+          >
+            取消
+          </UButton>
+          <UButton
+            color="primary"
+            :loading="tagBusy"
+            @click="doTagAction"
+          >
+            断开
+          </UButton>
+        </div>
+      </template>
+    </UModal>
     <!-- 购买弹窗 -->
     <UModal
       v-model:open="buyOpen"

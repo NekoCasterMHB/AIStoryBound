@@ -111,7 +111,7 @@ console.log('\n[3/4] 硬限制 checkHardLimits + 冷却')
   const gate = checkHardLimits({ function: 'suction', intensity: 30 }, s, 'ai')
   assertOk('AI 总开关关闭 → 拒绝', !gate.ok, gate.ok ? '' : gate.reason)
 
-  const s2 = { ...DEFAULT_TOY_SETTINGS, aiEnabled: true, maxIntensity: 50, maxDuration: 30 }
+  const s2 = { ...DEFAULT_TOY_SETTINGS, aiEnabled: true, maxDuration: 30, functionLimits: { suction: { maxIntensity: 50 } } }
   const over = checkHardLimits({ function: 'suction', intensity: 80 }, s2, 'ai')
   assertOk('强度 80 > 上限 50 → 拒绝', !over.ok, over.ok ? '' : over.reason)
   const long = checkHardLimits({ function: 'suction', intensity: 30, duration: 60 }, s2, 'ai')
@@ -126,14 +126,21 @@ console.log('\n[3/4] 硬限制 checkHardLimits + 冷却')
   const fnOk = checkHardLimits({ function: 'vibration', intensity: 30 }, s3, 'ai')
   assertOk('功能在 AI 允许列表内 → 通过', fnOk.ok, fnOk.ok ? '' : fnOk.reason)
 
-  // 按能力单独限制:功能级覆盖全局默认
-  const s4 = { ...s2, functionLimits: { vibration: { maxIntensity: 20 } } }
+  // 按能力单独限制:只影响对应功能
+  const s4 = { ...s2, functionLimits: { suction: { maxIntensity: 50 }, vibration: { maxIntensity: 20 } } }
   const fnOver = checkHardLimits({ function: 'vibration', intensity: 30 }, s4, 'ai')
   assertOk('能力覆盖:震动上限 20 → 强度 30 拒绝', !fnOver.ok, fnOver.ok ? '' : fnOver.reason)
   const fnUnder = checkHardLimits({ function: 'vibration', intensity: 15 }, s4, 'ai')
   assertOk('能力覆盖:震动上限 20 → 强度 15 通过', fnUnder.ok, fnUnder.ok ? '' : fnUnder.reason)
   const otherFn = checkHardLimits({ function: 'suction', intensity: 80 }, s4, 'ai')
-  assertOk('未覆盖能力回落全局上限 50 → 强度 80 拒绝', !otherFn.ok, otherFn.ok ? '' : otherFn.reason)
+  assertOk('未覆盖能力沿用自身上限 50 → 强度 80 拒绝', !otherFn.ok, otherFn.ok ? '' : otherFn.reason)
+
+  // 未单独设置的能力:初始默认 100
+  const s5 = { ...DEFAULT_TOY_SETTINGS, aiEnabled: true, maxDuration: 30 }
+  const dfltOk = checkHardLimits({ function: 'suction', intensity: 80 }, s5, 'ai')
+  assertOk('未设置能力默认上限 100 → 强度 80 通过', dfltOk.ok, dfltOk.ok ? '' : dfltOk.reason)
+  const dfltOver = checkHardLimits({ function: 'suction', intensity: 101 }, s5, 'ai')
+  assertOk('未设置能力默认上限 100 → 强度 101 拒绝', !dfltOver.ok, dfltOver.ok ? '' : dfltOver.reason)
 }
 
 console.log('\n[3.5] 调教目标驱动 stepToward(纯函数)')
@@ -216,7 +223,7 @@ console.log('\n[3.7] 调教形态波形 trainPatternValue(纯函数)')
 
 console.log('\n[4/4] 端到端(真实 ToyApi + Mock 传输):连接 → 初始化 → 控制 → 自动停止 → 紧急停止 → 断连')
 {
-  const settings = { ...DEFAULT_TOY_SETTINGS, aiEnabled: true, maxIntensity: 100, maxDuration: 30 }
+  const settings = { ...DEFAULT_TOY_SETTINGS, aiEnabled: true, maxDuration: 30 }
 
   // 连接:mock 扫描 → 连接 → 初始化帧
   const connected = await toyController.connect(adapter, mockTransport, { waitInitMs: 0 })
@@ -237,9 +244,9 @@ console.log('\n[4/4] 端到端(真实 ToyApi + Mock 传输):连接 → 初始化
   const r3 = await toyController.execute({ function: 'rotate', intensity: 30 }, { source: 'ai', settings })
   assertOk('超能力(rotate)→ 拒绝', !r3.ok, r3.ok ? '' : r3.reason)
 
-  // 超限 → 拒绝(最大强度 50)
-  const r4 = await toyController.execute({ function: 'electric', intensity: 80 }, { source: 'ai', settings: { ...settings, maxIntensity: 50 } })
-  assertOk('强度 80 > 上限 50 → 拒绝', !r4.ok, r4.ok ? '' : r4.reason)
+  // 超限 → 拒绝(electric 按能力上限 50)
+  const r4 = await toyController.execute({ function: 'electric', intensity: 80 }, { source: 'ai', settings: { ...settings, functionLimits: { electric: { maxIntensity: 50 } } } })
+  assertOk('强度 80 > electric 上限 50 → 拒绝', !r4.ok, r4.ok ? '' : r4.reason)
 
   // 路由:指定其他适配器(未连接)→ 拒绝
   const r5 = await toyController.execute({ adapter: 'other-brand', function: 'suction', intensity: 30 }, { source: 'ai', settings })

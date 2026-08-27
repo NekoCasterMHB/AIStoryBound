@@ -536,3 +536,29 @@ export const aiUsage = sqliteTable('ai_usage', {
   index('idx_ai_usage_time').on(t.createdAt),
   index('idx_ai_usage_user').on(t.userId)
 ])
+
+// ---- 平台 AI 模型配置(管理员后台维护,多套并存、至多一条启用;替代环境变量 AI_BASE_URL/AI_API_KEY/AI_MODEL) ----
+// apiKey 用 server/utils/crypto.ts(AES-256-GCM,密钥由 BETTER_AUTH_SECRET 派生)加密落库,防库文件泄露;
+// apiKeyHint 存明文后 4 位供列表展示,接口不返回密文。未配置启用项时,运行时回退环境变量(见 server/utils/ai.ts)。
+export const aiProviderConfigs = sqliteTable('ai_provider_configs', {
+  id: text('id').primaryKey(),
+  /** 展示名(如「DeepSeek 主用」) */
+  name: text('name').notNull(),
+  /** chat | anthropic | responses(见 shared/ai-config.ts) */
+  format: text('format').notNull().default('chat'),
+  /** OpenAI 兼容 base URL,含 /v1,如 https://api.deepseek.com/v1 */
+  baseUrl: text('base_url').notNull(),
+  /** AES-GCM 加密后的 apiKey */
+  apiKeyCiphertext: text('api_key_ciphertext').notNull(),
+  apiKeyIv: text('api_key_iv').notNull(),
+  /** apiKey 后 4 位明文(列表展示用) */
+  apiKeyHint: text('api_key_hint').notNull(),
+  /** 默认模型名 */
+  model: text('model').notNull(),
+  /** 1=当前启用(全局至多一条) */
+  active: integer('active').notNull().default(0),
+  /** 创建人(管理员 user id) */
+  createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [index('idx_aipc_active').on(t.active)])

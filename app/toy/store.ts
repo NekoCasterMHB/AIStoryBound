@@ -14,8 +14,9 @@ export async function loadToySettings(): Promise<ToySettings> {
   if (typeof indexedDB === 'undefined') return { ...DEFAULT_TOY_SETTINGS }
   const d = await db()
   const row = await d.get(STORE_TOY_SETTINGS, SETTINGS_KEY) as { settings?: ToySettings } | undefined
-  // 与默认值合并:新版本新增字段时旧存档自动补全
-  return { ...DEFAULT_TOY_SETTINGS, ...(row?.settings ?? {}) }
+  // 与默认值合并:新版本新增字段时旧存档自动补全;已移除的全局 maxIntensity 在加载时剔除
+  const { maxIntensity: _legacyMaxIntensity, ...stored } = (row?.settings ?? {}) as ToySettings & { maxIntensity?: number }
+  return { ...DEFAULT_TOY_SETTINGS, ...stored }
 }
 
 export async function saveToySettings(settings: ToySettings): Promise<void> {

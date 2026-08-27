@@ -64,11 +64,21 @@ export default defineEventHandler(async (event) => {
   const platformFees = (skillFees[0]?.total ?? 0) + (novelFees[0]?.total ?? 0)
   const totalConsumed = totalUsersN * FREE_TOKEN_GRANT + paidTokens + redeemedTokens - platformFees - totalBalance
 
-  // ---- DeepSeek 账户余额(平台 Key) ----
+  // ---- 当前生效 AI 配置的账户余额(仅 DeepSeek 官方接口支持 /user/balance) ----
   // 所有分支都会赋值,无需初始值(no-useless-assignment)
   let deepseek: { available: boolean, balanceInfos: { currency: string, totalBalance: string, grantedBalance: string, toppedUpBalance: string }[], error?: string } | null
-  const ai = getAiConfig(event)
-  if (ai.apiKey) {
+  const ai = await getAiConfig(event)
+  let deepseekHost = false
+  try {
+    deepseekHost = /deepseek/i.test(new URL(ai.baseUrl).hostname)
+  } catch {
+    // baseUrl 无法解析时按非 DeepSeek 处理
+  }
+  if (!ai.apiKey) {
+    deepseek = { available: false, balanceInfos: [], error: '未配置平台 AI Key' }
+  } else if (!deepseekHost) {
+    deepseek = { available: false, balanceInfos: [], error: '当前生效配置非 DeepSeek 官方接口,不查询余额' }
+  } else {
     try {
       // DeepSeek 余额接口在域名根路径(/user/balance),baseUrl 形如 https://api.deepseek.com/v1
       const base = ai.baseUrl.replace(/\/v\d+$/, '')
@@ -95,8 +105,6 @@ export default defineEventHandler(async (event) => {
     } catch (e) {
       deepseek = { available: false, balanceInfos: [], error: e instanceof Error ? e.message : String(e) }
     }
-  } else {
-    deepseek = { available: false, balanceInfos: [], error: '未配置 AI_API_KEY' }
   }
 
   return {
@@ -110,6 +118,10 @@ export default defineEventHandler(async (event) => {
       /** 近24h 消耗自 ai_usage 表部署后开始记录(2026-08-27 前无明细,由总消耗恒等式覆盖) */
       day24From: 'ai_usage 表部署后开始记录'
     },
-    deepseek
+    deepseek,
+    aiConfig: {
+      name: ai.name ?? null,
+      source: ai.source
+    }
   }
 })

@@ -17,12 +17,18 @@ export interface ToyTransport {
   id: 'web-bluetooth' | 'mock'
   /** 界面展示名 */
   name: string
-  /** 发现设备(Web Bluetooth 会弹出系统选择器) */
-  scan(scanNames?: string[]): Promise<ToyTransportDevice[]>
+  /**
+   * 发现设备(Web Bluetooth 会弹出系统选择器)。
+   * gatt 用于 requestDevice 的 optionalServices 授权:自定义服务不在浏览器默认允许清单里,
+   * 不传会在连接 getPrimaryService 时被 Chrome 拒绝("Origin is not allowed to access any service")。
+   */
+  scan(scanNames?: string[], gatt?: ToyGattParams): Promise<ToyTransportDevice[]>
   /** 已授权设备列表(免系统选择器;Web Bluetooth 用 getDevices,仅含此前用户授权过的设备;不支持则返回空) */
   listKnownDevices?(): Promise<ToyTransportDevice[]>
   /** 连接 + 开启通知(CCCD 走 startNotifications,勿手动写 0x2902);设备来自 scan 或 listKnownDevices */
   connect(device: ToyTransportDevice, gatt: ToyGattParams): Promise<void>
+  /** 最近一次读取到的设备电量百分比(0-100;未知返回 null;仅 Web Bluetooth 实现,连接成功时读取) */
+  getBattery?(id: string): number | null
   /** 写入一帧 */
   write(bytes: Uint8Array): Promise<void>
   /** 断连回调(注册返回注销函数) */

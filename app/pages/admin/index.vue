@@ -18,6 +18,7 @@ interface DashboardData {
     balanceInfos: { currency: string, totalBalance: string, grantedBalance: string, toppedUpBalance: string }[]
     error?: string
   } | null
+  aiConfig: { name: string | null, source: 'db' | 'env' }
 }
 
 const isAdmin = ref(false)
@@ -137,13 +138,22 @@ const cards = computed(() => {
             />
             DeepSeek 账户余额
           </p>
-          <UBadge
-            size="sm"
-            :color="data?.deepseek?.available ? 'success' : 'error'"
-            variant="soft"
-          >
-            {{ data?.deepseek?.available ? '可用' : '不可用' }}
-          </UBadge>
+          <div class="flex items-center gap-2">
+            <UBadge
+              size="sm"
+              color="neutral"
+              variant="soft"
+            >
+              {{ data?.aiConfig?.source === 'db' ? `后台配置 · ${data?.aiConfig?.name ?? '未命名'}` : '环境变量' }}
+            </UBadge>
+            <UBadge
+              size="sm"
+              :color="data?.deepseek?.available ? 'success' : 'error'"
+              variant="soft"
+            >
+              {{ data?.deepseek?.available ? '可用' : '不可用' }}
+            </UBadge>
+          </div>
         </div>
         <div
           v-if="loading"

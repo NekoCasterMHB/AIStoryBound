@@ -52,9 +52,11 @@ export default defineEventHandler(async (event) => {
   // ---- 收入统计(已支付订单实付金额,分;退款状态无产生路径,暂不抵扣) ----
   const paid = eq(quotaPackageOrder.status, 'paid')
   // 支付时间兜底用创建时间(老数据 paidAt 可能为空)
+  // 注意:paidTime 是原始 SQL 表达式,drizzle 不会自动把 Date 参数转毫秒整数,D1 也无法序列化 Date,
+  // 因此时间参数必须用毫秒数字(timestamp_ms 列存储的就是毫秒整数),不能用 new Date()。
   const paidTime = sql`COALESCE(${quotaPackageOrder.paidAt}, ${quotaPackageOrder.createdAt})`
-  const day24Ago = new Date(Date.now() - 24 * 60 * 60 * 1000)
-  const day30Ago = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+  const day24Ago = Date.now() - 24 * 60 * 60 * 1000
+  const day30Ago = Date.now() - 30 * 24 * 60 * 60 * 1000
   const revTotal = await db.select({ total: sql<number>`COALESCE(SUM(${quotaPackageOrder.amount}), 0)` })
     .from(quotaPackageOrder)
     .where(paid)

@@ -7,7 +7,6 @@ import { reactive } from 'vue'
 import {
   DEFAULT_TOY_SETTINGS,
   checkHardLimits,
-  functionLimitOf,
   pickWaveTarget,
   randomTrainParams,
   randomTrainPattern,
@@ -85,7 +84,7 @@ class ToyController {
     try {
       const gatt = adapter.manifest.protocol?.gatt
       if (!gatt) return { ok: false, reason: '适配器缺少 GATT 配置,无法连接' }
-      const device = opts.device ?? (await transport.scan(adapter.manifest.scanNames))[0]
+      const device = opts.device ?? (await transport.scan(adapter.manifest.scanNames, gatt))[0]
       if (!device) return { ok: false, reason: '没有发现可连接的设备' }
       await transport.connect(device, gatt)
 
@@ -228,7 +227,7 @@ class ToyController {
    * - 确定性形态(sine/pulse/sawtooth/heartbeat/constant):按已运行时长直接计算波形;
    * - random 随机漫步:期望值按姿态随机交替抽取(sweep 大幅缓慢 / flutter 局部快速),抵达立即重抽;
    * - auto 全随机:先随机定一个形态与参数,每 autoSwitchMs(默认 8-15s)再轮换一次。
-   * 范围上限自动收敛到该能力的最大强度限制;重新启动时只清理旧调教状态,不发停止帧。
+   * 手动调教范围直达设备能力上限(不受 AI 最大强度限制);重新启动时只清理旧调教状态,不发停止帧。
    */
   async startWave(
     fnId: string,
@@ -258,9 +257,9 @@ class ToyController {
       }
     }
 
-    const maxIntensity = functionLimitOf(settings, fnId).maxIntensity
-    const lo = Math.max(0, Math.min(range[0], maxIntensity))
-    const hi = Math.max(lo, Math.min(range[1], maxIntensity))
+    // 手动调教不受 AI 强度上限约束,直接用调用方范围(帧级强度仍由适配器能力范围钳制)
+    const lo = Math.max(0, range[0])
+    const hi = Math.max(lo, range[1])
     const intervalMs = opts.intervalMs ?? 300
     const rng = opts.rng
 

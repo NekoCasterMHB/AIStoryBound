@@ -434,6 +434,24 @@ CREATE TABLE IF NOT EXISTS `ai_usage` (
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
 
+-- ---- 平台 AI 模型配置(管理员后台维护,多套并存、至多一条启用;替代环境变量 AI_BASE_URL/AI_API_KEY/AI_MODEL) ----
+-- apiKey 由服务端 AES-256-GCM 加密(BETTER_AUTH_SECRET 派生密钥),api_key_hint 存明文后 4 位供列表展示。
+CREATE TABLE IF NOT EXISTS `ai_provider_configs` (
+	`id` text PRIMARY KEY NOT NULL,
+	`name` text NOT NULL,
+	`format` text NOT NULL DEFAULT 'chat',
+	`base_url` text NOT NULL,
+	`api_key_ciphertext` text NOT NULL,
+	`api_key_iv` text NOT NULL,
+	`api_key_hint` text NOT NULL,
+	`model` text NOT NULL,
+	`active` integer NOT NULL DEFAULT 0,
+	`created_by` text,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL,
+	FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null
+);
+
 -- ---- 索引 ----
 CREATE UNIQUE INDEX IF NOT EXISTS `user_email_unique` ON `user` (`email`);
 CREATE INDEX IF NOT EXISTS `idx_user_email` ON `user` (`email`);
@@ -472,4 +490,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS `idx_frl_unique` ON `feature_request_likes` (`
 CREATE INDEX IF NOT EXISTS `idx_frl_user` ON `feature_request_likes` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_ai_usage_time` ON `ai_usage` (`created_at`);
 CREATE INDEX IF NOT EXISTS `idx_ai_usage_user` ON `ai_usage` (`user_id`);
+CREATE INDEX IF NOT EXISTS `idx_aipc_active` ON `ai_provider_configs` (`active`);
 CREATE INDEX IF NOT EXISTS `idx_skill_purchase_buyer` ON `skill_purchases` (`buyer_id`);
