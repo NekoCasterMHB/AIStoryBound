@@ -24,6 +24,8 @@ async function onPasswordLogin() {
       return
     }
     onLoginSuccess()
+  } catch {
+    errorMsg.value = '网络异常,请稍后重试'
   } finally {
     busy.value = false
   }
@@ -33,6 +35,8 @@ async function onPasswordLogin() {
 const otpForm = reactive({ email: '', otp: '' })
 const otpSent = ref(false)
 const otpCountdown = ref(0)
+/** 发送验证码专用 loading(与登录 busy 分离:loading 应显示在「获取验证码」按钮上) */
+const sendingOtp = ref(false)
 let otpTimer: ReturnType<typeof setInterval> | null = null
 
 function startCountdown(sec = 180) {
@@ -50,7 +54,7 @@ async function sendOtp() {
     errorMsg.value = '请输入邮箱'
     return
   }
-  busy.value = true
+  sendingOtp.value = true
   try {
     const { error } = await authClient.emailOtp.sendVerificationOtp({ email: otpForm.email, type: 'sign-in' })
     if (error) {
@@ -61,8 +65,11 @@ async function sendOtp() {
     }
     otpSent.value = true
     startCountdown()
+  } catch {
+    // 网络层异常(better-auth 客户端会抛出而非返回 error)
+    errorMsg.value = '网络异常,请稍后重试'
   } finally {
-    busy.value = false
+    sendingOtp.value = false
   }
 }
 
@@ -76,6 +83,8 @@ async function onOtpLogin() {
       return
     }
     onLoginSuccess()
+  } catch {
+    errorMsg.value = '网络异常,请稍后重试'
   } finally {
     busy.value = false
   }
@@ -88,6 +97,8 @@ const showPwReg = ref(false)
 const showPwConfirm = ref(false)
 const regError = ref('')
 const regBusy = ref(false)
+/** 发送/重发注册验证码专用 loading(与 regBusy 分离,避免 loading 错落到「完成注册」按钮) */
+const sendingRegOtp = ref(false)
 const regCountdown = ref(0)
 let regTimer: ReturnType<typeof setInterval> | null = null
 
@@ -116,7 +127,7 @@ async function onSendRegOtp() {
     regError.value = err
     return
   }
-  regBusy.value = true
+  sendingRegOtp.value = true
   try {
     const { error } = await authClient.signUp.email({
       name: regForm.username.trim(),
@@ -131,13 +142,15 @@ async function onSendRegOtp() {
     // 此处不再显式调 sendVerificationOtp,避免一次注册发两封邮件;若邮件延迟未到,可点"重新发送"
     regStep.value = 'code'
     regCountdownTick()
+  } catch {
+    regError.value = '网络异常,请稍后重试'
   } finally {
-    regBusy.value = false
+    sendingRegOtp.value = false
   }
 }
 
 async function onResendRegOtp() {
-  regBusy.value = true
+  sendingRegOtp.value = true
   try {
     const { error } = await authClient.emailOtp.sendVerificationOtp({ email: regForm.email, type: 'email-verification' })
     if (error) {
@@ -146,8 +159,10 @@ async function onResendRegOtp() {
       return
     }
     regCountdownTick()
+  } catch {
+    regError.value = '网络异常,请稍后重试'
   } finally {
-    regBusy.value = false
+    sendingRegOtp.value = false
   }
 }
 
@@ -170,6 +185,8 @@ async function onFinishRegister() {
       return
     }
     onLoginSuccess()
+  } catch {
+    regError.value = '网络异常,请稍后重试'
   } finally {
     regBusy.value = false
   }
@@ -317,7 +334,7 @@ const tabs = ref<TabsItem[]>([
                   type="email"
                   placeholder="you@example.com"
                   class="w-full"
-                  :disabled="busy"
+                  :disabled="busy || sendingOtp"
                 />
               </UFormField>
               <div class="flex gap-2">
@@ -325,14 +342,15 @@ const tabs = ref<TabsItem[]>([
                   v-model="otpForm.otp"
                   placeholder="6 位验证码"
                   class="flex-1"
-                  :disabled="busy || !otpSent"
+                  :disabled="busy || sendingOtp || !otpSent"
                   inputmode="numeric"
                   maxlength="6"
                 />
                 <UButton
                   color="neutral"
                   variant="outline"
-                  :disabled="busy || otpCountdown > 0"
+                  :loading="sendingOtp"
+                  :disabled="busy || sendingOtp || otpCountdown > 0"
                   @click="sendOtp"
                 >
                   {{ otpCountdown > 0 ? `${otpCountdown}s` : (otpSent ? '重新发送' : '获取验证码') }}
@@ -389,7 +407,7 @@ const tabs = ref<TabsItem[]>([
                 v-model="regForm.username"
                 placeholder="怎么称呼你"
                 class="w-full"
-                :disabled="regBusy"
+                :disabled="regBusy || sendingRegOtp"
               />
             </UFormField>
             <UFormField
@@ -401,7 +419,7 @@ const tabs = ref<TabsItem[]>([
                 type="email"
                 placeholder="you@example.com"
                 class="w-full"
-                :disabled="regBusy"
+                :disabled="regBusy || sendingRegOtp"
               />
             </UFormField>
             <div class="flex gap-2">
@@ -414,7 +432,7 @@ const tabs = ref<TabsItem[]>([
                   v-model="regForm.password"
                   :type="showPwReg ? 'text' : 'password'"
                   placeholder="至少 8 位"
-                  :disabled="regBusy"
+                  :disabled="regBusy || sendingRegOtp"
                   :ui="{ trailing: 'pe-1' }"
                 >
                   <template #trailing>
@@ -440,7 +458,7 @@ const tabs = ref<TabsItem[]>([
                   v-model="regForm.confirm"
                   :type="showPwConfirm ? 'text' : 'password'"
                   placeholder="再输入一次"
-                  :disabled="regBusy"
+                  :disabled="regBusy || sendingRegOtp"
                   :ui="{ trailing: 'pe-1' }"
                   @keyup.enter="onSendRegOtp"
                 >
@@ -462,7 +480,7 @@ const tabs = ref<TabsItem[]>([
             <UButton
               block
               color="primary"
-              :loading="regBusy"
+              :loading="sendingRegOtp"
               @click="onSendRegOtp"
             >
               注册并发送邮箱验证码
@@ -480,18 +498,19 @@ const tabs = ref<TabsItem[]>([
             收邮件有 3 分钟左右延迟,请耐心等待
           </p>
           <div class="flex gap-2">
-            <UInput
-              v-model="regForm.otp"
-              placeholder="6 位验证码"
-              class="flex-1"
-              :disabled="regBusy"
-              inputmode="numeric"
-              maxlength="6"
-            />
+              <UInput
+                v-model="regForm.otp"
+                placeholder="6 位验证码"
+                class="flex-1"
+                :disabled="regBusy || sendingRegOtp"
+                inputmode="numeric"
+                maxlength="6"
+              />
             <UButton
               color="neutral"
               variant="outline"
-              :disabled="regBusy || regCountdown > 0"
+              :loading="sendingRegOtp"
+              :disabled="regBusy || sendingRegOtp || regCountdown > 0"
               @click="onResendRegOtp"
             >
               {{ regCountdown > 0 ? `${regCountdown}s` : '重新发送' }}
