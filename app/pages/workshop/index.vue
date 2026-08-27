@@ -73,7 +73,7 @@ function onTabChange(v: string | number) {
               功能插件 · 开发中
             </p>
             <p class="max-w-md text-sm leading-relaxed text-neutral-500">
-              功能插件将赋予 AI 操作外部设备的能力(灯光、玩具、智能家居联动等),
+              功能插件将赋予 AI 操作外部设备的能力(小玩具联动等 你懂的对吧~),
               让游玩体验突破屏幕。敬请期待,欢迎在需求墙提出你想要的联动功能。
             </p>
             <div class="mt-2 flex items-center gap-3">
