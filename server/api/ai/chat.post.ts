@@ -108,29 +108,36 @@ export default defineEventHandler(async (event) => {
     'X-Accel-Buffering': 'no'
   })
 
-  const { sse, usage } = await relaySse(relay, upstream)
+  const { sse, usage } = await relaySse(relay, upstream, messages)
 
-  // 平台模式:按真实用量扣减(允许并发下轻微超卖;负值由前置余额检查兜底)
+  // 平台模式:按真实用量扣减(允许并发下轻微超卖;负值由前置余额检查兜底)。
+  // 必须用 event.waitUntil 包住扣费:usage 在流尾才解析,长流请求的 D1 扣费与响应完成几乎同时,
+  // fire-and-forget 的 Promise 可能在 workerd 冻结 isolate 时被截断,导致扣费偶发丢失
+  // (现象:ai_usage 落库成功但余额未扣)。waitUntil 保证 isolate 存活到扣费与落库完成。
+  // usage 拿不到真实值(玩家中途取消/上游不返回 usage)时,relaySse 已按 shared/token-estimate
+  // 口径用已转发的消息与输出内容估算兜底,取消的请求同样如实扣费。
   if (!relay.userKey) {
-    void usage.then((u) => {
+    event.waitUntil(usage.then(async (u) => {
       const cost = u?.totalTokens ?? 0
-      if (cost > 0) {
-        void db.update(usersTable)
+      if (cost <= 0) return
+      try {
+        await db.update(usersTable)
           .set({ aiTokenBalance: sql`MAX(${usersTable.aiTokenBalance} - ${cost}, 0)` })
           .where(eq(usersTable.id, sessUser.id))
           .run()
-          .catch(() => {})
         // 用量落库:管理仪表盘近 24h 消耗统计与金额估算(历史数据自部署后累计)
-        void db.insert(aiUsage).values({
+        await db.insert(aiUsage).values({
           id: uuid(),
           userId: sessUser.id,
           tokens: cost,
           promptTokens: u?.promptTokens ?? 0,
           completionTokens: u?.completionTokens ?? 0,
           createdAt: new Date()
-        }).run().catch(() => {})
+        }).run()
+      } catch (e) {
+        console.error('[ai/chat] 扣费失败', { userId: sessUser.id, cost }, e)
       }
-    })
+    }))
   }
 
   return new Response(sse)

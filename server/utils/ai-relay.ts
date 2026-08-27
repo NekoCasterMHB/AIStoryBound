@@ -6,6 +6,7 @@
 // 浏览器端 aiRelay 只认 OpenAI 兼容 SSE,因此上游差异在此收敛。
 import type { AiApiFormat } from '../../shared/ai-config'
 import type { TokenUsage } from '../../shared/novel'
+import { estimateMessagesTokens, estimateTextTokens } from '../../shared/token-estimate'
 
 export interface RelayTarget {
   format: AiApiFormat
@@ -118,8 +119,12 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
 export interface RelayStreamResult {
   /** OpenAI 兼容 SSE 字节流(含流尾 usage 分片与 [DONE]) */
   sse: ReadableStream<Uint8Array>
-  /** 流结束后 resolve 的上游用量;解析失败为 null */
-  usage: Promise<TokenUsage | null>
+  /**
+   * 流结束后 resolve 的上游用量。上游正常给出 usage 时用真实值;
+   * 流被取消/中断或上游未返回 usage 时,按已转发的消息与输出内容估算
+   * (与前端实时估算同一套 shared/token-estimate 口径),保证取消的请求也能如实扣费。
+   */
+  usage: Promise<TokenUsage>
 }
 
 const encoder = new TextEncoder()
@@ -136,20 +141,37 @@ function emitUsage(prompt: number, completion: number): string {
   })}\n\n`
 }
 
-export async function relaySse(cfg: RelayTarget, upstream: Response): Promise<RelayStreamResult> {
+/** 估算兜底:输入按 messages 估算,输出按已流出的文本估算(与客户端实时口径一致) */
+function estimateUsage(
+  messages: { role: string, content: string }[],
+  outputText: string
+): TokenUsage {
+  const promptTokens = estimateMessagesTokens(messages)
+  const completionTokens = estimateTextTokens(outputText)
+  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens }
+}
+
+export async function relaySse(
+  cfg: RelayTarget,
+  upstream: Response,
+  messages: { role: string, content: string }[] = []
+): Promise<RelayStreamResult> {
   const reader = upstream.body?.getReader()
 
   // Chat Completions:原样透传字节,同时按行解析流尾 usage
   if (cfg.format === 'chat' && reader) {
-    let usagePromiseResolve: (u: TokenUsage | null) => void = () => {}
-    const usage = new Promise<TokenUsage | null>((resolve) => {
+    let usagePromiseResolve: (u: TokenUsage) => void = () => {}
+    const usage = new Promise<TokenUsage>((resolve) => {
       usagePromiseResolve = resolve
     })
     let usageResolved = false
+    /** 已转发的输出文本(取消/无 usage 时估算兜底) */
+    let outputText = ''
     const sse = new ReadableStream<Uint8Array>({
       async start(controller) {
         if (!reader) {
           controller.close()
+          usagePromiseResolve(estimateUsage(messages, ''))
           return
         }
         let buf = ''
@@ -168,6 +190,7 @@ export async function relaySse(cfg: RelayTarget, upstream: Response): Promise<Re
               if (json === '[DONE]' || !json) continue
               try {
                 const d = JSON.parse(json) as {
+                  choices?: { delta?: { content?: string } }[]
                   usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
                 }
                 if (d.usage?.total_tokens && !usageResolved) {
@@ -177,6 +200,9 @@ export async function relaySse(cfg: RelayTarget, upstream: Response): Promise<Re
                     completionTokens: d.usage.completion_tokens ?? 0,
                     totalTokens: d.usage.total_tokens
                   })
+                } else if (!usageResolved) {
+                  const delta = d.choices?.[0]?.delta?.content
+                  if (typeof delta === 'string' && delta) outputText += delta
                 }
               } catch {
                 // 非 JSON 分片忽略
@@ -187,7 +213,7 @@ export async function relaySse(cfg: RelayTarget, upstream: Response): Promise<Re
         } catch (e) {
           controller.error(e)
         } finally {
-          if (!usageResolved) usagePromiseResolve(null)
+          if (!usageResolved) usagePromiseResolve(estimateUsage(messages, outputText))
         }
       }
     })
@@ -195,8 +221,8 @@ export async function relaySse(cfg: RelayTarget, upstream: Response): Promise<Re
   }
 
   // Anthropic / Responses:解析上游事件并重新拼装 OpenAI 兼容 SSE
-  let usageResolve: (u: TokenUsage | null) => void = () => {}
-  const usage = new Promise<TokenUsage | null>((resolve) => {
+  let usageResolve: (u: TokenUsage) => void = () => {}
+  const usage = new Promise<TokenUsage>((resolve) => {
     usageResolve = resolve
   })
 
@@ -204,20 +230,26 @@ export async function relaySse(cfg: RelayTarget, upstream: Response): Promise<Re
     async start(controller) {
       if (!reader) {
         controller.close()
-        usageResolve(null)
+        usageResolve(estimateUsage(messages, ''))
         return
       }
       let buf = ''
       let prompt = 0
       let completion = 0
       let done = false
+      /** 已转发的输出文本(估算兜底用) */
+      let outputText = ''
       const emit = (s: string) => controller.enqueue(encoder.encode(s))
       const finish = () => {
         if (done) return
         done = true
         if (prompt > 0 || completion > 0) emit(emitUsage(prompt, completion))
         emit('data: [DONE]\n\n')
-        usageResolve({ promptTokens: prompt, completionTokens: completion, totalTokens: prompt + completion })
+        // 上游事件带 usage 用真实值;缺省(0/0)按已转发内容估算兜底
+        const u = prompt > 0 || completion > 0
+          ? { promptTokens: prompt, completionTokens: completion, totalTokens: prompt + completion }
+          : estimateUsage(messages, outputText)
+        usageResolve(u)
       }
       try {
         for (;;) {
@@ -241,7 +273,10 @@ export async function relaySse(cfg: RelayTarget, upstream: Response): Promise<Re
                 const type = d.type
                 if (type === 'content_block_delta') {
                   const delta = d.delta as { type?: string, text?: string } | undefined
-                  if (delta?.type === 'text_delta' && delta.text) emit(emitData(delta.text))
+                  if (delta?.type === 'text_delta' && delta.text) {
+                    emit(emitData(delta.text))
+                    outputText += delta.text
+                  }
                 } else if (type === 'message_start') {
                   const usageInfo = (d.message as { usage?: { input_tokens?: number } } | undefined)?.usage
                   if (usageInfo?.input_tokens) prompt = usageInfo.input_tokens
@@ -257,6 +292,7 @@ export async function relaySse(cfg: RelayTarget, upstream: Response): Promise<Re
                 const type = d.type
                 if (type === 'response.output_text.delta' && typeof d.delta === 'string') {
                   emit(emitData(d.delta))
+                  outputText += d.delta
                 } else if (type === 'response.completed' || type === 'response.failed' || type === 'response.incomplete') {
                   const usageInfo = (d.response as { usage?: { input_tokens?: number, output_tokens?: number } } | undefined)?.usage
                   if (usageInfo) {
@@ -275,7 +311,7 @@ export async function relaySse(cfg: RelayTarget, upstream: Response): Promise<Re
         controller.close()
       } catch (e) {
         controller.error(e)
-        usageResolve(null)
+        if (!done) usageResolve(estimateUsage(messages, outputText))
       }
     }
   })
