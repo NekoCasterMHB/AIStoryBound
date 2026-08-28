@@ -2,11 +2,12 @@
 // 充值测试(管理端):管理员创建一笔 0.1 元测试订单,走与真实充值完全一致的
 // 网关签名 → pending 建单 → 回调入账链路,用于验证支付回调是否正常到账。
 // 测试套餐 tokens=0,回调只把订单置为 paid,不发放配额(见 shared/quota-packages.ts TEST_PACKAGE)。
+// 注意:不检查充值开关——充值关闭期间同样允许管理端测试,这正是用来验证回调是否正常的场景;
+// 测试单不入账配额,不会绕过「用户端充值已关闭」的约束。
 import { requireAdmin } from '../../../utils/authz'
 import { getMicropayConfig, buildSignStr, signRSA, generateOutTradeNo } from '../../../utils/micropay'
 import { TEST_PACKAGE } from '../../../../shared/quota-packages'
 import { useD1 } from '../../../utils/d1'
-import { isPaymentDisabled } from '../../../utils/config'
 import { quotaPackageOrder } from '../../../db/schema'
 import { uuid } from '../../../../shared/novel'
 
@@ -16,11 +17,6 @@ const GATEWAY_SUBMIT_URL = 'https://pay.microgg.cn/api/pay/submit'
 export default defineEventHandler(async (event) => {
   const admin = await requireAdmin(event)
   const db = useD1(event)
-
-  // 充值开关:关闭时管理端测试下单也一并禁止(避免测试单无人处理)
-  if (await isPaymentDisabled(db)) {
-    throw createError({ statusCode: 503, statusMessage: '充值功能维护中,暂时无法下单' })
-  }
 
   const body = await readBody<{ payType?: string }>(event).catch(() => ({} as { payType?: string }))
   const { payType } = body
