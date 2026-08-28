@@ -10,8 +10,8 @@ import type {
 
 // ---- 常量 ----
 
-/** 单个提取单元的正文上限(字符,≈12K tokens);超长章节/未切块按段落边界切段 */
-export const UNIT_MAX_CHARS = 20000
+/** 单个提取单元的正文上限(字符,≈17.6K tokens);超长章节/未切块按段落边界切段 */
+export const UNIT_MAX_CHARS = 30000
 /** 超限长章切段时的相邻段重叠区(字符,≈590 tokens):减少切段边界处实体/关系的遗漏;个人中心高级设置可调,0=关闭 */
 export const UNIT_OVERLAP_CHARS = 1000
 /** 成书时进入人物卡的角色数上限(按 mentionCount 取前 N) */
@@ -24,10 +24,10 @@ export const ECO_EXTRACT_MAX_TOKENS = 3800
 export const ECO_QUOTE_MAX_CHARS = 40
 /** 节约模式:成书输出上限(只出标题/简介/角色定位,人物卡本地直拼) */
 export const ECO_SYNTH_MAX_TOKENS = 800
-/** 一致性检查单次输出上限(tokens);个人中心「生成参数-高级设置」可调 */
-export const CHECK_MAX_TOKENS = 20000
-/** 成书单次输出上限(tokens);个人中心「生成参数-高级设置」可调 */
-export const SYNTH_MAX_TOKENS = 32768
+/** 一致性检查单次输出上限(tokens);个人中心「生成参数-高级设置」可调。默认=主流模型输出上限(384K),等于不限制 */
+export const CHECK_MAX_TOKENS = 384000
+/** 成书单次输出上限(tokens);个人中心「生成参数-高级设置」可调。默认=主流模型输出上限(384K),等于不限制 */
+export const SYNTH_MAX_TOKENS = 384000
 /** 平台题材标签:写入生成作品的 overlay.genre,叙事引擎据此知晓题材边界(成人向虚构) */
 export const ADULT_GENRE = '成人向'
 
@@ -109,6 +109,7 @@ export function buildExtractMessages(title: string, unit: ExtractUnit, eco = fal
         + `1. quote 必须逐字摘录原文原句,最多 ${quoteMax} 字;${eco ? 'characters 与 relationships 必须带 quote,其余尽量带' : 'world_rules / timeline_events / foreshadowing / items / relationships 必须带 quote,其余字段尽量带'}。\n`
         + '2. 只输出有新信息量的条目:仅一闪而过、没有任何可证实信息的角色不要列入;已有信息不要重复罗列。\n'
         + '3. 不确定的字段填 null 或省略,不要编造;人物名用原文用名,别名填 alias。\n'
+        + '4. 控制输出篇幅:避免冗余与重复罗列,保持整体输出精简;确保 JSON 完整闭合,不要中途截断。\n'
         + `<chapter>${unit.content}</chapter>`
     }
   ]

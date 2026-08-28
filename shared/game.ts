@@ -157,27 +157,54 @@ export function parseState(raw: string | null | undefined): GameState {
 }
 
 /** 人物卡的一句话摘要(进 prompt;kinks 全量注入不截断,含具体表现,防止嗜好信息丢失导致 OOC) */
+/** 人物卡完整摘要:全部字段原样注入(不截断;空值省略),供系统提示词/人设提醒/性欲播种共用 */
 export function cardBrief(c: CharacterCard): string {
-  const base = `${c.name}(${c.role},${c.identity ?? '未知身份'})`
-  const traits = (c.personality ?? []).slice(0, 4).join('/')
-  const speech = (c.speech_style ?? []).slice(0, 2).join('/')
+  const base = `${c.name}(${c.role}${c.gender ? `,${c.gender}` : ''},${c.identity ?? '未知身份'})`
+  const bits: string[] = [base]
+  if (c.alias?.trim()) bits.push(`别名:${c.alias}`)
+  if (c.age?.trim()) bits.push(`年龄:${c.age}`)
+  if (c.appearance?.trim()) bits.push(`外貌:${c.appearance}`)
+  const personality = (c.personality ?? []).filter(Boolean)
+  if (personality.length) bits.push(`性格:${personality.join('/')}`)
+  const speech = (c.speech_style ?? []).filter(Boolean)
+  if (speech.length) bits.push(`说话风格:${speech.join('/')}`)
+  if (c.background?.trim()) bits.push(`背景:${c.background}`)
+  const abilities = (c.abilities ?? []).filter(Boolean)
+  if (abilities.length) bits.push(`能力:${abilities.join('/')}`)
+  const goals = (c.goals ?? []).filter(Boolean)
+  if (goals.length) bits.push(`目标:${goals.join('/')}`)
+  const fears = (c.fears ?? []).filter(Boolean)
+  if (fears.length) bits.push(`恐惧:${fears.join('/')}`)
+  const secrets = (c.secrets ?? []).filter(Boolean)
+  if (secrets.length) bits.push(`秘密:${secrets.join('/')}`)
+  const rels = (c.relationships ?? []).filter(r => r.name?.trim())
+  if (rels.length) bits.push(`关系:${rels.map(r => `${r.name.trim()}(${r.type?.trim() || '未知'},${r.value >= 0 ? '+' : ''}${r.value})`).join('、')}`)
+  if (c.first_appearance?.trim()) bits.push(`首次出场:${c.first_appearance}`)
+  if (c.dead) bits.push('已死亡')
   const stats = [
     c.patience != null ? `耐心${c.patience}` : '',
     c.softness != null ? `心软${c.softness}` : '',
     c.desire != null ? `性欲强度${desireTierName(c.desire)}(${c.desire})` : ''
-  ].filter(Boolean).join('/')
+  ].filter(Boolean)
+  if (stats.length) bits.push(`数值:${stats.join('/')}`)
   const kinks = (c.kinks ?? [])
+    .filter(k => k.theme?.trim())
     .map(k => `${k.theme}${k.view ? `·${k.view}` : ''}${k.role ? `/${k.role}` : ''}${k.detail ? `(${k.detail})` : ''}`)
-    .join(' / ')
+  if (kinks.length) bits.push(`嗜好:${kinks.join(' / ')}`)
   const sex = c.sex
   const sexBits = [
-    sex?.positions ? `体位${sex.positions}` : '',
-    sex?.member ? `尺寸${sex.member}` : '',
-    sex?.stamina ? `持久${sex.stamina}` : '',
-    sex?.tease ? `挑逗${sex.tease}` : '',
+    sex?.positions?.trim() ? `体位${sex.positions}` : '',
+    sex?.habits?.trim() ? `习惯${sex.habits}` : '',
+    sex?.tease?.trim() ? `挑逗${sex.tease}` : '',
+    sex?.skill?.trim() ? `技巧${sex.skill}` : '',
+    sex?.member?.trim() ? `尺寸${sex.member}` : '',
+    sex?.stamina?.trim() ? `持久${sex.stamina}` : '',
+    sex?.figure?.trim() ? `身材${sex.figure}` : '',
+    sex?.fingers?.trim() ? `手指${sex.fingers}` : '',
     sex?.condom != null ? (sex.condom ? '戴套' : '不戴套') : ''
   ].filter(Boolean)
-  return `${base} 性格:${traits || '未知'} 说话风格:${speech || '普通'}${stats ? ` 数值:${stats}` : ''}${kinks ? ` 嗜好:${kinks}` : ''}${sexBits.length ? ` 床笫:${sexBits.join('/')}` : ''} 背景:${c.background ?? ''}`.trim()
+  if (sexBits.length) bits.push(`床笫:${sexBits.join('/')}`)
+  return bits.join(' ')
 }
 
 export interface TurnPromptArgs {
@@ -342,7 +369,7 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
   // 此处重贴可显著降低 OOC/指令衰减);位置放在玩家本轮行动之前,不稀释当前指令的注意力
   const anchors = [
     playerCard ? `玩家「${playerName}」:${cardBrief(playerCard)}` : null,
-    ...others.slice(0, 3).map(cardBrief)
+    ...others.map(cardBrief)
   ].filter((x): x is string => !!x)
   if (anchors.length > 0) {
     parts.push(`【人设提醒】再次强调,以下核心角色严格忠于设定,勿 OOC:\n${anchors.map((a, i) => `${i + 1}. ${a}`).join('\n')}`)

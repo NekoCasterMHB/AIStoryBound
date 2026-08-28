@@ -190,7 +190,7 @@ function normalizeCards(): CharacterCard[] {
       role: (c.role ?? '').trim() || '配角',
       personality: []
     }
-    for (const k of ['alias', 'age', 'identity', 'appearance', 'background', 'first_appearance'] as const) {
+    for (const k of ['alias', 'gender', 'age', 'identity', 'appearance', 'background', 'first_appearance'] as const) {
       const v = (c[k] ?? '').toString().trim()
       if (v) patch[k] = v
     }

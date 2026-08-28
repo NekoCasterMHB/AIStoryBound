@@ -254,7 +254,7 @@ function roleColor(role: string | undefined) {
           v-if="c.personality?.length"
           class="mt-3 text-xs text-neutral-400"
         >
-          {{ c.personality.slice(0, 4).join(' · ') }}
+          {{ c.personality.join(' · ') }}
         </p>
         <p
           v-if="c.background"

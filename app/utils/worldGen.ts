@@ -27,7 +27,9 @@ const MAX_FAIL_RATIO = 1 / 3
 /** 是否值得重试的瞬时错误:网络/解析异常、429 限流、5xx 上游错误;4xx 业务失败(如配额不足)重试无意义 */
 function isRetryable(e: unknown): boolean {
   const status = (e as { status?: number })?.status
-  return status === undefined || status === 429 || status >= 500
+  // 502 多为「AI 输出不是合法 JSON」:该次调用已生成输出并消耗 token,重试只会重复烧钱,直接记失败;
+  // 其余瞬时错误(网络异常/429 限流/5xx 上游)重试一次仍值得
+  return status === undefined || status === 429 || (status >= 500 && status !== 502)
 }
 
 /** AI 调用失败:附带 HTTP status 供重试判定(502 非 JSON 等已产生输出的失败自身带 usage,先入账再抛) */
@@ -277,7 +279,10 @@ export async function generateWorld(
     todoIndexes.forEach((unitIndex, j) => {
       const r = results[j]!
       if (r instanceof Error) {
-        warnings.push(`单元「${units[unitIndex]?.label ?? `#${unitIndex + 1}`}」提取失败: ${r.message}`)
+        const label = units[unitIndex]?.label ?? `#${unitIndex + 1}`
+        warnings.push(`单元「${label}」提取失败: ${r.message}`)
+        // 失败原因输出到浏览器控制台,便于排查(仅前端可见,不进作品数据)
+        console.warn(`[世界生成] 提取单元「${label}」失败:`, r)
       } else {
         okCount++
         extracts[unitIndex] = r

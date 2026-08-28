@@ -250,6 +250,46 @@ function fmtChars(n?: number) {
   return `${n} 字`
 }
 
+// ---- 继续游戏:作品卡片 → 选角色(模态框)→ 该角色全部存档(新页面) ----
+const continueOpen = ref(false)
+const continueWorkTitle = ref('')
+const continueGames = ref<LocalGame[]>([])
+
+/** 该作品是否有本地游戏会话(有则作品卡片显示「继续游戏」按钮) */
+function hasGamesFor(workId: string): boolean {
+  return games.value.some(g => g.workId === workId)
+}
+
+function openContinue(w: LocalWork) {
+  continueWorkTitle.value = w.title
+  continueGames.value = games.value.filter(g => g.workId === w.id)
+  continueOpen.value = true
+}
+
+/** 该作品有存档的角色(按最后游玩时间倒序),供模态框选择 */
+const continueRoles = computed(() => {
+  const byChar = new Map<string, LocalGame[]>()
+  for (const g of continueGames.value) {
+    const list = byChar.get(g.characterName) ?? []
+    list.push(g)
+    byChar.set(g.characterName, list)
+  }
+  return [...byChar.entries()]
+    .map(([name, list]) => ({
+      name,
+      count: list.length,
+      lastAt: list.reduce((mx, g) => (g.updatedAt > mx ? g.updatedAt : mx), '')
+    }))
+    .sort((a, b) => b.lastAt.localeCompare(a.lastAt))
+})
+
+function pickRole(name: string) {
+  const id = continueGames.value.find(g => g.characterName === name)?.workId
+  continueOpen.value = false
+  if (!id) return
+  navigateTo(`/games/continue?workId=${id}&character=${encodeURIComponent(name)}`)
+}
+
 /** 导出游戏剧情为 TXT(剔除玩家行动与选项,仅保留旁白原文) */
 function exportGameTxt(g: LocalGame) {
   const ok = downloadGameAsTxt({
@@ -523,7 +563,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
         </div>
       </template>
 
-      <!-- 个人书架:本地作品 + 云端作品(换设备恢复)+ 最近游戏 -->
+      <!-- 个人书架:本地作品 + 云端作品(换设备恢复) -->
       <template #personal>
         <div class="mt-4">
           <!-- 本地作品 -->
@@ -614,12 +654,29 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     :to="`/read/work/${w.id}`"
                   />
                   <UButton
+                    v-if="!w.overlay?.characters?.length"
+                    label="生成世界"
+                    icon="i-lucide-sparkles"
+                    color="primary"
+                    size="sm"
+                    :to="`/generate?from=work&id=${w.id}`"
+                  />
+                  <UButton
                     v-if="w.overlay?.characters?.length"
                     label="选择角色"
                     icon="i-lucide-play"
                     color="primary"
                     size="sm"
                     :to="`/play/${w.id}`"
+                  />
+                  <UButton
+                    v-if="hasGamesFor(w.id)"
+                    label="继续游戏"
+                    icon="i-lucide-rotate-ccw"
+                    color="primary"
+                    variant="outline"
+                    size="sm"
+                    @click="openContinue(w)"
                   />
                   <UDropdownMenu
                     :items="workMenuItems(w)"
@@ -718,50 +775,6 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
             </div>
           </div>
 
-          <!-- 最近游戏 -->
-          <div v-if="games.length">
-            <h2 class="mb-3 font-semibold">
-              继续游戏
-            </h2>
-            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <UCard
-                v-for="g in games"
-                :key="g.id"
-                class="flex items-center justify-between gap-2"
-              >
-                <div class="min-w-0">
-                  <p class="truncate text-sm font-semibold">
-                    你是「{{ g.playerName }}」
-                  </p>
-                  <p class="truncate text-xs text-neutral-500">
-                    {{ g.currentChapter || '进行中' }} · {{ fmtTime(g.updatedAt) }}
-                  </p>
-                </div>
-                <div class="flex flex-wrap gap-1.5">
-                  <UButton
-                    label="继续"
-                    icon="i-lucide-play"
-                    color="primary"
-                    variant="soft"
-                    size="sm"
-                    :to="`/games/${g.id}`"
-                  />
-                  <UDropdownMenu
-                    :items="gameShareItems(g)"
-                    :disabled="!g.messages.length"
-                  >
-                    <UButton
-                      label="分享"
-                      icon="i-lucide-share-2"
-                      color="neutral"
-                      variant="outline"
-                      size="sm"
-                    />
-                  </UDropdownMenu>
-                </div>
-              </UCard>
-            </div>
-          </div>
         </div>
       </template>
     </UTabs>
@@ -834,5 +847,47 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       :work-id="charEditWorkId"
       @saved="onCardsSaved"
     />
+
+    <!-- 继续游戏:选择角色(该作品有会话的角色) -->
+    <UModal
+      :open="continueOpen"
+      @update:open="continueOpen = $event"
+    >
+      <template #title>
+        <span class="flex items-center gap-2">
+          <UIcon
+            name="i-lucide-rotate-ccw"
+            class="size-4 text-primary"
+          />
+          继续游戏
+        </span>
+      </template>
+      <template #body>
+        <p class="text-xs text-neutral-500">
+          《{{ continueWorkTitle }}》 · 选择要续玩的角色
+        </p>
+        <div class="mt-3 flex flex-col gap-2">
+          <button
+            v-for="c in continueRoles"
+            :key="c.name"
+            class="flex items-center justify-between gap-2 rounded-xl border border-neutral-200 px-3 py-2.5 text-left transition hover:border-primary-400 dark:border-neutral-700"
+            @click="pickRole(c.name)"
+          >
+            <div class="min-w-0">
+              <p class="truncate text-sm font-semibold">
+                {{ c.name }}
+              </p>
+              <p class="text-xs text-neutral-500">
+                {{ c.count }} 局存档 · 最后 {{ fmtTime(c.lastAt) }}
+              </p>
+            </div>
+            <UIcon
+              name="i-lucide-chevron-right"
+              class="size-4 shrink-0 text-neutral-400"
+            />
+          </button>
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

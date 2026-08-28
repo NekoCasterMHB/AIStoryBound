@@ -716,7 +716,7 @@ const features = [
             <span>
               按全书 {{ formatChars(totalChars) }} 估算,本次生成预计消耗约
               <span class="font-semibold text-neutral-700 dark:text-neutral-200">{{ estimatedTokens.toLocaleString() }}</span>
-              tokens(字数 × {{ ecoMode ? 1.2 : 1.5 }},实际以生成结果为准)
+              tokens
             </span>
           </div>
 

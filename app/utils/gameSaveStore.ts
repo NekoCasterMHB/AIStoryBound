@@ -55,6 +55,16 @@ export async function pruneGamePoints(gameId: string, fromIdx: number): Promise<
   }
 }
 
+/** 删除某游戏会话的全部存档点(删除会话时清理,避免 IndexedDB 残留) */
+export async function deleteGamePoints(gameId: string): Promise<void> {
+  if (typeof indexedDB === 'undefined') return
+  const d = await db()
+  const all = await d.getAll(STORE)
+  for (const p of all) {
+    if (p.gameId === gameId) await d.delete(STORE, p.key)
+  }
+}
+
 /** 每局存档点数量上限(仅保留最近 N 个,防长局无限膨胀 IndexedDB) */
 export const MAX_SAVE_POINTS = 50
 
