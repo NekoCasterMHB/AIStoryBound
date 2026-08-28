@@ -15,7 +15,7 @@ import {
 import { aiChatJson, CancelledError } from './aiRelay'
 import type { LiveTokenInfo } from './aiRelay'
 import { detectAuthor } from './authorDetect'
-import { loadGenLimits } from './genSettings'
+import { loadGenLimits, DEFAULT_GEN_LIMITS } from './genSettings'
 import type { GenLimits } from './genSettings'
 import { extractCacheKey, loadExtractCache, saveExtractUnit, markExtractComplete } from './extractCache'
 import { db } from './localDb'
@@ -23,6 +23,13 @@ import { db } from './localDb'
 const EXTRACT_CONCURRENCY = 4
 /** 单章失败>总数该比例则中止整本生成 */
 const MAX_FAIL_RATIO = 1 / 3
+
+/** 无视限制(测试模式)的生成参数:每章一个提取单元(1M 字符上限=不切段)、输出上限取模型上限、超时放宽 */
+const UNLIMITED_GEN_LIMITS: GenLimits = {
+  ...DEFAULT_GEN_LIMITS,
+  unitMaxChars: 1_000_000,
+  unitOverlapChars: 0
+}
 
 /** 是否值得重试的瞬时错误:网络/解析异常、429 限流、5xx 上游错误;4xx 业务失败(如配额不足)重试无意义 */
 function isRetryable(e: unknown): boolean {
@@ -135,16 +142,18 @@ async function pool<T, R>(
  * @param opts.eco 节约模式:只提取 5 类核心实体、引用从简;跳过 AI 一致性检查;
  *                 成书只让 AI 出标题/简介/角色定位,人物卡由提取素材本地直拼(约省一半 token)
  * @param opts.limits 生成参数(单单元输入上限/切段重叠/提取、检查、成书输出上限/调用超时);缺省读个人中心配置的本地偏好
+ * @param opts.unlimited 无视限制(测试模式):覆盖个人中心生成参数——每章一个提取单元(不切段)、
+ *                      输出上限取模型上限、超时放宽;用于排查自定义参数导致的提取/成书失败,正式生成请关闭
  */
 export async function generateWorld(
   title: string,
   chapters: ChapterSegment[],
   onProgress: (p: GenerateProgress) => void,
-  opts: { frontMatter?: string, knownAuthor?: string, signal?: AbortSignal, eco?: boolean, limits?: GenLimits } = {}
+  opts: { frontMatter?: string, knownAuthor?: string, signal?: AbortSignal, eco?: boolean, limits?: GenLimits, unlimited?: boolean } = {}
 ): Promise<GenerateResult> {
   const warnings: string[] = []
   const { signal, eco = false } = opts
-  const genLimits = opts.limits ?? loadGenLimits()
+  const genLimits = opts.unlimited ? UNLIMITED_GEN_LIMITS : (opts.limits ?? loadGenLimits())
   /** 单次调用超时(秒→毫秒),随各阶段调用传给中继 */
   const relayTimeoutMs = genLimits.relayTimeoutSec * 1000
   const isAborted = () => signal?.aborted ?? false

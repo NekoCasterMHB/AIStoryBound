@@ -60,6 +60,8 @@ const pendingGen = ref<{ title: string, chapters: ChapterSegment[], frontMatter:
 
 /** 生成模式:false=完整(默认),true=节约(跳过一致性检查与人物卡润色,省约一半 token) */
 const ecoMode = ref(false)
+/** 无视限制(测试模式):覆盖个人中心生成参数(每章一个提取单元/输出上限取模型上限/超时放宽),排查生成失败用 */
+const unlimitedMode = ref(false)
 
 /** 全书字数(与额度预检同口径:各章正文长度合计) */
 const totalChars = computed(() =>
@@ -375,6 +377,7 @@ async function runGeneration(title: string, chapters: Parameters<typeof generate
       frontMatter,
       signal: ctrl.signal,
       eco: ecoMode.value,
+      unlimited: unlimitedMode.value,
       // 预置小说元数据自带作者:直接采用,跳过正文/联网识别(省 token)
       knownAuthor
     })
@@ -760,6 +763,25 @@ const features = [
               <span v-if="ecoMode">节约模式:跳过 AI 一致性检查与人物卡润色,仅提取核心设定,约省 15%~25% token;人物卡更朴素</span>
               <span v-else>完整模式:含一致性检查与 AI 润色的人物卡,世界观还原更全</span>
             </p>
+          </div>
+
+          <!-- 无视限制(测试模式):排查自定义生成参数导致的失败 -->
+          <div class="flex flex-col gap-2 rounded-xl border border-dashed border-amber-300/70 bg-amber-50/40 px-4 py-3 dark:border-amber-500/30 dark:bg-amber-500/5">
+            <div class="flex items-center justify-between gap-3">
+              <div class="min-w-0">
+                <p class="text-sm font-semibold">
+                  无视限制(测试模式)
+                </p>
+                <p class="text-xs text-neutral-500">
+                  覆盖个人中心生成参数:每章一个提取单元(不切段)、输出上限取模型上限、超时放宽。仅用于排查生成失败,正式生成请关闭
+                </p>
+              </div>
+              <USwitch
+                v-model="unlimitedMode"
+                color="warning"
+                class="shrink-0"
+              />
+            </div>
           </div>
 
           <div class="flex flex-wrap items-center justify-end gap-3">

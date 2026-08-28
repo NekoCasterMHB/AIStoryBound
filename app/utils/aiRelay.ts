@@ -185,7 +185,9 @@ export async function aiChatJson<T = unknown>(
   if (!res.ok) return { ok: false, status: res.status, message: res.message }
   const data = extractJson<T>(buffer)
   if (data === null) {
-    return { ok: false, status: 502, message: 'AI 输出不是合法 JSON,请重试', usage: res.usage }
+    // 报错附带输出长度与开头预览,便于排查非法 JSON 是截断还是模型跑题(如围栏/前导文字)
+    const head = buffer.trim().slice(0, 120)
+    return { ok: false, status: 502, message: `AI 输出不是合法 JSON,请重试(输出 ${buffer.length} 字符${head ? `,开头:「${head}」` : ''})`, usage: res.usage }
   }
   return { ok: true, data, usage: res.usage }
 }
