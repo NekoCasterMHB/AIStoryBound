@@ -68,57 +68,74 @@ export async function aiChat(
   } = {},
   signal?: AbortSignal
 ): Promise<{ usage?: RelayedUsage, ok: true } | { ok: false, status: number, message: string }> {
+  // 总超时兜底(默认与服务端 RELAY_TIMEOUT_DEFAULT_MS 一致):timeoutMs 既随请求体交服务端,
+  // 也在此生成浏览器侧 AbortSignal。服务端超时只覆盖"拿到响应头"阶段(AbortSignal.timeout
+  // 在 fetch resolve 后失效),若上游在流中途挂起,服务端 relaySse 会一直读不到数据,
+  // 前端必须自行限时,否则调用永不返回(生成进度卡死的根因)。
+  const timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 600_000
+  const ctrl = new AbortController()
+  const onOuterAbort = () => ctrl.abort()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  signal?.addEventListener('abort', onOuterAbort)
+  const timeoutError = () => new Error(`AI 调用超时(超过 ${Math.round(timeoutMs / 1000)}s),请重试或调高生成超时设置`)
   let res: Response
   try {
-    res = await fetch('/api/ai/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-      // 浏览器本地自建配置随请求临时携带(不落库);未启用自建时为 undefined,平台模式
-      body: JSON.stringify({ messages, ...opts, config: await getActiveRelayConfig() ?? undefined })
-    })
-  } catch (e) {
-    if (signal?.aborted) throw new CancelledError()
-    throw e
-  }
-  if (!res.ok) {
-    let message = `请求失败 (${res.status})`
     try {
-      const err = await res.json() as { statusMessage?: string, message?: string }
-      message = err.statusMessage || err.message || message
-    } catch {
-      // 非 JSON 错误体,保留默认文案
+      res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: ctrl.signal,
+        // 浏览器本地自建配置随请求临时携带(不落库);未启用自建时为 undefined,平台模式
+        body: JSON.stringify({ messages, ...opts, config: await getActiveRelayConfig() ?? undefined })
+      })
+    } catch (e) {
+      if (signal?.aborted) throw new CancelledError()
+      if ((e as Error)?.name === 'AbortError') throw timeoutError()
+      throw e
     }
-    return { ok: false, status: res.status, message }
-  }
-
-  let usage: RelayedUsage | undefined
-  try {
-    await readSseDataLines(res, (json) => {
+    if (!res.ok) {
+      let message = `请求失败 (${res.status})`
       try {
-        const d = JSON.parse(json) as {
-          choices?: { delta?: { content?: string } }[]
-          usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
-        }
-        const delta = d.choices?.[0]?.delta?.content
-        if (delta) handlers.onDelta?.(delta)
-        if (d.usage) {
-          usage = {
-            promptTokens: d.usage.prompt_tokens,
-            completionTokens: d.usage.completion_tokens,
-            totalTokens: d.usage.total_tokens
-          }
-          handlers.onUsage?.(usage)
-        }
+        const err = await res.json() as { statusMessage?: string, message?: string }
+        message = err.statusMessage || err.message || message
       } catch {
-        // 忽略非 JSON 分片
+        // 非 JSON 错误体,保留默认文案
       }
-    })
-  } catch (e) {
-    if (signal?.aborted) throw new CancelledError()
-    throw e
+      return { ok: false, status: res.status, message }
+    }
+
+    let usage: RelayedUsage | undefined
+    try {
+      await readSseDataLines(res, (json) => {
+        try {
+          const d = JSON.parse(json) as {
+            choices?: { delta?: { content?: string } }[]
+            usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
+          }
+          const delta = d.choices?.[0]?.delta?.content
+          if (delta) handlers.onDelta?.(delta)
+          if (d.usage) {
+            usage = {
+              promptTokens: d.usage.prompt_tokens,
+              completionTokens: d.usage.completion_tokens,
+              totalTokens: d.usage.total_tokens
+            }
+            handlers.onUsage?.(usage)
+          }
+        } catch {
+          // 忽略非 JSON 分片
+        }
+      })
+    } catch (e) {
+      if (signal?.aborted) throw new CancelledError()
+      if ((e as Error)?.name === 'AbortError') throw timeoutError()
+      throw e
+    }
+    return { usage, ok: true }
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', onOuterAbort)
   }
-  return { usage, ok: true }
 }
 
 /** 读取 SSE 流并按 data: 行回调 */

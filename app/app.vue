@@ -40,5 +40,6 @@ useSeoMeta({
     <NuxtLayout>
       <NuxtPage />
     </NuxtLayout>
+    <AnnouncementModal />
   </UApp>
 </template>

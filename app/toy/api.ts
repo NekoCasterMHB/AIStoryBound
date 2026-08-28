@@ -5,8 +5,11 @@
 // 手动面板 / AI 回合(游戏页)/ 未来 MCP 共用,保证"AI 想越限也越不了"。
 import { reactive } from 'vue'
 import {
+  DEFAULT_FUNCTION_MAX_INTENSITY,
   DEFAULT_TOY_SETTINGS,
   checkHardLimits,
+  functionLimitOf,
+  isTrainPattern,
   pickWaveTarget,
   randomTrainParams,
   randomTrainPattern,
@@ -44,8 +47,12 @@ export interface ToyControllerState {
   adapterId: string | null
   adapterName: string | null
   deviceName: string | null
+  /** 传输层设备 id(电量缓存等按此查询) */
+  deviceId: string | null
   transportId: string | null
   functions: Record<string, ToyFunctionState>
+  /** 自动控制会话进行中(AI 流式内联指令编排期;操作面板据此锁定手动控制) */
+  autoActive: boolean
 }
 
 class ToyController {
@@ -55,8 +62,10 @@ class ToyController {
     adapterId: null,
     adapterName: null,
     deviceName: null,
+    deviceId: null,
     transportId: null,
-    functions: {}
+    functions: {},
+    autoActive: false
   })
 
   private adapter: ToyAdapter | null = null
@@ -66,6 +75,8 @@ class ToyController {
   /** 波浪模式:每 tick 用随机游走生成新强度并发送 */
   private waveTimers = new Map<string, ReturnType<typeof setInterval>>()
   private wavePrev = new Map<string, number>()
+  /** 调教自动停止计时器(AI [[wave:...:时长]] 用;到时 stopWave) */
+  private waveStopTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   get connected(): boolean {
     return this.state.connected
@@ -82,11 +93,13 @@ class ToyController {
    */
   async connect(adapter: ToyAdapter, transport: ToyTransport, opts: { device?: ToyTransportDevice, waitInitMs?: number } = {}): Promise<ToyConnectResult> {
     try {
-      const gatt = adapter.manifest.protocol?.gatt
+      // Tier 1 连接参数在 manifest.protocol.gatt;Tier 2 代码适配器在 manifest.gatt
+      const gatt = adapter.manifest.protocol?.gatt ?? adapter.manifest.gatt
       if (!gatt) return { ok: false, reason: '适配器缺少 GATT 配置,无法连接' }
-      const device = opts.device ?? (await transport.scan(adapter.manifest.scanNames, gatt))[0]
+      const battery = adapter.manifest.protocol?.battery ?? adapter.manifest.battery
+      const device = opts.device ?? (await transport.scan(adapter.manifest.scanNames, gatt, battery))[0]
       if (!device) return { ok: false, reason: '没有发现可连接的设备' }
-      await transport.connect(device, gatt)
+      await transport.connect(device, gatt, battery)
 
       // 初始化帧(如啵啵贝的 [SEQ] 01 00 01 00 C8 11 01),等设备回配置分片后才可下发控制
       const initFrames = await adapter.buildInitFrames?.() ?? []
@@ -100,6 +113,7 @@ class ToyController {
       this.state.adapterId = adapter.manifest.id
       this.state.adapterName = adapter.manifest.name
       this.state.deviceName = device.name
+      this.state.deviceId = device.id
       this.state.transportId = transport.id
       this.state.functions = {}
 
@@ -132,8 +146,13 @@ class ToyController {
       }
     }
 
-    const limit = checkHardLimits(event, opts.settings, opts.source)
+    const limit = checkHardLimits(event, opts.settings, opts.source, caps)
     if (!limit.ok) return limit
+    // 强度 0 且该功能调教中:直接停止调教(归零),避免波形循环与停止指令打架
+    if (event.intensity === 0 && this.waveTimers.has(event.function)) {
+      this.stopWave(event.function)
+      return { ok: true, event }
+    }
     const frames = await this.adapter.buildFrames(event)
     if (!frames.length) return { ok: false, reason: `适配器无法生成「${event.function}」指令帧` }
     try {
@@ -215,6 +234,18 @@ class ToyController {
     await this.stopAll()
   }
 
+  // ---- 自动控制会话(游戏页流式内联指令编排期;面板锁定手动控制) ----
+
+  /** 进入自动控制会话(第一条 AI 流式指令执行时调用) */
+  beginAutoSession(): void {
+    this.state.autoActive = true
+  }
+
+  /** 结束自动控制会话(回合流式收尾/flush 完成后调用,手动恢复可用) */
+  endAutoSession(): void {
+    this.state.autoActive = false
+  }
+
   // ---- 调教模式(引擎内称 wave):形态波形 + 随机漫步两种姿态(手动控制验证) ----
 
   /** 调教运行态:当前形态/参数/起始时刻;auto 模式(auto=true)每 switchAt 轮换形态 */
@@ -232,7 +263,7 @@ class ToyController {
   async startWave(
     fnId: string,
     range: [number, number],
-    opts: { pattern?: TrainPattern, params?: TrainPatternParams, intervalMs?: number, autoSwitchMs?: number, settings?: ToySettings, rng?: () => number } = {}
+    opts: { pattern?: TrainPattern, params?: TrainPatternParams, intervalMs?: number, autoSwitchMs?: number, settings?: ToySettings, rng?: () => number, duration?: number } = {}
   ): Promise<ToyExecuteResult> {
     if (!this.state.connected || !this.adapter || !this.transport) {
       return { ok: false, reason: '设备未连接' }
@@ -337,7 +368,42 @@ class ToyController {
 
     const st = this.state.functions[fnId]
     this.state.functions[fnId] = { ...(st ?? { intensity: prev }), intensity: prev, wave: true }
+
+    // 调教自动停止(带 duration 时;到时归零,手动调教 duration 省略 = 持续到手动停止)
+    const stopT = this.waveStopTimers.get(fnId)
+    if (stopT) clearTimeout(stopT)
+    this.waveStopTimers.delete(fnId)
+    if (opts.duration != null && opts.duration > 0) {
+      this.waveStopTimers.set(fnId, setTimeout(() => {
+        this.stopWave(fnId)
+      }, opts.duration * 1000))
+    }
     return { ok: true, event: { function: fnId, intensity: prev } }
+  }
+
+  /**
+   * AI 触发的调教([[wave:功能:形态[:时长]]]):与 AI 设备事件同门槛——
+   * AI 总开关 + 分功能启用;强度范围钳制到 min(清单声明上限, 用户覆盖),绝不超限;
+   * duration 可选(到时自动停止调教)。手动面板的调教不走此入口(直接 startWave,直达能力范围)。
+   */
+  async startWaveForAI(fnId: string, pattern: unknown, duration?: number, settings?: ToySettings): Promise<ToyExecuteResult> {
+    if (!this.state.connected || !this.adapter || !this.transport) {
+      return { ok: false, reason: '设备未连接' }
+    }
+    if (!isTrainPattern(pattern)) {
+      return { ok: false, reason: `未知调教形态「${String(pattern)}」(正弦/脉冲/锯齿/心跳/漫步/恒定/全随机)` }
+    }
+    const caps = this.adapter.manifest.capabilities ?? { functions: [] }
+    const fn = caps.functions.find(f => f.id === fnId)
+    if (!fn) return { ok: false, reason: `设备不支持功能「${fnId}」` }
+    const s = settings ?? DEFAULT_TOY_SETTINGS
+    if (!s.aiEnabled) return { ok: false, reason: 'AI 设备控制总开关已关闭' }
+    if (s.aiEnabledFunctions != null && !s.aiEnabledFunctions.includes(fnId)) {
+      return { ok: false, reason: `功能「${fnId}」未开启 AI 控制,请在详细配置中启用` }
+    }
+    const declaredMax = fn.intensityRange?.[1] ?? DEFAULT_FUNCTION_MAX_INTENSITY
+    const lim = functionLimitOf(s, fnId, declaredMax)
+    return this.startWave(fnId, [0, lim.maxIntensity], { pattern, settings: s, duration })
   }
 
   /** 停止调教(发停止帧归零;不停止其他功能) */
@@ -348,6 +414,9 @@ class ToyController {
     this.wavePrev.delete(fnId)
     this.waveTargets.delete(fnId)
     this.waveRuns.delete(fnId)
+    const stopT = this.waveStopTimers.get(fnId)
+    if (stopT) clearTimeout(stopT)
+    this.waveStopTimers.delete(fnId)
     const st = this.state.functions[fnId]
     if (st) {
       this.state.functions[fnId] = {
@@ -386,11 +455,15 @@ class ToyController {
     this.timers.clear()
     for (const t of this.waveTimers.values()) clearInterval(t)
     this.waveTimers.clear()
+    for (const t of this.waveStopTimers.values()) clearTimeout(t)
+    this.waveStopTimers.clear()
     this.wavePrev.clear()
     this.waveTargets.clear()
     this.waveRuns.clear()
     this.state.connected = false
     this.state.functions = {}
+    this.state.autoActive = false
+    this.state.deviceId = null
     this.adapter = null
     this.transport = null
   }

@@ -1,7 +1,7 @@
 // app/toy/transports/mock.ts
 // 模拟设备传输:不依赖蓝牙,记录写入的帧并模拟断连——无硬件开发/演示/验收用。
 // 演示脚本(scripts/demo/mvp3-device.mts)也直接复用本实现跑端到端链路。
-import type { ToyGattParams, ToyTransport, ToyTransportDevice } from './transport'
+import type { ToyBatterySpec, ToyGattParams, ToyTransport, ToyTransportDevice } from './transport'
 
 export interface MockTransportState {
   connected: boolean
@@ -28,7 +28,7 @@ export const mockTransport: ToyTransport = {
     return [{ id: 'mock-sosexy', name: '模拟啵啵贝 (Mock)' }]
   },
 
-  async connect(device: ToyTransportDevice, _gatt: ToyGattParams): Promise<void> {
+  async connect(device: ToyTransportDevice, _gatt: ToyGattParams, _battery?: ToyBatterySpec): Promise<void> {
     mockTransportState.connected = true
     mockTransportState.deviceName = device.name
     mockTransportState.writeLog = []

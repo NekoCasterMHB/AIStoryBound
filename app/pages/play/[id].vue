@@ -54,7 +54,20 @@ function buildOpening(): { opening: LocalGame['opening'], currentChapter?: strin
     const ch = selectedChapter.value
     if (!ch) return { opening: undefined, error: '请选择起始章节' }
     const label = chapterLabel(chapterIndex.value)
-    return { opening: { mode: 'chapter', chapterTitle: label, chapterText: ch.content }, currentChapter: label }
+    // 携带上一章(背景)与下一章(情节走向):中间章节注入,首章/末章按存在性省略
+    const prev = chapterIndex.value > 0 ? chapters.value[chapterIndex.value - 1] : null
+    const next = chapterIndex.value < chapters.value.length - 1 ? chapters.value[chapterIndex.value + 1] : null
+    return {
+      opening: {
+        mode: 'chapter',
+        chapterTitle: label,
+        chapterIndex: chapterIndex.value,
+        chapterText: ch.content,
+        ...(prev ? { prevChapter: { title: chapterLabel(chapterIndex.value - 1), text: prev.content } } : {}),
+        ...(next ? { nextChapter: { title: chapterLabel(chapterIndex.value + 1), text: next.content } } : {})
+      },
+      currentChapter: label
+    }
   }
   if (openingMode.value === 'custom') {
     const scene = customScene.value.trim()
@@ -190,7 +203,7 @@ function roleColor(role: string | undefined) {
               v-if="selectedChapter"
               class="text-[11px] text-neutral-400"
             >
-              共 {{ selectedChapter.content.length }} 字,将以完整正文注入开场
+              共 {{ selectedChapter.content.length }} 字,将以完整正文注入开场;中间章节会连带注入上一章背景与下一章走向,从本章开头开始演绎
             </p>
           </template>
         </div>

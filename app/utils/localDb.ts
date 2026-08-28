@@ -5,7 +5,7 @@
 import { openDB } from 'idb'
 
 export const DB_NAME = 'aiSpankWorld-local'
-const DB_VERSION = 7
+const DB_VERSION = 9
 const STORE_WORLDS = 'worlds'
 const STORE_SAVES = 'saves'
 const STORE_PRESETS = 'presets'
@@ -17,6 +17,10 @@ const STORE_SKILLS = 'ai-skills'
 export const STORE_TOY_SETTINGS = 'toy-settings'
 /** 玩具控制:玩家导入的适配器(manifest + Tier 2 代码,keyPath=id) */
 export const STORE_TOY_ADAPTERS = 'toy-adapters'
+/** 用户偏好(单条记录,keyPath='key';如叙事速度 key='narr-speed') */
+export const STORE_PREFS = 'prefs'
+/** 断点续跑:extract 单元提取结果缓存(keyPath='key',见 app/utils/extractCache.ts) */
+export const STORE_EXTRACT_CACHE = 'extract-cache'
 
 let dbPromise: Promise<import('idb').IDBPDatabase> | null = null
 
@@ -54,6 +58,14 @@ export function db() {
         }
         if (!d.objectStoreNames.contains(STORE_TOY_ADAPTERS)) {
           d.createObjectStore(STORE_TOY_ADAPTERS, { keyPath: 'id' })
+        }
+        // v8:用户偏好(叙事速度等;单条,keyPath=key)
+        if (!d.objectStoreNames.contains(STORE_PREFS)) {
+          d.createObjectStore(STORE_PREFS, { keyPath: 'key' })
+        }
+        // v9:断点续跑——extract 单元提取结果缓存(单条 key=内容摘要)
+        if (!d.objectStoreNames.contains(STORE_EXTRACT_CACHE)) {
+          d.createObjectStore(STORE_EXTRACT_CACHE, { keyPath: 'key' })
         }
       }
     })

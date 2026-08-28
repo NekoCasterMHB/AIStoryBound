@@ -111,11 +111,11 @@ console.log('\n[3/4] 硬限制 checkHardLimits + 冷却')
   const gate = checkHardLimits({ function: 'suction', intensity: 30 }, s, 'ai')
   assertOk('AI 总开关关闭 → 拒绝', !gate.ok, gate.ok ? '' : gate.reason)
 
-  const s2 = { ...DEFAULT_TOY_SETTINGS, aiEnabled: true, maxDuration: 30, functionLimits: { suction: { maxIntensity: 50 } } }
+  const s2 = { ...DEFAULT_TOY_SETTINGS, aiEnabled: true, functionLimits: { suction: { maxIntensity: 50 } } }
   const over = checkHardLimits({ function: 'suction', intensity: 80 }, s2, 'ai')
   assertOk('强度 80 > 上限 50 → 拒绝', !over.ok, over.ok ? '' : over.reason)
   const long = checkHardLimits({ function: 'suction', intensity: 30, duration: 60 }, s2, 'ai')
-  assertOk('时长 60s > 上限 30s → 拒绝', !long.ok, long.ok ? '' : long.reason)
+  assertOk('无全局时长上限 → 时长 60s 通过', long.ok, long.ok ? '' : long.reason)
   const manual = checkHardLimits({ function: 'suction', intensity: 30 }, s2, 'manual')
   assertOk('手动控制不受 AI 开关限制', manual.ok, manual.ok ? '' : manual.reason)
 
@@ -135,8 +135,8 @@ console.log('\n[3/4] 硬限制 checkHardLimits + 冷却')
   const otherFn = checkHardLimits({ function: 'suction', intensity: 80 }, s4, 'ai')
   assertOk('未覆盖能力沿用自身上限 50 → 强度 80 拒绝', !otherFn.ok, otherFn.ok ? '' : otherFn.reason)
 
-  // 未单独设置的能力:初始默认 100
-  const s5 = { ...DEFAULT_TOY_SETTINGS, aiEnabled: true, maxDuration: 30 }
+  // 未单独设置的能力:回退清单声明上限(无 caps 时 100)
+  const s5 = { ...DEFAULT_TOY_SETTINGS, aiEnabled: true }
   const dfltOk = checkHardLimits({ function: 'suction', intensity: 80 }, s5, 'ai')
   assertOk('未设置能力默认上限 100 → 强度 80 通过', dfltOk.ok, dfltOk.ok ? '' : dfltOk.reason)
   const dfltOver = checkHardLimits({ function: 'suction', intensity: 101 }, s5, 'ai')
@@ -208,7 +208,7 @@ console.log('\n[3.7] 调教形态波形 trainPatternValue(纯函数)')
   // 脉冲:占空比 40% 内高电平(100),其余 0
   assertOk('脉冲高电平相位(100)', trainPatternValue('pulse', 0.1, { periodSec: 1, duty: 0.4 }, range) === 100)
   assertOk('脉冲低电平相位(0)', trainPatternValue('pulse', 0.5, { periodSec: 1, duty: 0.4 }, range) === 0)
-  // 心跳:每周期两拍(相位 <8% 与 22%-30%),其余 0
+  // 心跳:每周期两拍(相位 <8% 与 22%-30%),其余 0;默认周期 2s(循环间隔减半)
   assertOk('心跳第一拍(100)', trainPatternValue('heartbeat', 0.1, { periodSec: 2 }, range) === 100)
   assertOk('心跳两拍之间(0)', trainPatternValue('heartbeat', 0.3, { periodSec: 2 }, range) === 0)
   assertOk('心跳第二拍(100)', trainPatternValue('heartbeat', 0.5, { periodSec: 2 }, range) === 100)
@@ -223,7 +223,7 @@ console.log('\n[3.7] 调教形态波形 trainPatternValue(纯函数)')
 
 console.log('\n[4/4] 端到端(真实 ToyApi + Mock 传输):连接 → 初始化 → 控制 → 自动停止 → 紧急停止 → 断连')
 {
-  const settings = { ...DEFAULT_TOY_SETTINGS, aiEnabled: true, maxDuration: 30 }
+  const settings = { ...DEFAULT_TOY_SETTINGS, aiEnabled: true }
 
   // 连接:mock 扫描 → 连接 → 初始化帧
   const connected = await toyController.connect(adapter, mockTransport, { waitInitMs: 0 })

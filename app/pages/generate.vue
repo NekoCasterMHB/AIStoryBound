@@ -359,6 +359,9 @@ async function loadWorkIntoConfirm(workId: string) {
   }
 }
 
+/** 生成失败时的参数快照:失败态"继续生成"直接复用(配合断点续跑缓存,已提取部分 0 token) */
+const lastFailedGen = ref<{ title: string, chapters: ChapterSegment[], frontMatter: string } | null>(null)
+
 async function runGeneration(title: string, chapters: Parameters<typeof generateWorld>[1], frontMatter: string, seq: number, knownAuthor?: string) {
   const ctrl = new AbortController()
   abortCtrl.value = ctrl
@@ -367,20 +370,47 @@ async function runGeneration(title: string, chapters: Parameters<typeof generate
   const applyProgress = (p: GenerateProgress) => {
     if (seq === runSeq) genState.value.progress = { ...p }
   }
-  const { work } = await generateWorld(title, chapters, applyProgress, {
-    frontMatter,
-    signal: ctrl.signal,
-    eco: ecoMode.value,
-    // 预置小说元数据自带作者:直接采用,跳过正文/联网识别(省 token)
-    knownAuthor
-  })
-  if (seq !== runSeq) return
-  genState.value.phase = 'done'
-  genState.value.progress = null
-  genState.value.resultId = work.id
-  genState.value.tokensUsed = work.tokensUsed ?? 0
-  resultWork.value = work
-  abortCtrl.value = null
+  try {
+    const { work } = await generateWorld(title, chapters, applyProgress, {
+      frontMatter,
+      signal: ctrl.signal,
+      eco: ecoMode.value,
+      // 预置小说元数据自带作者:直接采用,跳过正文/联网识别(省 token)
+      knownAuthor
+    })
+    if (seq !== runSeq) return
+    genState.value.phase = 'done'
+    genState.value.progress = null
+    genState.value.resultId = work.id
+    genState.value.tokensUsed = work.tokensUsed ?? 0
+    resultWork.value = work
+    abortCtrl.value = null
+    lastFailedGen.value = null
+  } catch (err) {
+    if (seq !== runSeq) return // 已被新任务接管
+    abortCtrl.value = null
+    // 用户取消:取消按钮已把状态复位为上传态,这里不覆盖
+    if (err instanceof CancelledError) return
+    // 其余失败(如提取失败率过高/成书失败)必须落到错误态,否则界面会一直停在"生成中";
+    // 快照参数供"继续生成"续跑(断点续跑缓存会复用已提取单元,不重复消耗 token)
+    lastFailedGen.value = { title, chapters, frontMatter }
+    genState.value = {
+      phase: 'error',
+      title,
+      progress: null,
+      error: err instanceof Error ? err.message : String(err),
+      resultId: null,
+      tokensUsed: 0
+    }
+  }
+}
+
+/** 失败态"继续生成":复用失败时的参数重跑管线;extract 缓存会自动跳过已完成单元 */
+function retryGeneration() {
+  const pending = lastFailedGen.value
+  if (!pending) return
+  const seq = ++runSeq
+  void runGeneration(pending.title, pending.chapters, pending.frontMatter, seq, presetAuthor.value ?? undefined)
 }
 
 /** 确认页"开始生成":确认字数与预估消耗后进入 AI 管线 */
@@ -418,6 +448,7 @@ function repickFile() {
   presetAuthor.value = null
   prebuiltWorld.value = null
   presetMeta.value = null
+  lastFailedGen.value = null
   genState.value = { phase: 'idle', title: '', progress: null, error: null, resultId: null, tokensUsed: 0 }
   onPickFile()
 }
@@ -433,6 +464,7 @@ function cancelGeneration() {
   presetAuthor.value = null
   prebuiltWorld.value = null
   presetMeta.value = null
+  lastFailedGen.value = null
   genState.value = { phase: 'idle', title: '', progress: null, error: null, resultId: null, tokensUsed: 0 }
   toast.add({
     title: '已取消生成',
@@ -956,10 +988,20 @@ const features = [
           <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
             {{ genState.error }}
           </p>
-          <div class="mt-7 flex justify-center">
+          <div class="mt-7 flex justify-center gap-3">
             <UButton
+              v-if="lastFailedGen"
               color="primary"
               size="lg"
+              icon="i-lucide-play"
+              @click="retryGeneration"
+            >
+              继续生成(已提取部分自动复用)
+            </UButton>
+            <UButton
+              color="neutral"
+              size="lg"
+              variant="outline"
               icon="i-lucide-rotate-ccw"
               @click="onPickFile"
             >

@@ -18,14 +18,16 @@ import {
 import { ensureAiConfigLoaded, getAiConfigStateSync, saveAiConfigState } from '../utils/aiConfigStore'
 import type { LocalAiConfig } from '../utils/aiConfigStore'
 import {
-  DEFAULT_GEN_LIMITS, GEN_LIMIT_RANGE, loadGenLimits, resetGenLimits, saveGenLimits, fetchGenLimits
+  DEFAULT_GEN_LIMITS, GEN_LIMIT_RANGE, loadGenLimits, resetGenLimits, saveGenLimits
 } from '../utils/genSettings'
 import type { GenLimits } from '../utils/genSettings'
 import { DEFAULT_TOY_SETTINGS, isAdapterEnabled, toggleAdapterEnabled } from '#shared/toy'
 import type { ToyAdapter, ToySettings } from '#shared/toy'
 import { toyController } from '../toy/api'
-import { listImportedAdapters, loadToySettings, saveToySettings } from '../toy/store'
-import { loadAllAdapters, removeImportedAdapter } from '../toy/runtime/adapter-loader'
+import { listImportedAdapters, loadToySettings, saveToySettings, clearLegacyImportedAdapters } from '../toy/store'
+import { loadAllAdapters, removeImportedAdapter, importAdapterFiles } from '../toy/runtime/adapter-loader'
+import { loadNarrSpeed, saveNarrSpeed, NARR_SPEED_TIERS } from '../utils/narrSpeed'
+import { loadNarrLength, saveNarrLength, NARR_LENGTH_MIN, NARR_LENGTH_MAX, NARR_LENGTH_STEP } from '../utils/narrLength'
 
 useHead({ title: 'AI Word2World · 个人中心' })
 
@@ -154,18 +156,22 @@ async function doTagAction() {
   }
 }
 
-// ---- 适配器管理(与啵啵贝同级:内置 + 玩家导入,可多选启用;导入功能开发中,入口已禁用) ----
+// ---- 适配器管理(内置 + 玩家导入,可多选启用;导入支持 manifest.json 多选或 zip) ----
 const allAdapters = ref<ToyAdapter[]>([])
 const importedAdapterIds = ref<string[]>([])
 /** 玩家导入的适配器(本地实体,与已购插件同款卡片展示) */
 const importedAdapters = computed(() => allAdapters.value.filter(a => importedAdapterIds.value.includes(a.manifest.id)))
 const adapterSettings = ref<ToySettings>({ ...DEFAULT_TOY_SETTINGS })
-const sdkOpen = ref(false)
+const guideOpen = ref(false)
+const importBusy = ref(false)
+const importFileRef = ref<HTMLInputElement | null>(null)
 
 async function loadAdapters() {
   adapterSettings.value = await loadToySettings()
   allAdapters.value = await loadAllAdapters()
   importedAdapterIds.value = (await listImportedAdapters()).map(r => r.id)
+  // 放弃旧版兼容:清掉 IndexedDB 中旧格式的导入记录
+  void clearLegacyImportedAdapters()
 }
 
 function toggleAdapter(a: ToyAdapter, on: boolean) {
@@ -182,6 +188,24 @@ async function onRemoveAdapter(id: string) {
   toast.add({ title: '适配器已删除', color: 'neutral' })
 }
 
+/** 导入适配器(manifest.json 多选 / adapter.js / zip 包);强制校验,失败 toast 缺项 */
+async function onImportFiles(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = input.files ? Array.from(input.files) : []
+  input.value = ''
+  if (!files.length || importBusy.value) return
+  importBusy.value = true
+  try {
+    await importAdapterFiles(files)
+    await loadAdapters()
+    toast.add({ title: '导入成功', description: '插件已导入,可在下方卡片启用与配置', color: 'success' })
+  } catch (err) {
+    toast.add({ title: '导入失败', description: err instanceof Error ? err.message : String(err), color: 'error' })
+  } finally {
+    importBusy.value = false
+  }
+}
+
 const balance = computed(() => me.value?.aiTokenBalance ?? 0)
 const balanceText = computed(() => balance.value.toLocaleString())
 
@@ -190,15 +214,18 @@ const buyOpen = ref(false)
 const selectedPkg = ref<TokenPackage | null>(null)
 /** 已购过限购新人包(paid)后不再展示该卡片,由购买记录判断 */
 const boughtOneTimePack = ref(false)
+/** 30 分钟内待支付的新人包订单:存在时点支付走"继续支付"续付该单,避免撞服务端限购 400 */
+const pendingOneTimeOrder = ref<PurchaseRecord | null>(null)
 const newbiePkg = computed(() => !boughtOneTimePack.value ? (TOKEN_PACKAGES.find(p => p.oneTimeOnly) ?? null) : null)
 const regularPackages = TOKEN_PACKAGES.filter(p => !p.oneTimeOnly)
 const buyBusy = ref<'wxpay' | 'alipay' | null>(null)
 const buyError = ref<string | null>(null)
 
-/** 拉取购买记录,判断是否已购限购新人包 */
+/** 拉取购买记录,判断限购新人包状态:paid 隐藏卡片,pending(30 分钟内)改走继续支付 */
 async function refreshOneTimePackStatus() {
   const purchases = await $fetch<PurchaseRecord[]>('/api/profile/purchases').catch(() => [])
   boughtOneTimePack.value = purchases.some(p => p.packageId === 'tokens_1m_once' && p.status === 'paid')
+  pendingOneTimeOrder.value = purchases.find(p => p.packageId === 'tokens_1m_once' && canContinue(p)) ?? null
 }
 
 function openBuy() {
@@ -207,29 +234,42 @@ function openBuy() {
   buyOpen.value = true
 }
 
+/** 动态创建隐藏 form POST 跳转网关收银台 */
+function jumpToGateway(res: { action: string, params: Record<string, string> }) {
+  const form = document.createElement('form')
+  form.method = 'POST'
+  form.action = res.action
+  form.style.display = 'none'
+  for (const [k, v] of Object.entries(res.params)) {
+    const input = document.createElement('input')
+    input.type = 'hidden'
+    input.name = k
+    input.value = v
+    form.appendChild(input)
+  }
+  document.body.appendChild(form)
+  form.submit()
+}
+
 async function submitOrder(payType: 'wxpay' | 'alipay') {
   if (!selectedPkg.value || buyBusy.value) return
   buyBusy.value = payType
   buyError.value = null
   try {
+    // 新人包存在 30 分钟内待支付订单:服务端限购校验会拒绝重复下单(400),直接续付该订单
+    if (selectedPkg.value.id === newbiePkg.value?.id && pendingOneTimeOrder.value) {
+      const res = await $fetch<{ action: string, params: Record<string, string> }>('/api/payment/continue', {
+        method: 'POST',
+        body: { orderNo: pendingOneTimeOrder.value.orderNo }
+      })
+      jumpToGateway(res)
+      return
+    }
     const res = await $fetch<{ action: string, params: Record<string, string> }>('/api/payment/create', {
       method: 'POST',
       body: { packageId: selectedPkg.value.id, payType }
     })
-    // 动态创建隐藏 form POST 跳转网关收银台
-    const form = document.createElement('form')
-    form.method = 'POST'
-    form.action = res.action
-    form.style.display = 'none'
-    for (const [k, v] of Object.entries(res.params)) {
-      const input = document.createElement('input')
-      input.type = 'hidden'
-      input.name = k
-      input.value = v
-      form.appendChild(input)
-    }
-    document.body.appendChild(form)
-    form.submit()
+    jumpToGateway(res)
   } catch (e) {
     buyError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -364,20 +404,7 @@ async function continuePay(r: PurchaseRecord) {
       method: 'POST',
       body: { orderNo: r.orderNo }
     })
-    // 与下单一致:动态创建隐藏 form POST 跳转网关收银台
-    const form = document.createElement('form')
-    form.method = 'POST'
-    form.action = res.action
-    form.style.display = 'none'
-    for (const [k, v] of Object.entries(res.params)) {
-      const input = document.createElement('input')
-      input.type = 'hidden'
-      input.name = k
-      input.value = v
-      form.appendChild(input)
-    }
-    document.body.appendChild(form)
-    form.submit()
+    jumpToGateway(res)
   } catch (e) {
     continueError.value = e instanceof Error ? e.message : String(e)
     void openHistory() // 刷新列表(超时订单会被标记为已关闭)
@@ -726,8 +753,6 @@ const genForm = reactive({
   relayTimeoutSec: loadedLimits.relayTimeoutSec
 })
 const genMsg = ref<{ kind: 'ok' | 'error', text: string } | null>(null)
-// 云端配置为准:个人中心打开后拉取当前用户已保存的生成参数覆盖表单
-void fetchGenLimits().then(limits => Object.assign(genForm, limits))
 
 /** 数量字段说明里的当前值展示:跟随输入框实时变化,输入无效时留空(默认值由 placeholder 展示) */
 function fmtCurrent(v: unknown): string {
@@ -758,7 +783,7 @@ async function resetGenForm() {
   const ok = await resetGenLimits()
   Object.assign(genForm, DEFAULT_GEN_LIMITS)
   genMsg.value = ok
-    ? { kind: 'ok', text: '已恢复默认并同步到云端' }
+    ? { kind: 'ok', text: '已恢复默认' }
     : { kind: 'error', text: '恢复默认失败,请检查网络' }
 }
 
@@ -776,7 +801,7 @@ async function submitGenLimits() {
   const ok = await saveGenLimits(next)
   if (ok) {
     Object.assign(genForm, next)
-    genMsg.value = { kind: 'ok', text: '已保存到云端,下次生成世界时生效' }
+    genMsg.value = { kind: 'ok', text: '已保存到本地,下次生成世界时生效' }
   } else {
     genMsg.value = { kind: 'error', text: '保存失败,请检查网络' }
   }
@@ -802,6 +827,22 @@ function submitScenePrefs() {
 const narrTemp = ref(loadNarrTemp())
 const narrTempTierInfo = computed(() => narrTempTier(narrTemp.value))
 watch(narrTemp, v => saveNarrTemp(v))
+
+/** 叙事速度(IndexedDB 持久化):回合正文流式显示的速率档位,即时保存,新回合生效 */
+const narrSpeed = ref(60)
+const narrSpeedLoaded = ref(false)
+void loadNarrSpeed().then((cps) => {
+  narrSpeed.value = cps
+  narrSpeedLoaded.value = true
+})
+const narrSpeedTierInfo = computed(() => NARR_SPEED_TIERS.find(t => t.cps === narrSpeed.value) ?? null)
+watch(narrSpeed, (v) => {
+  if (narrSpeedLoaded.value) void saveNarrSpeed(v)
+})
+
+/** 每回合生成字数(本地偏好,默认 400 字):回合正文目标篇幅,滑动条即时保存,新回合生效 */
+const narrLength = ref(loadNarrLength())
+watch(narrLength, v => saveNarrLength(v))
 </script>
 
 <template>
@@ -1419,7 +1460,7 @@ watch(narrTemp, v => saveNarrTemp(v))
                 叙事温度
               </p>
               <p class="text-xs text-neutral-500">
-                控制回合正文的随机性与文风多样性,滑动即时保存,新回合生效;选项生成与状态结算始终使用固定低温,不受此设置影响
+                控制回合正文的随机性与文风多样性,滑动即时保存,新回合生效;选项生成与状态结算同样随此温度变化
               </p>
             </div>
             <div class="space-y-3">
@@ -1453,6 +1494,64 @@ watch(narrTemp, v => saveNarrTemp(v))
                   {{ t.range[0].toFixed(1) }}~{{ t.range[1].toFixed(1) }} {{ t.label }}:{{ t.desc }}
                 </p>
               </div>
+            </div>
+          </UCard>
+
+          <!-- 叙事速度:回合正文流式显示的速率档位(IndexedDB 持久化,即时保存,新回合生效) -->
+          <UCard class="mb-6">
+            <div class="mb-3 flex flex-col gap-1">
+              <p class="font-semibold">
+                叙事速度
+              </p>
+              <p class="text-xs text-neutral-500">
+                控制回合正文流式显示的快慢与停顿节奏(打字机效果),选择即时保存到本地(IndexedDB),新回合生效;点击流式正文可立即显示全文
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <UButton
+                v-for="t in NARR_SPEED_TIERS"
+                :key="t.cps"
+                size="sm"
+                variant="soft"
+                :color="narrSpeed === t.cps ? 'primary' : 'neutral'"
+                @click="narrSpeed = t.cps"
+              >
+                {{ t.label }}
+              </UButton>
+              <span class="text-xs text-neutral-500">
+                当前 {{ narrSpeed }} 字符/秒
+              </span>
+            </div>
+            <div class="mt-2 space-y-1 text-xs text-neutral-400">
+              <p
+                v-for="t in NARR_SPEED_TIERS"
+                :key="t.label"
+                :class="narrSpeedTierInfo?.label === t.label ? 'font-medium text-primary-600 dark:text-primary-400' : ''"
+              >
+                {{ t.label }} {{ t.cps }} 字/秒:{{ t.desc }}
+              </p>
+            </div>
+          </UCard>
+
+          <!-- 每回合生成字数:回合正文(AI 剧情)目标篇幅(滑动条即时保存,新回合生效) -->
+          <UCard class="mb-6">
+            <div class="mb-3 flex flex-col gap-1">
+              <p class="font-semibold">
+                每回合生成字数
+              </p>
+              <p class="text-xs text-neutral-500">
+                控制每回合 AI 生成的剧情正文篇幅,滑动即时保存,新回合生效;选项与状态结算不受影响
+              </p>
+            </div>
+            <div class="flex items-center gap-4">
+              <USlider
+                v-model="narrLength"
+                :min="NARR_LENGTH_MIN"
+                :max="NARR_LENGTH_MAX"
+                :step="NARR_LENGTH_STEP"
+                class="flex-1"
+              />
+              <span class="w-16 shrink-0 text-right font-mono text-sm text-neutral-700 dark:text-neutral-300">{{ narrLength }} 字</span>
             </div>
           </UCard>
 
@@ -1550,27 +1649,28 @@ watch(narrTemp, v => saveNarrTemp(v))
                 size="xs"
                 variant="soft"
                 icon="i-lucide-book-open"
-                @click="sdkOpen = true"
+                @click="guideOpen = true"
               >
-                接入文档
+                制作指南
               </UButton>
-              <div class="flex items-center gap-1.5">
-                <UButton
-                  size="xs"
-                  color="primary"
-                  icon="i-lucide-upload"
-                  disabled
-                >
-                  导入适配器
-                </UButton>
-                <UBadge
-                  size="xs"
-                  color="warning"
-                  variant="soft"
-                >
-                  开发中
-                </UBadge>
-              </div>
+              <UButton
+                size="xs"
+                color="primary"
+                icon="i-lucide-upload"
+                :loading="importBusy"
+                @click="importFileRef?.click()"
+              >
+                导入适配器
+              </UButton>
+              <!-- 隐藏文件选择:manifest.json 多选 + adapter.js + zip 包 -->
+              <input
+                ref="importFileRef"
+                type="file"
+                accept=".json,.js,.zip"
+                multiple
+                class="hidden"
+                @change="onImportFiles"
+              >
             </div>
           </div>
 
@@ -1742,8 +1842,8 @@ watch(narrTemp, v => saveNarrTemp(v))
       :adapter-id="pickerId"
       :adapter-name="pickerName"
     />
-    <!-- 适配器 SDK 接入文档弹窗 -->
-    <SdkDocsModal v-model:open="sdkOpen" />
+    <!-- 配置制作指导文档弹窗(强制格式规范 + md/模板下载) -->
+    <PluginGuideModal v-model:open="guideOpen" />
     <!-- 卡片标签断开确认框 -->
     <UModal
       v-model:open="tagConfirmOpen"
@@ -1832,6 +1932,16 @@ watch(narrTemp, v => saveNarrTemp(v))
               </p>
               <p class="text-xs text-neutral-500">
                 到账 {{ newbiePkg.tokens.toLocaleString() }} tokens
+              </p>
+              <p
+                v-if="pendingOneTimeOrder"
+                class="mt-1.5 flex items-center gap-1 text-xs font-medium text-amber-600"
+              >
+                <UIcon
+                  name="i-lucide-circle-alert"
+                  class="size-3.5 shrink-0"
+                />
+                有一笔待支付订单,点击支付将续付该订单
               </p>
             </UCard>
 

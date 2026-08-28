@@ -1,7 +1,7 @@
 // shared/gen-limits.ts
 // 生成参数的类型、默认值与合法范围(客户端与服务端共用)。
-// 配置随用户账户存云端 D1(users 表,见 server/db/schema.ts),接口 /api/profile/gen-limits;
-// 服务端对入库值用 normalizeGenLimits 钳制,缺省/非法回落默认值。
+// 该配置为纯本地偏好(localStorage,见 app/utils/genSettings.ts),不随账户同步;
+// normalizeGenLimits 对任意来源的值钳制到合法范围,缺省/非法回落默认值。
 import { UNIT_MAX_CHARS, UNIT_OVERLAP_CHARS, CHECK_MAX_TOKENS, SYNTH_MAX_TOKENS } from './world-build'
 import { RELAY_TIMEOUT_DEFAULT_MS, RELAY_TIMEOUT_MIN_MS, RELAY_TIMEOUT_MAX_MS } from './ai-config'
 
@@ -45,13 +45,17 @@ export const GEN_LIMIT_KEYS = Object.keys(DEFAULT_GEN_LIMITS) as (keyof GenLimit
 
 /**
  * 把任意来源(接口请求体/D1 行)的数值钳制到合法范围:
- * 字段缺失或非有限数回落默认值;数值越界收拢到范围边界;重叠等 min=0 的字段 0 合法保留。
+ * 字段缺失/null/非有限数回落默认值(注意 Number(null)===0,必须显式判空,
+ * 否则 D1 可空列未设置时会被当 0 钳到范围最小值,新用户看到的是下限而非默认值);
+ * 数值越界收拢到范围边界;重叠等 min=0 的字段 0 合法保留。
  */
 export function normalizeGenLimits(v: Partial<Record<keyof GenLimits, unknown>> | null | undefined): GenLimits {
   const out = { ...DEFAULT_GEN_LIMITS }
   if (!v) return out
   for (const key of GEN_LIMIT_KEYS) {
-    const n = Number(v[key])
+    const raw = v[key]
+    if (raw === null || raw === undefined || raw === '') continue
+    const n = Number(raw)
     if (!Number.isFinite(n)) continue
     const range = GEN_LIMIT_RANGE[key]
     out[key] = Math.min(range.max, Math.max(range.min, Math.round(n)))

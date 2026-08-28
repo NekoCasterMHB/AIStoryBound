@@ -28,14 +28,7 @@ export const user = sqliteTable('user', {
   aiConfigEnabled: integer('ai_config_enabled').notNull().default(0),
   /** AES-GCM 加密后的 AI 配置 JSON(baseUrl/apiKey/model/thinking) */
   aiConfigCiphertext: text('ai_config_ciphertext'),
-  aiConfigIv: text('ai_config_iv'),
-  // ---- 生成参数(个人中心「生成参数」卡片;null=未设置,运行时取默认值,见 shared/gen-limits) ----
-  genUnitMaxChars: integer('gen_unit_max_chars'),
-  genUnitOverlapChars: integer('gen_unit_overlap_chars'),
-  genExtractMaxTokens: integer('gen_extract_max_tokens'),
-  genCheckMaxTokens: integer('gen_check_max_tokens'),
-  genSynthMaxTokens: integer('gen_synth_max_tokens'),
-  genRelayTimeoutSec: integer('gen_relay_timeout_sec')
+  aiConfigIv: text('ai_config_iv')
 }, t => [index('idx_user_email').on(t.email)])
 
 export const session = sqliteTable('session', {
@@ -562,3 +555,17 @@ export const aiProviderConfigs = sqliteTable('ai_provider_configs', {
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
 }, t => [index('idx_aipc_active').on(t.active)])
+
+// ---- 公告(管理员后台发布;客户端弹窗展示,localStorage 记已读游标,有新公告才再次提示) ----
+export const announcements = sqliteTable('announcements', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  /** markdown 内容(客户端用 MDC 渲染) */
+  content: text('content').notNull(),
+  /** 1=已发布 | 0=草稿/下线 */
+  published: integer('published').notNull().default(1),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  index('idx_ann_published_created').on(t.published, t.createdAt)
+])

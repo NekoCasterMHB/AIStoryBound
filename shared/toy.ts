@@ -49,27 +49,23 @@ export interface ToyFunctionLimit {
   maxIntensity?: number
 }
 
-/** 用户硬限制设置(IndexedDB 持久化;AI 来源受强度上限约束,时长上限对所有来源生效) */
+/** 用户硬限制设置(IndexedDB 持久化;AI 来源受强度上限约束;无全局时长上限) */
 export interface ToySettings {
   /** AI 控制总开关(关 = 拒绝所有 AI 来源的 device_events;手动面板控制不受此限) */
   aiEnabled: boolean
   /** AI 可控制的功能 id 列表(分能力单独启用;缺省/undefined = 全部允许;空数组 = 全部禁止) */
   aiEnabledFunctions?: string[]
-  /** 默认最大持续时长秒(0=不限制;超限拒绝) */
-  maxDuration: number
-  /** 按能力单独的限制(功能 id -> 覆盖值;未设置的功能用默认值) */
+  /** 按能力单独的限制(功能 id -> 覆盖值;未设置的功能默认取清单声明值) */
   functionLimits?: Record<string, ToyFunctionLimit>
   /** 启用的适配器 id 列表(多选;缺省/undefined = 全部启用;禁用项不显示、不可连接) */
   enabledAdapters?: string[]
 }
 
 export const DEFAULT_TOY_SETTINGS: ToySettings = {
-  aiEnabled: false,
-  /** 全局时长上限(安全链:到期自动归零;AI 事件超 300s 拒绝) */
-  maxDuration: 300
+  aiEnabled: false
 }
 
-/** 能力最大强度的初始默认值(未单独设置时每项能力的上限;仅约束 AI 来源,手动控制不受限) */
+/** 能力未声明强度范围时的回退上限(正常情况下强度上限由清单 capabilities 声明) */
 export const DEFAULT_FUNCTION_MAX_INTENSITY = 100
 
 /** 适配器是否启用(设置缺省 = 全部启用) */
@@ -104,14 +100,26 @@ export function toggleAiFunctionEnabled(settings: ToySettings, fnId: string, ena
 
 // ---- Tier 1 声明式协议配置(品牌差异全部收敛于此,抓包后只改配置不改代码) ----
 
+/** 电量查询声明(缺省标准电池服务 0x180f/0x2a19;自定义设备必须声明自己的 UUID) */
+export interface ToyBatterySpec {
+  supported: boolean
+  serviceUuid?: string
+  characteristicUuid?: string
+}
+
+/** BLE 连接参数(Web Bluetooth:服务/写/通知特征 UUID) */
+export interface ToyGattParams {
+  serviceUuid: string
+  writeUuid: string
+  notifyUuid: string
+  /** 写入是否带响应,缺省 true(Web Bluetooth 用 writeValueWithResponse) */
+  writeWithResponse?: boolean
+}
+
 export interface ToyProtocolConfig {
-  gatt?: {
-    serviceUuid: string
-    writeUuid: string
-    notifyUuid: string
-    /** 写入是否带响应,缺省 true(Web Bluetooth 用 writeValueWithResponse) */
-    writeWithResponse?: boolean
-  }
+  gatt?: ToyGattParams
+  /** 电量查询声明(连接成功后读取并缓存,界面展示) */
+  battery?: ToyBatterySpec
   frame: {
     /** token 序列:字面量 "0xNN"(十六进制)或纯数字(十进制);占位符 [SEQ] [MODE1] [MODE2] [INTENSITY] [MODE] */
     template: string[]
@@ -135,6 +143,10 @@ export interface ToyAdapterManifest {
   version: string
   /** BLE 扫描名(Web Bluetooth 过滤用) */
   scanNames?: string[]
+  /** 连接参数(Tier 2 代码适配器无 protocol 时用;Tier 1 在 protocol.gatt 内) */
+  gatt?: ToyGattParams
+  /** 电量查询声明(Tier 2 无 protocol 时用;Tier 1 在 protocol.battery 内) */
+  battery?: ToyBatterySpec
   /** 功能中文名(界面展示;未声明时用功能 id) */
   functionNames?: Record<string, string>
   /** 能力协商数据(Tier 2 由玩家声明;Tier 1 由 createProtocolAdapter 从 protocol 推导) */
@@ -182,7 +194,9 @@ export function validateDeviceEvent(raw: unknown, caps: ToyCapabilities): ToyVal
   if (typeof o.intensity !== 'number' || !Number.isFinite(o.intensity)) {
     return { ok: false, reason: `功能「${fn.name}」的强度必须是数字` }
   }
-  const intensity = clamp(Math.round(o.intensity), 0, 100)
+  // 强度钳制到该能力声明的范围(清单声明的强度上限 = AI 可控范围;未声明时回退 0-100)
+  const [iLo, iHi] = fn.intensityRange ?? [0, 100]
+  const intensity = clamp(Math.round(o.intensity), iLo, iHi)
 
   let mode: number | undefined
   if (o.mode !== undefined) {
@@ -214,30 +228,32 @@ export type ToyLimitResult
   = | { ok: true, event: DeviceEvent }
     | { ok: false, reason: string }
 
-/** AI 来源命令额外受 aiEnabled 总开关约束(手动面板控制不检查此开关) */
-/** 生效限制:只取按能力单独设置的值,未设置的能力初始默认 100 */
-export function functionLimitOf(settings: ToySettings, fnId: string): { maxIntensity: number } {
-  const f = settings.functionLimits?.[fnId]
-  return { maxIntensity: f?.maxIntensity ?? DEFAULT_FUNCTION_MAX_INTENSITY }
+/**
+ * 生效的最大强度 = min(能力声明上限, 用户覆盖)。
+ * declaredMax 为该能力清单声明的强度上限(validateDeviceEvent 已按此钳制);
+ * 用户可在安全设置中进一步调低(ToySettings.functionLimits),取较小值。
+ */
+export function functionLimitOf(settings: ToySettings, fnId: string, declaredMax: number): { maxIntensity: number } {
+  const userMax = settings.functionLimits?.[fnId]?.maxIntensity
+  return { maxIntensity: userMax != null ? Math.min(declaredMax, userMax) : declaredMax }
 }
 
-export function checkHardLimits(event: DeviceEvent, settings: ToySettings, source: 'ai' | 'manual'): ToyLimitResult {
+export function checkHardLimits(event: DeviceEvent, settings: ToySettings, source: 'ai' | 'manual', caps?: ToyCapabilities): ToyLimitResult {
   if (source === 'ai') {
     if (!settings.aiEnabled) return { ok: false, reason: 'AI 设备控制总开关已关闭' }
     // 分能力单独启用:显式列表时只放行列表内的功能(缺省 = 全部允许)
     if (settings.aiEnabledFunctions != null && !settings.aiEnabledFunctions.includes(event.function)) {
       return { ok: false, reason: `功能「${event.function}」未开启 AI 控制,请在详细配置中启用` }
     }
-    // 最大强度是 AI 的安全限制;手动控制直发设备能力全范围(0-100 由适配器钳制)
-    const lim = functionLimitOf(settings, event.function)
+    // 生效上限 = min(清单声明上限, 用户覆盖);强度超出直接拒绝,不做静默降级
+    const fn = caps?.functions.find(f => f.id === event.function)
+    const declaredMax = fn?.intensityRange?.[1] ?? DEFAULT_FUNCTION_MAX_INTENSITY
+    const lim = functionLimitOf(settings, event.function, declaredMax)
     if (event.intensity > lim.maxIntensity) {
       return { ok: false, reason: `强度 ${event.intensity} 超过最大限制 ${lim.maxIntensity}` }
     }
   }
-  // 时长上限为全局默认(安全链:到期自动归零),不做能力级区分
-  if (settings.maxDuration > 0 && event.duration != null && event.duration > settings.maxDuration) {
-    return { ok: false, reason: `时长 ${event.duration}s 超过最大限制 ${settings.maxDuration}s` }
-  }
+  // 无全局时长上限:单事件 duration 由执行层定时器到期自动归零
   return { ok: true, event }
 }
 
@@ -476,6 +492,11 @@ export function repickWaveTarget(
  */
 export type TrainPattern = 'sine' | 'pulse' | 'sawtooth' | 'heartbeat' | 'random' | 'constant' | 'auto'
 
+/** 形态是否合法(AI 调教指令 [[wave:...]] 校验用) */
+export function isTrainPattern(v: unknown): v is TrainPattern {
+  return v === 'sine' || v === 'pulse' || v === 'sawtooth' || v === 'heartbeat' || v === 'random' || v === 'constant' || v === 'auto'
+}
+
 /** 形态参数(均可选,带各自默认值;UI 暂不暴露,auto 模式自动随机) */
 export interface TrainPatternParams {
   /** 周期秒(sine/pulse/sawtooth/heartbeat) */
@@ -518,7 +539,8 @@ export function trainPatternValue(
       return Math.round(lo + span * ((elapsedSec % periodSec) / periodSec))
     }
     case 'heartbeat': {
-      const periodSec = params.periodSec ?? 4
+      // 心跳循环间隔默认 2s(原 4s 减半):每周期两次短促高电平(双连拍),其余 low
+      const periodSec = params.periodSec ?? 2
       const phase = (elapsedSec % periodSec) / periodSec
       return phase < 0.08 || (phase >= 0.22 && phase < 0.3) ? hi : (params.low ?? 0)
     }
@@ -544,7 +566,7 @@ export function randomTrainParams(pattern: TrainPattern, range: [number, number]
     case 'sine': return { periodSec: Math.round(6 + rng() * 8) }
     case 'pulse': return { periodSec: Math.round(4 + rng() * 4), duty: Math.round((0.3 + rng() * 0.2) * 100) / 100 }
     case 'sawtooth': return { periodSec: Math.round(6 + rng() * 8) }
-    case 'heartbeat': return { periodSec: Math.round(3 + rng() * 3) }
+    case 'heartbeat': return { periodSec: Math.round(1.5 + rng() * 1.5) }
     case 'constant': return { level: Math.round(lo + rng() * span) }
     default: return {}
   }
@@ -642,7 +664,7 @@ export function validateAdapterManifest(raw: unknown): ManifestValidateResult {
 }
 
 /** 粗略校验 Tier 1 协议配置:帧模板/强度范围/功能表缺一不可 */
-function validateProtocolConfig(raw: unknown): ToyProtocolConfig | null {
+export function validateProtocolConfig(raw: unknown): ToyProtocolConfig | null {
   const o = raw as Record<string, unknown>
   const frame = o.frame as Record<string, unknown> | undefined
   if (!frame || !Array.isArray(frame.template) || frame.template.length === 0) return null
@@ -659,8 +681,21 @@ function validateProtocolConfig(raw: unknown): ToyProtocolConfig | null {
     ) as Record<string, { mode1: string | number, mode2?: string | number, supportsMode?: boolean }>
     : undefined
   if (!functions || !Object.keys(functions).length) return null
+  const batteryRaw = o.battery as Record<string, unknown> | undefined
+  const battery: ToyBatterySpec | undefined = batteryRaw && typeof batteryRaw === 'object'
+    ? {
+        supported: batteryRaw.supported === true,
+        ...(typeof batteryRaw.serviceUuid === 'string' && batteryRaw.serviceUuid.trim()
+          ? { serviceUuid: batteryRaw.serviceUuid.trim() }
+          : {}),
+        ...(typeof batteryRaw.characteristicUuid === 'string' && batteryRaw.characteristicUuid.trim()
+          ? { characteristicUuid: batteryRaw.characteristicUuid.trim() }
+          : {})
+      }
+    : undefined
   return {
     gatt: (o.gatt && typeof o.gatt === 'object') ? o.gatt as ToyProtocolConfig['gatt'] : undefined,
+    battery,
     frame: {
       template: frame.template.filter((t): t is string => typeof t === 'string'),
       seqRandom: typeof frame.seqRandom === 'boolean' ? frame.seqRandom : true,

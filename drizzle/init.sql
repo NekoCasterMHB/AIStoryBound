@@ -32,13 +32,7 @@ CREATE TABLE IF NOT EXISTS `user` (
 	`ai_token_balance` integer DEFAULT 0 NOT NULL,
 	`ai_config_enabled` integer DEFAULT 0 NOT NULL,
 	`ai_config_ciphertext` text,
-	`ai_config_iv` text,
-	`gen_unit_max_chars` integer,
-	`gen_unit_overlap_chars` integer,
-	`gen_extract_max_tokens` integer,
-	`gen_check_max_tokens` integer,
-	`gen_synth_max_tokens` integer,
-	`gen_relay_timeout_sec` integer
+	`ai_config_iv` text
 );
 
 CREATE TABLE IF NOT EXISTS `session` (
@@ -452,6 +446,16 @@ CREATE TABLE IF NOT EXISTS `ai_provider_configs` (
 	FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null
 );
 
+-- ---- 公告(管理员后台发布;客户端弹窗展示,localStorage 记已读游标,有新公告才再次提示) ----
+CREATE TABLE IF NOT EXISTS `announcements` (
+	`id` text PRIMARY KEY NOT NULL,
+	`title` text NOT NULL,
+	`content` text NOT NULL,
+	`published` integer DEFAULT 1 NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL
+);
+
 -- ---- 索引 ----
 CREATE UNIQUE INDEX IF NOT EXISTS `user_email_unique` ON `user` (`email`);
 CREATE INDEX IF NOT EXISTS `idx_user_email` ON `user` (`email`);
@@ -491,4 +495,5 @@ CREATE INDEX IF NOT EXISTS `idx_frl_user` ON `feature_request_likes` (`user_id`)
 CREATE INDEX IF NOT EXISTS `idx_ai_usage_time` ON `ai_usage` (`created_at`);
 CREATE INDEX IF NOT EXISTS `idx_ai_usage_user` ON `ai_usage` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_aipc_active` ON `ai_provider_configs` (`active`);
+CREATE INDEX IF NOT EXISTS `idx_ann_published_created` ON `announcements` (`published`,`created_at`);
 CREATE INDEX IF NOT EXISTS `idx_skill_purchase_buyer` ON `skill_purchases` (`buyer_id`);

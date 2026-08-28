@@ -151,6 +151,26 @@ function estimateUsage(
   return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens }
 }
 
+/**
+ * 上游流空闲超时:请求级 timeoutMs(AbortSignal.timeout)在 fetch 拿到响应头后就失效,
+ * 若上游在流中途挂起/断流不关连接,reader.read() 会永久挂起,前端进度就卡死。
+ * 这里对 body 读取兜底:有数据即重置计时(慢生成不受影响),连续无数据超时则主动断开。
+ */
+const RELAY_IDLE_TIMEOUT_MS = 120_000
+
+/** 带空闲超时的上游读取:有数据重置计时,连续 RELAY_IDLE_TIMEOUT_MS 无数据则 reject */
+async function readUpstream(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const idle = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`上游流 ${RELAY_IDLE_TIMEOUT_MS / 1000}s 无数据,判定挂起`)), RELAY_IDLE_TIMEOUT_MS)
+  })
+  try {
+    return await Promise.race([reader.read(), idle])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function relaySse(
   cfg: RelayTarget,
   upstream: Response,
@@ -177,7 +197,7 @@ export async function relaySse(
         let buf = ''
         try {
           for (;;) {
-            const { done, value } = await reader.read()
+            const { done, value } = await readUpstream(reader)
             if (done) break
             controller.enqueue(value)
             buf += decoder.decode(value, { stream: true })
@@ -253,7 +273,7 @@ export async function relaySse(
       }
       try {
         for (;;) {
-          const { done: d, value } = await reader.read()
+          const { done: d, value } = await readUpstream(reader)
           if (d) break
           buf += decoder.decode(value, { stream: true })
           let nl: number

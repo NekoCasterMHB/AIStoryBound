@@ -3,7 +3,7 @@
 // 注意:requestDevice 必须在用户手势内调用,scan() 弹出系统选择器并记住所选设备;
 // listKnownDevices() 走 getDevices() 返回本站点已授权过的设备(免系统选择器),点击列表项即可直连;
 // 通知走 startNotifications()(勿手动写 CCCD 0x2902)。
-import type { ToyGattParams, ToyTransport, ToyTransportDevice } from './transport'
+import type { ToyBatterySpec, ToyGattParams, ToyTransport, ToyTransportDevice } from './transport'
 
 /** Web Bluetooth 的最小类型面(避免依赖 @types/web-bluetooth) */
 interface RawBleDevice {
@@ -50,10 +50,21 @@ const knownDevices = new Map<string, RawBleDevice>()
 let currentChar: RawGattCharacteristic | null = null
 const disconnectHandlers = new Set<() => void>()
 
-// 电量:设备连接成功后读取一次缓存下来(自定义设备列表展示);需在授权时声明电池服务
+// 电量:设备连接成功后读取一次缓存下来(自定义设备列表展示);UUID 默认标准电池服务,
+// 自定义设备由清单 protocol.battery 声明自己的服务/特征
 const BATTERY_SERVICE_UUID = '0000180f-0000-1000-8000-00805f9b34fb'
 const BATTERY_LEVEL_UUID = '00002a19-0000-1000-8000-00805f9b34fb'
 const batteryCache = new Map<string, number>()
+
+/** 电量服务的实际 UUID(清单声明优先,缺省标准电池服务) */
+function batteryServiceUuid(battery?: ToyBatterySpec): string {
+  return battery?.serviceUuid ?? BATTERY_SERVICE_UUID
+}
+
+/** 电量特征的实际 UUID(清单声明优先,缺省标准电池特征) */
+function batteryLevelUuid(battery?: ToyBatterySpec): string {
+  return battery?.characteristicUuid ?? BATTERY_LEVEL_UUID
+}
 
 // 已连接设备的本地持久化兜底:Chrome 的 getDevices 偶发不返回已授权设备(权限存储未刷新/
 // origin/端口变化/平台差异),列表合并本地记录展示;直连仍需 getDevices 给出设备句柄,
@@ -86,10 +97,11 @@ function rememberDevice(id: string, name: string, battery: number | null): void 
 }
 
 /** 读取电量写入缓存并持久化;设备无电池服务或授权未含电池服务(旧授权)时静默跳过,不影响连接 */
-async function readBattery(raw: RawBleDevice, server: RawGattServer): Promise<void> {
+async function readBattery(raw: RawBleDevice, server: RawGattServer, battery?: ToyBatterySpec): Promise<void> {
+  if (battery && battery.supported === false) return
   try {
-    const batteryService = await server.getPrimaryService(BATTERY_SERVICE_UUID)
-    const batteryChar = await batteryService.getCharacteristic(BATTERY_LEVEL_UUID)
+    const batteryService = await server.getPrimaryService(batteryServiceUuid(battery))
+    const batteryChar = await batteryService.getCharacteristic(batteryLevelUuid(battery))
     const value = await batteryChar.readValue()
     batteryCache.set(raw.id, value.getUint8(0))
   } catch {
@@ -110,7 +122,7 @@ async function listAuthorizedDevices(): Promise<ToyTransportDevice[]> {
   return [...merged.values()]
 }
 
-async function attach(raw: RawBleDevice, gatt: ToyGattParams): Promise<void> {
+async function attach(raw: RawBleDevice, gatt: ToyGattParams, battery?: ToyBatterySpec): Promise<void> {
   if (!raw.gatt) throw new Error('设备不可连接(无 GATT)')
   const server = await raw.gatt.connect()
   let service
@@ -128,7 +140,7 @@ async function attach(raw: RawBleDevice, gatt: ToyGattParams): Promise<void> {
   // 通知必须走 startNotifications,新版 Chrome 会拦截手动写 CCCD(0x2902)
   await notifyChar.startNotifications()
   currentChar = writeChar
-  await readBattery(raw, server)
+  await readBattery(raw, server, battery)
   rememberDevice(raw.id, raw.name ?? '未知设备', batteryCache.get(raw.id) ?? null)
 
   raw.addEventListener('gattserverdisconnected', () => {
@@ -141,7 +153,7 @@ export const webBluetoothTransport: ToyTransport = {
   id: 'web-bluetooth',
   name: '蓝牙直连 (Web Bluetooth)',
 
-  async scan(scanNames?: string[], gatt?: ToyGattParams): Promise<ToyTransportDevice[]> {
+  async scan(scanNames?: string[], gatt?: ToyGattParams, battery?: ToyBatterySpec): Promise<ToyTransportDevice[]> {
     const bt = getBluetooth()
     if (!bt) throw new Error('当前浏览器不支持 Web Bluetooth(请用桌面/Android Chrome)')
     // 按广播名前缀过滤(啵啵贝广播名 SOSEXY);无扫描名时列出全部设备由用户选择
@@ -149,10 +161,12 @@ export const webBluetoothTransport: ToyTransport = {
       ? scanNames.map(name => ({ namePrefix: name }))
       : undefined
     // 服务 UUID 必须放进 optionalServices,否则连接时 getPrimaryService 会被 Chrome 拒绝;
-    // 电池服务一并声明,连接后可读电量(设备带电池服务且授权包含它时)
+    // 清单声明的电量服务一并授权(支持时),连接后可读电量
+    const optionalServices = [...(gatt?.serviceUuid ? [gatt.serviceUuid] : [])]
+    if (battery && battery.supported !== false) optionalServices.push(batteryServiceUuid(battery))
     pickedDevice = await bt.requestDevice({
       filters,
-      optionalServices: [BATTERY_SERVICE_UUID, ...(gatt?.serviceUuid ? [gatt.serviceUuid] : [])]
+      optionalServices
     })
     // 记住授权结果,下次打开免选择器直连
     knownDevices.set(pickedDevice.id, pickedDevice)
@@ -164,11 +178,11 @@ export const webBluetoothTransport: ToyTransport = {
     return listAuthorizedDevices()
   },
 
-  async connect(device: ToyTransportDevice, gatt: ToyGattParams): Promise<void> {
+  async connect(device: ToyTransportDevice, gatt: ToyGattParams, battery?: ToyBatterySpec): Promise<void> {
     // 扫描来源(id='picked')用 requestDevice 结果;直连来源用 getDevices 缓存
     const raw = device.id === 'picked' ? pickedDevice : knownDevices.get(device.id)
     if (!raw) throw new Error('设备授权记录丢失,请重新授权(系统蓝牙弹窗确认一次)')
-    await attach(raw, gatt)
+    await attach(raw, gatt, battery)
   },
 
   async write(bytes: Uint8Array): Promise<void> {

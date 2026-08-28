@@ -3,13 +3,19 @@
 //   状态白名单合并(LLM 只产建议,引擎应用)、人物卡摘要、回合提示词组装、选项 schema。
 import { skillPromptBlocks } from './ai-skills'
 import { desireTierName } from './novel'
+import type { PluginBrief } from './plugin'
 import type { AiSkill } from './ai-skills'
-import type { CharacterCard, GameState, LocalGame, TurnStructured } from './novel'
+import type { CharacterCard, GameState, LocalGame, TurnStructured, WorldEntities, EntityConflict } from './novel'
 
 export type AiRole = 'system' | 'user' | 'assistant'
 export interface ChatMsg { role: AiRole, content: string }
 
 export interface TurnSummary { idx: number, text: string }
+
+/** 章节回注间隔:每 N 个完整回合重新注入当前章/下一章的情节窗口(字符摘录,非整章) */
+export const REINJECT_CHAPTER_EVERY = 8
+/** 回注窗口单段字数:当前章"剩余部分"窗口 + 下一章开头窗口各 1500 字,合计约 3000 字 */
+export const REINJECT_WINDOW_CHARS = 1500
 
 export function parseSummary(raw: string | null | undefined): TurnSummary | null {
   if (!raw) return null
@@ -28,16 +34,9 @@ function clamp(v: number, min: number, max: number): number {
 
 /**
  * 回合选项结构化输出 schema(浏览器与服务器共用)。
- * deviceEnabled 为 true 时附加 device_events 字段——设备控制是可选能力,
- * 未开启时不得出现在 schema 里,避免 LLM 凭空生成设备事件。
+ * 设备控制走叙事流内联指令([[dev:...]]),回合收尾器不含任何设备字段。
  */
-export function turnOptionsSchema(deviceEnabled: boolean): string {
-  const deviceField = deviceEnabled
-    ? `,
-  "device_events": [
-    {"adapter": "目标设备id(缺省当前连接设备;须在下方可用设备列表内)", "function": "功能id(须在下方可用功能列表内)", "intensity": "0-100整数", "mode": "模式档位1-4(可选)", "duration": "持续秒数(可选,到时自动停止)"}
-  ]`
-    : ''
+export function turnOptionsSchema(): string {
   return `{
   "options": ["选项1", "选项2", "选项3"],
   "state_delta": {
@@ -50,26 +49,33 @@ export function turnOptionsSchema(deviceEnabled: boolean): string {
     "quests": ["任务目标(string)"],
     "flags": {"flag名": true}
   },
-  "current_chapter": "当前所处章节标题(string|null)",
-  "summary": "整局剧情摘要(基于旧摘要与上文剧情压缩至 200 字内,保留关键人物关系/伏笔/进展;无重大变化可省略)"${deviceField}
+  "current_chapter": "当前所处章节标题(每回合都要报告,仍在原章则保持同值;无明确章节概念时可省略)",
+  "summary": "整局剧情摘要(基于旧摘要与上文剧情压缩至 500 字左右,保留关键人物关系/伏笔/进展;无重大变化可省略)"
 }`
 }
 
-/** 设备事件输出规范(回合收尾器提示词的一部分;仅在设备已启用且 AI 开关打开时注入)。
- *  能力暴露给 AI:列出所有已启用适配器的功能清单(连接状态标注),AI 按剧情需要选择目标设备与功能。 */
-export interface DeviceCapBrief {
-  id: string
-  name: string
-  connected: boolean
-  functions: { id: string, name: string, supportsMode: boolean, modeCount: number }[]
-}
+/** 设备能力清单(AI 提示词用;强度范围来自清单声明的每能力强度上限) */
+export type { PluginBrief, PluginCapBrief } from './plugin'
 
-export function deviceEventsPrompt(devices: DeviceCapBrief[]): string {
+/**
+ * 叙事流内联指令提示词(仅在设备已启用且 AI 开关打开时注入):
+ * 给出指令语法与能力清单(逐条标注可控强度范围与档位),身体互动情节在描述该句后立即埋点;
+ * 指令数量不设上限,完全由 AI 按情节判断;指令不可见、不得在正文复述。
+ * 调教模式(wave)对任意可调强度的功能统一可用。
+ */
+export function narratorDeviceSpec(devices: PluginBrief[]): string {
   const lines = devices.map((d) => {
-    const fns = d.functions.map(f => `${f.name}${f.supportsMode ? `(0-100,模式1-${f.modeCount})` : '(0-100)'}`).join('、')
+    const fns = d.capabilities.map(f =>
+      `${f.name}(强度${f.intensityRange[0]}-${f.intensityRange[1]}${f.supportsMode ? `,模式1-${f.modeCount}` : ''})`
+    ).join('、')
     return `- [${d.connected ? '已连接' : '未连接'}] ${d.name}(id: ${d.id}):${fns}`
   }).join('\n')
-  return `\n设备事件:本回合若剧情中出现需要实体设备同步响应的身体互动情节(抚摸/高潮/奖励/惩罚等),输出 device_events 数组,0~2 条,每条 {adapter?, function, intensity, mode?, duration?}。可用设备:\n${lines}\nadapter 为目标设备 id(缺省 = 当前连接设备);intensity 为 0-100 整数,与情节强烈程度匹配;mode 为该功能支持的模式档位;duration 为持续秒数(到时设备自动停止)。剧情需要哪个能力就调用哪个;未连接设备的事件会被拒绝。没有设备互动情节就省略 device_events。`
+  return `\n设备内联指令:本回合若剧情中出现需要实体设备同步响应的身体互动情节(抚摸/高潮/奖励/惩罚等),在该句正文后立即埋入指令标记,指令对玩家不可见、不得在正文复述。语法:
+- [[dev:功能id:强度[:模式[:持续秒数]]]] — 文字显示到该句时设备立即执行,如 [[dev:vibration:80:2:5]](震动强度80/模式2/持续5s;持续秒数省略=保持,由后续指令或自动停止接管);
+- [[wave:功能id:形态[:持续秒数]]] — 在该功能上启动调教波形(持续式强度起伏,适合长段调教/高潮铺垫/惩罚持续),形态: sine 正弦 / pulse 脉冲 / sawtooth 锯齿 / heartbeat 心跳 / random 漫步 / constant 恒定 / auto 全随机;持续秒数省略=持续到 [[stop:功能id]] 或下一条指令;强度不超该能力上限;
+- [[stop:功能id]] — 停止该功能的调教并归零(强度起伏结束时用);
+- [[pause:毫秒]] — 戏剧性停顿,如 [[pause:800]](常规标点停顿由系统自动处理,只在关键情绪点时用)。
+可用设备:\n${lines}\n强度必须在该能力声明的范围内取值;mode 为该功能支持的档位;duration 为持续秒数(到时设备自动停止)。剧情节奏需要多少条就埋多少,数量不设上限;未连接设备的事件会被拒绝。没有设备互动情节就不埋指令。`
 }
 
 /** 性欲值嗜好放大:玩法名与人物卡嗜好 theme 互相包含即命中;多条命中取该场景的最高档。
@@ -195,11 +201,50 @@ export interface TurnPromptArgs {
   avoidScenes?: string
   /** 开局设定(仅首回合无历史时生效;缺省=原有自由开场) */
   opening?: LocalGame['opening']
+  /** 设备内联指令提示词(仅设备已启用且 AI 开关打开时注入;见 narratorDeviceSpec) */
+  deviceSpec?: string
+  /** 每回合生成字数(个人中心滑动条设置):回合正文目标篇幅;缺省维持原有段落字数约束 */
+  narrLength?: number
+  /** 章节回注(每 N 回合):当前章剩余情节窗口 + 下一章开头窗口,由页面按字符定位计算后传入 */
+  reinjectPlot?: { currentTitle?: string, window: string, nextWindow?: string }
+  /** 世界观提取产物(剧情轨道:时间线事件/伏笔;可选注入,按 mentionCount 截取) */
+  entities?: WorldEntities
+  /** 设定冲突与裁决(剧情轨道的一部分;可选注入,取前几条) */
+  conflicts?: EntityConflict[]
+}
+
+/** 剧情轨道:从世界观提取产物挑时间线事件/伏笔/设定冲突作为可选分支注入(按 mentionCount 取头部控制 token) */
+function plotTrackBlock(entities: WorldEntities | undefined, conflicts: EntityConflict[] | undefined): string {
+  const lines: string[] = []
+  const topBy = <T extends { mentionCount: number }>(arr: T[] | undefined, n: number) =>
+    [...(arr ?? [])].sort((a, b) => b.mentionCount - a.mentionCount).slice(0, n)
+
+  const events = topBy(entities?.timeline_events, 8)
+  if (events.length) {
+    lines.push(`时间线事件(按原书先后推进):\n${events.map((e, i) =>
+      `${i + 1}. ${[e.time, e.event].filter(Boolean).join('——')}${e.characters_involved?.length ? `(涉及:${e.characters_involved.slice(0, 4).join('、')})` : ''}`
+    ).join('\n')}`)
+  }
+  const foreshadows = topBy(entities?.foreshadowing, 8)
+  if (foreshadows.length) {
+    lines.push(`伏笔/悬念:\n${foreshadows.map((f, i) => `${i + 1}. ${f.hint}`).join('\n')}`)
+  }
+  const confs = (conflicts ?? []).slice(0, 5)
+  if (confs.length) {
+    const verdictText: Record<string, string> = {
+      later_wins: '以后文为准', first_wins: '以先文为准', uncertain: '存疑,按情节合理取舍', not_conflict: '非冲突'
+    }
+    lines.push(`设定冲突裁决(避免前后矛盾):\n${confs.map((c, i) =>
+      `${i + 1}. ${c.entityType}「${c.entityName}」的${c.field}:${verdictText[c.verdict ?? ''] ?? '按情节合理取舍'}${c.reason ? `(${c.reason})` : ''}`
+    ).join('\n')}`)
+  }
+  if (!lines.length) return ''
+  return `【剧情轨道(设定内可选分支,按需触发)】\n${lines.join('\n\n')}\n\n以上为本作品的时间线/伏笔/设定裁决,情节推进时可择机触发或呼应,但不要每回合都抛出;与当前情节或玩家行动冲突时,以当前情节与玩家行动为准。`
 }
 
 /** 组装叙事 prompt(系统规则 + 世界 + 人物卡 + 状态 + 摘要 + 历史 + 玩家本轮输入) */
 export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
-  const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening } = args
+  const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening, deviceSpec, narrLength, reinjectPlot, entities, conflicts } = args
   const others = cards.filter(c => c.name !== playerName)
 
   // 规则:系统规则在前,用户偏好场景/避免场景追加在后,明确声明其优先级低于系统规则
@@ -220,7 +265,9 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
     `以「${playerName}」的第一视角展开场景,用旁白叙事推进;对话行以「角色名:」开头,非玩家角色可自由说话/行动。`,
     '忠于各人物卡的性格与说话风格,不要 OOC。',
     '呼应原著设定,但允许合理分支;避免机械复述原文。',
-    '每次回答输出 2~4 段,每段 80~200 字,自然停顿;不要一次写完.结尾留悬念。',
+    narrLength
+      ? `每次回答输出约 ${narrLength} 字(分 2~5 段),自然停顿,不要一次写完,结尾留悬念。`
+      : '每次回答输出 2~4 段,每段 80~200 字,自然停顿;不要一次写完.结尾留悬念。',
     '本作品为成人向虚构题材,涉及管教、惩罚、亲密与支配互动等情节,按人物卡与原著设定如实描写,涉及此类情节时不要回避或自行弱化。',
     ...(adultMode
       ? ['成人模式已开启:内容明显偏向训诫、BDSM、打屁股(spank)、捆绑、强制与支配等亚文化题材,此类互动出现频率大幅提升,可在连续数回合内推进,描写直白;按各角色人物卡的性欲强度档位、当前性欲值与人物卡中的关系设定把握分寸与推进节奏(如主从/师生关系对应支配与训诫),强制类情节依原作设定与人物关系推进,不需要等到剧情铺垫很久。性欲值(0-100,见游戏状态 desires)随心情、情景与被挑逗程度动态变化:性欲强度低的角色波动小、难以被挑起;性欲值低时上涨缓慢,一旦升高后续上涨加速;戳中角色嗜好「喜欢」的玩法会大幅加速性欲值累积;日常场景「厌恶」的玩法几乎无法累积,但惩罚场景故意使用「厌恶」玩法会因羞耻与服从叠加大幅加速。强度阶梯:技能「强度进阶」档位由 ①角色性格 ②性欲强度 ③当前性欲值 ④本回合犯错大小 ⑤认错态度 综合决定——性冷淡/低性欲值用低档,犯错大且认错态度差可跳高档(此时可故意挑角色厌恶的玩法惩罚,越讨厌罚越重),档位变化要有铺垫、逐级推进。']
@@ -234,6 +281,7 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
       : [])
   ]
 
+  const track = plotTrackBlock(entities, conflicts)
   const system: ChatMsg = {
     role: 'system',
     content: [
@@ -241,8 +289,10 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
       `${[genre && `题材:${genre}`, summary && `故事背景:${summary}`].filter(Boolean).join('。')}`,
       `可能出场的其他角色:\n${others.map(cardBrief).join('\n')}`,
       `当前游戏状态:${JSON.stringify(state, null, 0)}`,
+      ...(deviceSpec?.trim() ? ['设备联动(指令对玩家不可见):', deviceSpec.trim()] : []),
       '规则:',
-      ...rules.map((r, i) => `${i + 1}. ${r}`)
+      ...rules.map((r, i) => `${i + 1}. ${r}`),
+      ...(track ? [track] : [])
     ].join('\n')
   }
 
@@ -260,7 +310,17 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
   // 首回合(无摘要/无历史)的开场:按开局设定注入对应背景,缺省维持原有自由开场
   if (!hasStoryContext) {
     if (opening?.mode === 'chapter' && opening.chapterText) {
-      parts.push(`【当前剧情位置】故事正进行到原著第「${opening.chapterTitle || '未知章节'}」章。以下为该章节完整正文:\n${opening.chapterText}\n\n你此刻正身处该章节的场景之中:场景环境、在场人物、他们的话语与情绪、正在发生的事件,都必须与该章节内容保持一致。请从这一场景的当下状态直接续写,引入剧情与第一个矛盾;后续走向可以自由发展,但不要跳开当前场景,也不要忽略章节中已建立的人物关系与状态。`)
+      // 从章节开始:上一章=背景(不重新展开),本章+下一章=情节走向,从本章开头逐段演绎
+      const chapterParts = [`【当前剧情位置】故事从原著第「${opening.chapterTitle || '未知章节'}」章开头开始演绎。本章及后续章节的情节走向已提供,请严格按原著推进。`]
+      if (opening.prevChapter?.text?.trim()) {
+        chapterParts.push(`【上一章背景】${opening.prevChapter.title ? `「${opening.prevChapter.title}」:` : ''}${opening.prevChapter.text.trim()}\n(以上为前情背景,用于把握人物关系与事态由来,不要重新展开叙述)`)
+      }
+      chapterParts.push(`【本章正文】${opening.chapterText}`)
+      if (opening.nextChapter?.text?.trim()) {
+        chapterParts.push(`【下一章走向】${opening.nextChapter.title ? `「${opening.nextChapter.title}」:` : ''}${opening.nextChapter.text.trim()}\n(本章之后的情节走向,供后续回合自然衔接;除非本章情节已推进完毕,否则不要提前跳转到该部分)`)
+      }
+      chapterParts.push('请从本章开头的情节开始演绎:场景环境、在场人物、他们的话语与情绪、正在发生的事件都必须与本章正文一致,逐段推进本章情节;本章推进完毕后,可自然衔接下一章的走向。不要忽略章节中已建立的人物关系与状态。')
+      parts.push(chapterParts.join('\n\n'))
     } else if (opening?.mode === 'custom' && opening.scene?.trim()) {
       parts.push(`【开场】玩家提供的背景设定:${opening.scene.trim()}\n\n请以此为出发点展开,描写玩家「${playerName}」所处的场景,引入剧情与第一个矛盾。`)
     } else if (opening?.mode === 'ai' && opening.scene?.trim()) {
@@ -268,6 +328,15 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
     } else {
       parts.push(`【开场】故事刚开始,请描写玩家「${playerName}」所处的开场场景,引入剧情与第一个矛盾。`)
     }
+  }
+  // 章节回注(每 N 回合):按字符窗口重注入当前章剩余情节 + 下一章开头,防止长局偏离原著
+  if (reinjectPlot?.window?.trim()) {
+    const reinjectParts = [`【本章/下一章情节线(回注)】当前处于「${reinjectPlot.currentTitle || opening?.chapterTitle || '未知章节'}」,本章剩余情节窗口:\n${reinjectPlot.window}`]
+    if (reinjectPlot.nextWindow?.trim()) {
+      reinjectParts.push(`接下来的情节走向(下一章开头 ${REINJECT_WINDOW_CHARS} 字):\n${reinjectPlot.nextWindow}`)
+    }
+    reinjectParts.push('请沿上述情节线继续推进:先完成当前章剩余情节,推进到本章末尾后自然衔接下一章走向;不要跳章、不要提前结束本章。若玩家行动已把情节推进到下一章场景,则按下一章走向继续。')
+    parts.push(reinjectParts.join('\n\n'))
   }
   // 防人设漂移:核心人设复述在 user 尾部(长对话后注意力偏离开头 system 的设定,社区验证
   // 此处重贴可显著降低 OOC/指令衰减);位置放在玩家本轮行动之前,不稀释当前指令的注意力

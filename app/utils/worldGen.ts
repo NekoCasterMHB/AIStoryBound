@@ -17,6 +17,7 @@ import type { LiveTokenInfo } from './aiRelay'
 import { detectAuthor } from './authorDetect'
 import { loadGenLimits } from './genSettings'
 import type { GenLimits } from './genSettings'
+import { extractCacheKey, loadExtractCache, saveExtractUnit, markExtractComplete } from './extractCache'
 import { db } from './localDb'
 
 const EXTRACT_CONCURRENCY = 4
@@ -164,7 +165,6 @@ export async function generateWorld(
     })
   }
 
-  const extracts: (ChapterExtraction | null)[] = []
   let completedUnits = 0
   /** 实时进度:单元完成时立即刷新;流式期间按节流刷新(实时 token 消耗,覆盖 author/extract/check/synthesize 全程) */
   const emitLive = (stage: GenerateProgress['stage'] = 'extract', live?: { tokens: number, speed: number }) => {
@@ -211,58 +211,88 @@ export async function generateWorld(
   }
   progress('extract')
 
-  const results = await pool(units, EXTRACT_CONCURRENCY, async (unit, index) => {
-    const attempt = async (): Promise<ChapterExtraction> => {
-      const res = await aiChatJson<unknown>(buildExtractMessages(title, unit, eco), {
-        // 输出上限取用户配置;节约模式再压到其自身上限(只会更小不会更大)
-        maxTokens: eco ? Math.min(ECO_EXTRACT_MAX_TOKENS, genLimits.extractMaxTokens) : genLimits.extractMaxTokens,
-        temperature: 0.2,
-        thinking: false,
-        timeoutMs: relayTimeoutMs
-      }, {
-        onLive: liveHandler(`u${index}`, 'extract'),
-        signal
-      })
-      // 失败(如 502 非 JSON)也已产生输出,如实入账
-      tokensUsed += res.usage?.totalTokens ?? 0
-      if (!res.ok) throw toAiError(res)
-      return normalizeExtraction(res.data)
+  // ---- 1) Map:分块提取(断点续跑:复用缓存中已完成单元,只重跑失败/缺失的,省 token) ----
+  const cacheKey = await extractCacheKey(title, chapters, { eco, unitMaxChars: genLimits.unitMaxChars, unitOverlapChars: genLimits.unitOverlapChars })
+  const cached = await loadExtractCache(cacheKey)
+  const reused = new Map<number, ChapterExtraction>()
+  if (cached) {
+    for (let i = 0; i < units.length; i++) {
+      const ex = cached.done[i]
+      if (ex) reused.set(i, ex)
     }
-    try {
-      return await attempt()
-    } catch (e) {
-      if (isAborted()) throw new CancelledError()
-      // 4xx 业务失败(配额/鉴权)重试无意义,直接记为本单元失败
-      if (!isRetryable(e)) throw e
-      // 自动重试一次(退避 1.5s,应对上游瞬时限流/偶发非 JSON 输出)
-      await sleep(1500)
+    if (reused.size > 0) {
+      warnings.push(`已复用上次提取的 ${reused.size}/${units.length} 个单元(0 token),仅重新提取剩余部分`)
+    }
+  }
+
+  const extracts: (ChapterExtraction | null)[] = new Array(units.length).fill(null)
+  for (const [i, ex] of reused) extracts[i] = ex
+  const todoIndexes = units.map((_, i) => i).filter(i => !reused.has(i))
+  /** 已完成单元数(含复用的):驱动 UI 进度,从复用数起步 */
+  completedUnits = reused.size
+  /** 成功单元数(含复用):失败率判定用 */
+  let okCount = reused.size
+
+  if (todoIndexes.length > 0) {
+    const results = await pool(todoIndexes, EXTRACT_CONCURRENCY, async (unitIndex) => {
+      const unit = units[unitIndex]!
+      const attempt = async (): Promise<ChapterExtraction> => {
+        const res = await aiChatJson<unknown>(buildExtractMessages(title, unit, eco), {
+          // 输出上限取用户配置;节约模式再压到其自身上限(只会更小不会更大)
+          maxTokens: eco ? Math.min(ECO_EXTRACT_MAX_TOKENS, genLimits.extractMaxTokens) : genLimits.extractMaxTokens,
+          temperature: 0.2,
+          thinking: false,
+          timeoutMs: relayTimeoutMs
+        }, {
+          onLive: liveHandler(`u${unitIndex}`, 'extract'),
+          signal
+        })
+        // 失败(如 502 非 JSON)也已产生输出,如实入账
+        tokensUsed += res.usage?.totalTokens ?? 0
+        if (!res.ok) throw toAiError(res)
+        return normalizeExtraction(res.data)
+      }
       try {
         return await attempt()
-      } catch (e2) {
+      } catch (e) {
         if (isAborted()) throw new CancelledError()
-        return e2 as Error
+        // 4xx 业务失败(配额/鉴权)重试无意义,直接记为本单元失败
+        if (!isRetryable(e)) throw e
+        // 自动重试一次(退避 1.5s,应对上游瞬时限流/偶发非 JSON 输出)
+        await sleep(1500)
+        try {
+          return await attempt()
+        } catch (e2) {
+          if (isAborted()) throw new CancelledError()
+          return e2 as Error
+        }
       }
-    }
-  }, (i) => {
-    completedUnits++
-    liveCalls.delete(`u${i}`)
-    emitLive()
-  }, signal)
-  if (isAborted()) throw new CancelledError()
+    }, (unitIndex) => {
+      completedUnits++
+      liveCalls.delete(`u${unitIndex}`)
+      emitLive()
+    }, signal)
+    if (isAborted()) throw new CancelledError()
 
-  let okCount = 0
-  results.forEach((r, i) => {
-    const unit = units[i]
-    if (r instanceof Error) {
-      warnings.push(`单元「${unit?.label ?? `#${i + 1}`}」提取失败: ${r.message}`)
-      extracts.push(null)
-    } else {
-      okCount++
-      extracts.push(r)
-    }
-  })
+    todoIndexes.forEach((unitIndex, j) => {
+      const r = results[j]!
+      if (r instanceof Error) {
+        warnings.push(`单元「${units[unitIndex]?.label ?? `#${unitIndex + 1}`}」提取失败: ${r.message}`)
+      } else {
+        okCount++
+        extracts[unitIndex] = r
+        // 增量写缓存:中断/失败后下次续跑只重跑缺失单元(失败单元不入缓存)
+        void saveExtractUnit(cacheKey, unitIndex, r, { title, eco })
+          .catch(() => { /* 缓存写入失败不影响主流程 */ })
+      }
+    })
+  }
   if (units.length > 0 && okCount / units.length <= 1 - MAX_FAIL_RATIO) {
-    throw new Error(`提取失败率过高(${units.length - okCount}/${units.length}),已中止。请重试或检查 AI 配置。`)
+    throw new Error(`提取失败率过高(${units.length - okCount}/${units.length}),已中止。可重新生成续跑,已提取部分不会重复消耗 token。`)
+  }
+  // 全部单元成功 → 标记缓存完整(下次同书生成直接全量复用)
+  if (okCount === units.length) {
+    await markExtractComplete(cacheKey).catch(() => { /* 缓存写入失败不影响主流程 */ })
   }
   progress('merge')
 

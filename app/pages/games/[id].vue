@@ -4,11 +4,11 @@
 // 回滚完全本地(存盘点恢复);登录用户可一键同步云端(跨设备续玩)。
 import { aiChat, aiChatJson } from '../../utils/aiRelay'
 import { estimateTextTokens } from '#shared/token-estimate'
-import { isAdultModeEnabled } from '../../utils/adultMode'
-import { loadScenePrefs } from '../../utils/scenePrefs'
-import { loadNarrTemp } from '../../utils/narrPrefs'
+import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
+import { loadScenePrefs, saveScenePrefs } from '../../utils/scenePrefs'
+import { loadNarrTemp, saveNarrTemp, NARR_TEMP_MIN, NARR_TEMP_MAX, NARR_TEMP_STEP } from '../../utils/narrPrefs'
 import { loadEnabledAiSkillObjects, listInstalledSkills, loadEnabledAiSkills, saveEnabledAiSkills } from '../../utils/aiSkills'
-import { buildTurnPrompt, cardBrief, deviceEventsPrompt, ensureDesires, mergeState, turnOptionsSchema } from '#shared/game'
+import { buildTurnPrompt, cardBrief, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, REINJECT_CHAPTER_EVERY, REINJECT_WINDOW_CHARS } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
 import { getLocalGame, saveLocalGame, syncGameToCloud } from '../../utils/gameStore'
@@ -20,11 +20,20 @@ import { downloadGameAsTxt } from '../../utils/exportStory'
 import { downloadGameAsZip } from '../../utils/shareZip'
 import { toyController } from '../../toy/api'
 import { loadToySettings } from '../../toy/store'
-import { loadAllAdapters } from '../../toy/runtime/adapter-loader'
-import { isAdapterEnabled } from '#shared/toy'
+import { loadAllPluginSpecs } from '../../toy/runtime/adapter-loader'
+import { isAdapterEnabled, DEFAULT_TOY_SETTINGS } from '#shared/toy'
 import type { ToySettings } from '#shared/toy'
+import { describePlugin } from '#shared/plugin'
+import { loadNarrSpeed, saveNarrSpeed, narrSpeedTierOf, NARR_SPEED_TIERS } from '../../utils/narrSpeed'
+import { loadNarrLength, saveNarrLength, NARR_LENGTH_MIN, NARR_LENGTH_MAX, NARR_LENGTH_STEP } from '../../utils/narrLength'
+import { createNarrParser } from '../../utils/narrStream'
+import { createTypewriter } from '../../utils/typewriter'
+import type { NarrParser } from '../../utils/narrStream'
+import type { Typewriter } from '../../utils/typewriter'
 
 useHead({ title: 'AI Word2World · 游戏' })
+// 沉浸式游戏布局:无导航栏/页脚,整页禁滚动(占满视口),内部区域自行滚动
+definePageMeta({ layout: 'game' })
 
 const route = useRoute()
 const gameId = route.params.id as string
@@ -38,13 +47,98 @@ const options = ref<{ idx: number, text: string }[]>([])
 const loadError = ref<string | null>(null)
 
 /** 「本地存档上云」开关(个人中心设置,默认关闭):关闭时不上传任何云端数据 */
-const cloudSaveEnabled = isCloudSaveEnabled()
-/** 「成人模式」开关(选角页/个人中心设置,默认关闭):开启后成人内容频率大幅上升 */
-const adultMode = isAdultModeEnabled()
-/** 用户偏好/避免场景(个人中心设置,优先级低于系统规则),回合开始时读入 */
-const scenePrefs = loadScenePrefs()
-/** 叙事温度(个人中心滑动条设置,默认 1.2):回合正文生成的随机性档位 */
-const narrTemp = loadNarrTemp()
+const cloudSaveEnabled = ref(isCloudSaveEnabled())
+/** 「成人模式」开关(游戏内设置弹窗/个人中心,默认关闭):开启后成人内容频率大幅上升 */
+const adultMode = ref(isAdultModeEnabled())
+watch(adultMode, v => setAdultModeEnabled(v))
+/** 用户偏好/避免场景(游戏内设置弹窗/个人中心,优先级低于系统规则),回合开始时读入 */
+const scenePrefs = reactive(loadScenePrefs())
+/** 叙事温度(游戏内设置弹窗/个人中心滑动条,默认 1.2):回合正文/选项/状态结算共用的随机性档位 */
+const narrTemp = ref(loadNarrTemp())
+watch(narrTemp, v => saveNarrTemp(v))
+/** 每回合生成字数(游戏内设置弹窗/个人中心滑动条,默认 400 字):回合正文目标篇幅,并据此缩放叙事 maxTokens */
+const narrLength = ref(loadNarrLength())
+watch(narrLength, v => saveNarrLength(v))
+/** 叙事速度(游戏内设置弹窗/个人中心,IndexedDB 持久化):回合正文流式速率档位,新回合生效 */
+const narrSpeed = ref(60)
+const narrSpeedLoaded = ref(false)
+void loadNarrSpeed().then((cps) => {
+  narrSpeed.value = cps
+  narrSpeedLoaded.value = true
+})
+function pickNarrSpeed(cps: number): void {
+  narrSpeed.value = cps
+  if (narrSpeedLoaded.value) void saveNarrSpeed(cps)
+}
+
+// ---- 游戏内设置弹窗(个人中心「模型设置」成人模式往下的游玩偏好项,改动即时保存/新回合生效) ----
+
+const settingsOpen = ref(false)
+const sceneMsg = ref<{ kind: 'ok' | 'err', text: string } | null>(null)
+function submitScenePrefs() {
+  saveScenePrefs({ prefer: scenePrefs.prefer, avoid: scenePrefs.avoid })
+  sceneMsg.value = { kind: 'ok', text: '已保存,新回合生效' }
+}
+
+// ---- 章节回注定位(每 N 回合把当前章剩余情节窗口 + 下一章开头窗口重新注入提示词) ----
+
+/** 回注定位:当前章索引 + 章内字符偏移(AI 报告进入新章时重置偏移) */
+const plotPos = ref({ idx: 0, offset: 0 })
+
+/** 解析回注定位的章节索引:优先开局 chapterIndex,再按标题匹配作品章节(旧存档回退),缺省 0 */
+function resolveChapterIndex(title: string | null | undefined): number {
+  const chapters = work.value?.chapters ?? []
+  const op = game.value?.opening
+  if (op?.mode === 'chapter' && typeof op.chapterIndex === 'number' && chapters[op.chapterIndex]) {
+    return op.chapterIndex
+  }
+  if (title) {
+    const idx = chapters.findIndex(c => c.title === title || (c.title && (c.title.startsWith(title) || title.startsWith(c.title))))
+    if (idx >= 0) return idx
+  }
+  return 0
+}
+
+/** 每回合推进回注定位:AI 报告的新章节在作品中匹配到 → 换章并重置偏移;仍在原章 → 偏移累加本回合实际旁白字数 */
+function advancePlotPos(reportedChapter: string | null | undefined, chars: number): void {
+  const chapters = work.value?.chapters ?? []
+  if (chapters.length === 0) return
+  const cur = plotPos.value
+  const curTitle = chapters[cur.idx]?.title ?? ''
+  if (reportedChapter && curTitle && curTitle !== reportedChapter) {
+    // 尝试从当前章向后匹配报告章节(精确/前缀/包含)
+    let matched = -1
+    for (let i = cur.idx; i < chapters.length; i++) {
+      const t = chapters[i]?.title ?? ''
+      if (t === reportedChapter || (t && (t.startsWith(reportedChapter) || reportedChapter.startsWith(t)))) {
+        matched = i
+        break
+      }
+    }
+    if (matched >= 0) {
+      plotPos.value = { idx: matched, offset: 0 }
+      return
+    }
+  }
+  // 仍在原章:偏移按实际旁白字数累加(不超章节长度,防止窗口越界)
+  const maxOffset = Math.max(0, (chapters[cur.idx]?.content?.length ?? 0) - 1)
+  plotPos.value = { idx: cur.idx, offset: Math.min(maxOffset, cur.offset + chars) }
+}
+
+/** 构建回注窗口:当前章从定位起 1500 字(剩余情节窗口)+ 下一章开头 1500 字(接下来的走向) */
+function buildReinjectWindow(): { currentTitle?: string, window: string, nextWindow?: string } | undefined {
+  const chapters = work.value?.chapters ?? []
+  if (chapters.length === 0) return undefined
+  const ch = chapters[plotPos.value.idx]
+  if (!ch) return undefined
+  const text = ch.content ?? ''
+  const start = Math.max(0, Math.min(plotPos.value.offset, text.length))
+  const window = text.slice(start, start + REINJECT_WINDOW_CHARS)
+  const next = chapters[plotPos.value.idx + 1]
+  const nextWindow = next ? (next.content ?? '').slice(0, REINJECT_WINDOW_CHARS) : ''
+  if (!window && !nextWindow) return undefined
+  return { currentTitle: ch.title || undefined, window, nextWindow }
+}
 /** AI Skill 玩法库(个人中心逐项开关 + 链接导入):本轮成人互动可用的玩法菜单(含详细设定)
  *  异步加载(IndexedDB),sendTurn 前必须 await 完成,否则首回合技能不会注入 prompt */
 const activeSkills = ref<Awaited<ReturnType<typeof loadEnabledAiSkillObjects>>>([])
@@ -56,7 +150,7 @@ const skillsLoadPromise = loadEnabledAiSkillObjects()
     // 本地注册表异常时保持空列表,不阻塞开局
   })
 
-/** 玩具控制:设备设置(硬限制/总开关,IndexedDB);AI 开关打开且有已启用适配器时,回合收尾器才允许输出 device_events */
+/** 玩具控制:设备设置(硬限制/总开关,IndexedDB);AI 开关打开且有已启用插件时,叙事提示词注入内联指令语法 */
 const toySettings = ref<ToySettings | null>(null)
 void loadToySettings().then((s) => {
   toySettings.value = s
@@ -74,12 +168,13 @@ onMounted(async () => {
   state.value = ensureDesires(g.state, cards.value)
   messages.value = g.messages
   currentChapter.value = g.currentChapter ?? null
+  plotPos.value = { idx: resolveChapterIndex(g.currentChapter), offset: 0 }
   const last = g.messages.at(-1)
   options.value = last ? (g.optionsByMessage?.[last.id] ?? []) : []
   // 初始存档点:保证第一轮行动也有回滚目标
   await savePointNow()
   // 开启上云时,进入游戏先把最新进度推到云端
-  if (cloudSaveEnabled) void syncGameToCloud(game.value)
+  if (cloudSaveEnabled.value) void syncGameToCloud(game.value)
 })
 
 const playerName = computed(() => game.value?.playerName ?? '玩家')
@@ -89,7 +184,8 @@ const playerCard = computed(() => cards.value.find(c => c.name === game.value?.c
 const streaming = ref(false)
 /** 叙事流式已完成、选项(结构化)生成中:此阶段显示选项骨架屏 */
 const awaitingOptions = ref(false)
-const streamText = ref('')
+/** 打字机已显示文本(限速 + 标点停顿;指令不可见) */
+const streamDisplay = ref('')
 const liveTokens = ref(0)
 const liveSpeed = ref(0)
 let liveStartedAt = 0
@@ -98,6 +194,20 @@ const error = ref<string | null>(null)
 const input = ref('')
 const chatRef = ref<HTMLElement | null>(null)
 const toast = useToast()
+
+// ---- 流式打字机(每回合一个 parser + typewriter;点击流式文本立即显示全文) ----
+let narrParser: NarrParser | null = null
+let typewriter: Typewriter | null = null
+
+/** 点击流式文本 → 立即显示全文(剩余设备指令顺序执行,停顿跳过,自动会话收尾) */
+function flushStream() {
+  typewriter?.flush()
+}
+
+onUnmounted(() => {
+  typewriter?.dispose()
+  typewriter = null
+})
 
 // ---- 技能管理(模态框:启用/禁用已安装技能,切换后立即影响后续回合注入) ----
 
@@ -328,11 +438,51 @@ async function sendTurn(choice?: string) {
   awaitingOptions.value = false
   error.value = null
   turnUsage.value = null
-  streamText.value = ''
+  streamDisplay.value = ''
   options.value = []
   liveTokens.value = 0
   liveSpeed.value = 0
   liveStartedAt = Date.now()
+
+  // 本回合打字机:叙事速度(游戏内设置弹窗/个人中心)→ 限速/停顿;设备指令到句执行,自动会话回调
+  typewriter?.dispose()
+  narrParser = createNarrParser()
+  const speedTier = narrSpeedTierOf(narrSpeed.value)
+  typewriter = createTypewriter({
+    cps: narrSpeed.value,
+    pauseScale: speedTier.pauseScale,
+    onDisplay: (t) => {
+      streamDisplay.value = t
+    },
+    onExecute: (cmd) => {
+      // 指令分发:dev 单次事件 / wave 调教(AI 门槛+上限钳制)/ stop 停止调教
+      if (cmd.kind === 'wave') {
+        return toyController.startWaveForAI(cmd.function, cmd.pattern, cmd.duration, toySettings.value ?? DEFAULT_TOY_SETTINGS).then((r) => {
+          if (!r.ok) {
+            toast.add({ title: '调教指令被拒绝', description: r.reason, color: 'error' })
+          }
+          return r.ok
+        })
+      }
+      if (cmd.kind === 'stop') {
+        toyController.stopWave(cmd.function)
+        return true
+      }
+      return toyController.execute({
+        function: cmd.function,
+        intensity: cmd.intensity,
+        ...(cmd.mode != null ? { mode: cmd.mode } : {}),
+        ...(cmd.duration != null && cmd.duration > 0 ? { duration: cmd.duration } : {})
+      }, { source: 'ai', settings: toySettings.value ?? DEFAULT_TOY_SETTINGS }).then((r) => {
+        if (!r.ok) {
+          toast.add({ title: '设备指令被拒绝', description: r.reason, color: 'error' })
+        }
+        return r.ok
+      })
+    },
+    onAutoStart: () => toyController.beginAutoSession(),
+    onAutoEnd: () => toyController.endAutoSession()
+  })
 
   if (choice) {
     messages.value.push({ id: uuid(), idx: messages.value.length, role: 'user', speaker: playerName.value, content: choice })
@@ -346,6 +496,21 @@ async function sendTurn(choice?: string) {
     if (messages.value.length === 0) {
       await seedDesiresByOpening()
     }
+    // 设备联动提示词:AI 开关打开且有已启用插件时,叙事提示词注入内联指令语法与能力清单
+    // (逐条标注清单声明的强度范围;指令数量由 AI 按情节判断,不设上限)
+    const settingsNow = toySettings.value
+    const enabledBriefs = settingsNow
+      ? (await loadAllPluginSpecs())
+          .filter(s => isAdapterEnabled(settingsNow, s.descriptor.id))
+          .map(s => describePlugin(s, toyController.state.adapterId === s.descriptor.id))
+      : []
+    const deviceEnabled = !!settingsNow?.aiEnabled && enabledBriefs.length > 0
+    const deviceSpec = deviceEnabled ? narratorDeviceSpec(enabledBriefs) : ''
+    // 章节回注:每 REINJECT_CHAPTER_EVERY 回合,按当前定位取当前章剩余情节窗口 + 下一章开头窗口
+    const turnIndex = messages.value.filter(m => m.role === 'narrator').length
+    const reinjectPlot = turnIndex > 0 && turnIndex % REINJECT_CHAPTER_EVERY === 0 && game.value.opening?.mode === 'chapter'
+      ? buildReinjectWindow()
+      : undefined
     // 1) 叙事流式(中继 SSE)
     const prompt = buildTurnPrompt({
       title: work.value?.overlay?.title || '未命名小说',
@@ -358,88 +523,62 @@ async function sendTurn(choice?: string) {
       history: messages.value,
       choice,
       summaryText: game.value.summary?.text,
-      adultMode,
+      adultMode: adultMode.value,
       activeSkills: activeSkills.value,
       preferScenes: scenePrefs.prefer ?? undefined,
       avoidScenes: scenePrefs.avoid ?? undefined,
-      opening: game.value.opening
+      opening: game.value.opening,
+      deviceSpec,
+      narrLength: narrLength.value,
+      entities: work.value?.entities,
+      conflicts: work.value?.conflicts,
+      reinjectPlot
     })
-    const narr = await aiChat(prompt, { maxTokens: 2400, temperature: narrTemp, thinking: false }, {
+    const narr = await aiChat(prompt, { maxTokens: Math.min(2400, Math.max(800, Math.round(narrLength.value * 2))), temperature: narrTemp.value, thinking: false }, {
       onDelta: (d) => {
-        streamText.value += d
-        // 实时消耗估算(与生成页一致:CJK 感知字符 → token,含速度)
+        // 解析器增量识别 [[dev:...]] / [[pause:...]],打字机按序消费(文本限速 + 停顿;指令到句执行)
+        const tokens = narrParser?.feed(d) ?? []
+        typewriter?.push(tokens)
+        // 实时消耗估算(与生成页一致:CJK 感知字符 → token,含速度;用 fullText 不因显示延迟失真)
         const elapsed = Date.now() - liveStartedAt
-        const tokens = estimateTextTokens(streamText.value)
-        liveTokens.value = tokens
-        liveSpeed.value = elapsed > 0 ? Math.round((tokens / elapsed) * 1000) : 0
+        const tokensOut = typewriter ? estimateTextTokens(typewriter.fullText) : 0
+        liveTokens.value = tokensOut
+        liveSpeed.value = elapsed > 0 ? Math.round((tokensOut / elapsed) * 1000) : 0
       }
     })
     if (!narr.ok) throw new Error(narr.message)
     // 游玩消耗累计到作品计量(含失败重试已消耗的部分)
     void addWorkTokens(game.value.workId, narr.usage?.totalTokens ?? 0)
 
-    const narratorText = streamText.value.trim()
+    // 流结束:解析器收尾(丢弃未闭合指令)→ 推送剩余 token,打字机按原速继续播完
+    // (不再立即上屏全部;点击流式正文仍可跳过,播完后再生成选项)
+    const tail = narrParser?.finish() ?? []
+    typewriter?.push(tail)
+    await typewriter?.done()
+    const narratorText = (typewriter?.fullText ?? streamDisplay.value).trim()
     if (!narratorText) throw new Error('AI 未返回剧情内容,请重试')
     const narratorMsg = { id: uuid(), idx: messages.value.length, role: 'narrator', speaker: null, content: narratorText }
     messages.value.push(narratorMsg)
-    streamText.value = ''
     // 叙事已上屏,进入选项生成阶段:显示骨架屏等待
     awaitingOptions.value = true
 
-    // 2) 选项 + 状态变化 + 剧情摘要(结构化)
-    // AI 开关打开且有已启用适配器时,schema 附 device_events 字段并注入全部已启用设备的能力清单
-    // (每个适配器暴露自己的功能,AI 按剧情需要选择目标设备与能力);否则 schema 不含该字段。
-    const allAdapters = await loadAllAdapters()
-    const settingsNow = toySettings.value
-    const enabledDevices = settingsNow
-      ? allAdapters
-          .filter(a => isAdapterEnabled(settingsNow, a.manifest.id))
-          .map(a => ({
-            id: a.manifest.id,
-            name: a.manifest.name,
-            connected: toyController.state.adapterId === a.manifest.id,
-            functions: (a.manifest.capabilities?.functions ?? []).map(f => ({
-              id: f.id,
-              name: f.name,
-              supportsMode: f.supportsMode ?? false,
-              modeCount: f.modeCount ?? 1
-            }))
-          }))
-      : []
-    const deviceEnabled = !!settingsNow?.aiEnabled && enabledDevices.length > 0
-    const deviceSpec = deviceEnabled ? deviceEventsPrompt(enabledDevices) : ''
+    // 2) 选项 + 状态变化 + 剧情摘要(结构化);设备控制已走叙事流内联指令,收尾器不含设备字段
     const optRes = await aiChatJson<TurnStructured>(
       [
         {
           role: 'system',
-          content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3 个下一回合的行动选项、本轮对游戏状态的增量变化(相对当前值),以及整局剧情摘要。${deviceSpec}\n输出 JSON:\n${turnOptionsSchema(deviceEnabled)}`
+          content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3 个下一回合的行动选项、本轮对游戏状态的增量变化(相对当前值),以及整局剧情摘要。\n输出 JSON:\n${turnOptionsSchema()}`
         },
         {
           role: 'user',
           content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(state.value)}\n上文剧情:\n${messages.value.slice(-12).map(m => m.content).join('\n')}`
         }
       ],
-      { maxTokens: 1200, temperature: 0.5, thinking: false }
+      { maxTokens: 1200, temperature: narrTemp.value, thinking: false }
     )
     if (!optRes.ok) throw new Error(optRes.message)
     void addWorkTokens(game.value.workId, optRes.usage?.totalTokens ?? 0)
     const turn = optRes.data
-
-    // 3) 设备事件:AI 只提出事件,引擎校验(能力/硬限制/冷却)通过后才执行;被拒的逐条提示原因
-    if (turn.device_events?.length && toySettings.value) {
-      const results = await toyController.executeEvents(turn.device_events, {
-        source: 'ai',
-        settings: toySettings.value
-      })
-      const rejected = results.filter(r => !r.ok)
-      if (rejected.length) {
-        toast.add({
-          title: '设备事件被拒绝',
-          description: rejected.map(r => r.reason).join('; '),
-          color: 'error'
-        })
-      }
-    }
 
     state.value = mergeState(state.value, turn.state_delta, cards.value)
     if (turn.current_chapter) currentChapter.value = turn.current_chapter
@@ -447,18 +586,25 @@ async function sendTurn(choice?: string) {
     options.value = (turn.options ?? []).map((t, i) => ({ idx: i, text: String(t) }))
     if (!game.value.optionsByMessage) game.value.optionsByMessage = {}
     game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(options.value))
+    // 推进章节回注定位:AI 报告进入新章则换章重置,否则按本回合实际旁白字数累加偏移
+    advancePlotPos(turn.current_chapter, narratorText.length)
 
     const total = (narr.usage?.totalTokens ?? 0) + (optRes.usage?.totalTokens ?? 0)
     turnUsage.value = `本回合 ${total.toLocaleString()} tokens`
     persist()
     await savePointNow()
     // 开启「本地存档上云」时,每回合结束自动同步(未登录或失败静默跳过)
-    if (cloudSaveEnabled) void syncGameToCloud(game.value)
+    if (cloudSaveEnabled.value) void syncGameToCloud(game.value)
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
     // 叙事已上屏而收尾失败:保留剧情,下次重试只补选项
-    streamText.value = ''
+    typewriter?.flush()
   } finally {
+    // 回合结束:清理打字机,自动会话兜底收尾(解锁手动面板)
+    typewriter?.dispose()
+    typewriter = null
+    narrParser = null
+    toyController.endAutoSession()
     streaming.value = false
     awaitingOptions.value = false
   }
@@ -507,7 +653,12 @@ async function rollbackAction() {
   messages.value = JSON.parse(JSON.stringify(target.messages))
   state.value = ensureDesires(JSON.parse(JSON.stringify(target.state)), cards.value)
   currentChapter.value = target.currentChapter
-  streamText.value = ''
+  // 回滚后按恢复的章节重置回注定位(偏移归零,从该章开头重新定位,不跳过情节)
+  plotPos.value = { idx: resolveChapterIndex(target.currentChapter), offset: 0 }
+  streamDisplay.value = ''
+  typewriter?.dispose()
+  typewriter = null
+  narrParser = null
   options.value = []
   turnUsage.value = null
   error.value = null
@@ -523,7 +674,7 @@ async function rollbackAction() {
   persist()
   await pruneGamePoints(gameId, msg.idx)
   await savePointNow()
-  if (cloudSaveEnabled && game.value) void syncGameToCloud(game.value)
+  if (cloudSaveEnabled.value && game.value) void syncGameToCloud(game.value)
 }
 
 // ---- 分享(菜单:剧情 TXT / 全部 ZIP) ----
@@ -575,16 +726,17 @@ async function onSyncCloud() {
 }
 
 // 新内容自动滚到底部
-watch([messages, streamText], async () => {
+watch([messages, streamDisplay], async () => {
   await nextTick()
   chatRef.value?.scrollTo({ top: chatRef.value.scrollHeight, behavior: 'smooth' })
 })
 </script>
 
 <template>
-  <div class="min-h-[92vh] flex flex-col px-4 py-6">
-    <div class="mx-auto flex w-full max-w-4xl flex-1 flex-col space-y-4">
-      <!-- 顶栏 -->
+  <div class="flex h-full flex-col px-4">
+    <div class="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden">
+      <!-- 顶栏(固定置顶):标题行 + 地点/时间等状态排 -->
+      <div class="shrink-0 space-y-4 pt-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="min-w-0">
           <h1 class="truncate text-xl font-semibold">
@@ -642,6 +794,14 @@ watch([messages, streamText], async () => {
             @click="openSkillManager"
           />
           <UButton
+            label="设置"
+            icon="i-lucide-settings"
+            color="neutral"
+            variant="outline"
+            size="sm"
+            @click="settingsOpen = true"
+          />
+          <UButton
             label="返回"
             icon="i-lucide-arrow-left"
             color="neutral"
@@ -649,6 +809,8 @@ watch([messages, streamText], async () => {
             size="sm"
             :to="'/'"
           />
+          <!-- 外部设备连接入口:顶栏图标 + 弹出菜单 -->
+          <ToyControlStrip />
         </div>
       </div>
 
@@ -723,6 +885,7 @@ watch([messages, streamText], async () => {
             {{ desireBrief }}
           </p>
         </div>
+      </div>
       </div>
 
       <!-- 关系/性欲:查看详情与手动调节 -->
@@ -895,6 +1058,137 @@ watch([messages, streamText], async () => {
         </template>
       </UModal>
 
+      <!-- 游戏内设置:个人中心「模型设置」成人模式往下的游玩偏好项,改动即时保存/新回合生效 -->
+      <UModal
+        :open="settingsOpen"
+        :ui="{ content: 'sm:max-w-lg!' }"
+        @update:open="settingsOpen = $event"
+      >
+        <template #title>
+          游戏设置
+        </template>
+        <template #body>
+          <div class="flex max-h-[65vh] flex-col gap-5 overflow-y-auto pr-1">
+            <!-- 成人模式 -->
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p class="text-sm font-semibold">
+                  成人模式
+                </p>
+                <p class="text-xs text-neutral-500">
+                  开启后,游玩时成人内容出现频率大幅上升,并明显偏向训诫、BDSM、打屁股、捆绑、强制等亚文化题材;默认关闭,对所有游戏生效
+                </p>
+              </div>
+              <USwitch v-model="adultMode" />
+            </div>
+
+            <!-- 叙事温度 -->
+            <div class="flex flex-col gap-2">
+              <p class="text-sm font-semibold">
+                叙事温度
+              </p>
+              <p class="text-xs text-neutral-500">
+                控制回合正文的随机性与文风多样性,滑动即时保存,新回合生效;选项生成与状态结算同样随此温度变化
+              </p>
+              <div class="flex items-center gap-4">
+                <USlider
+                  v-model="narrTemp"
+                  :min="NARR_TEMP_MIN"
+                  :max="NARR_TEMP_MAX"
+                  :step="NARR_TEMP_STEP"
+                  class="flex-1"
+                />
+                <span class="w-12 shrink-0 text-right font-mono text-sm text-neutral-700 dark:text-neutral-300">{{ narrTemp.toFixed(1) }}</span>
+              </div>
+            </div>
+
+            <!-- 叙事速度 -->
+            <div class="flex flex-col gap-2">
+              <p class="text-sm font-semibold">
+                叙事速度
+              </p>
+              <p class="text-xs text-neutral-500">
+                控制回合正文流式显示的快慢与停顿节奏(打字机效果),新回合生效;点击流式正文可立即显示全文
+              </p>
+              <div class="flex flex-wrap items-center gap-2">
+                <UButton
+                  v-for="t in NARR_SPEED_TIERS"
+                  :key="t.cps"
+                  size="sm"
+                  variant="soft"
+                  :color="narrSpeed === t.cps ? 'primary' : 'neutral'"
+                  @click="pickNarrSpeed(t.cps)"
+                >
+                  {{ t.label }}
+                </UButton>
+                <span class="text-xs text-neutral-500">
+                  当前 {{ narrSpeed }} 字符/秒
+                </span>
+              </div>
+            </div>
+
+            <!-- 每回合生成字数 -->
+            <div class="flex flex-col gap-2">
+              <p class="text-sm font-semibold">
+                每回合生成字数
+              </p>
+              <p class="text-xs text-neutral-500">
+                控制每回合 AI 生成的剧情正文篇幅,滑动即时保存,新回合生效;选项与状态结算不受影响
+              </p>
+              <div class="flex items-center gap-4">
+                <USlider
+                  v-model="narrLength"
+                  :min="NARR_LENGTH_MIN"
+                  :max="NARR_LENGTH_MAX"
+                  :step="NARR_LENGTH_STEP"
+                  class="flex-1"
+                />
+                <span class="w-16 shrink-0 text-right font-mono text-sm text-neutral-700 dark:text-neutral-300">{{ narrLength }} 字</span>
+              </div>
+            </div>
+
+            <!-- 游玩偏好场景 -->
+            <div class="flex flex-col gap-2">
+              <p class="text-sm font-semibold">
+                游玩偏好场景
+              </p>
+              <p class="text-xs text-neutral-500">
+                自定义叙事提示词:「偏好场景」适度增加相关内容,「避免场景」尽量不出现;优先级低于系统规则,保存后新回合生效
+              </p>
+              <UTextarea
+                v-model="scenePrefs.prefer"
+                :rows="2"
+                placeholder="偏好场景,可填写多个,用逗号分隔,留空不生效"
+                class="w-full"
+              />
+              <UTextarea
+                v-model="scenePrefs.avoid"
+                :rows="2"
+                placeholder="避免出现的场景,可填写多个,用逗号分隔,留空不生效"
+                class="w-full"
+              />
+              <div class="flex items-center gap-3">
+                <UButton
+                  color="primary"
+                  size="sm"
+                  icon="i-lucide-save"
+                  @click="submitScenePrefs"
+                >
+                  保存偏好
+                </UButton>
+                <p
+                  v-if="sceneMsg"
+                  class="text-xs"
+                  :class="sceneMsg.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'"
+                >
+                  {{ sceneMsg.text }}
+                </p>
+              </div>
+            </div>
+          </div>
+        </template>
+      </UModal>
+
       <UAlert
         v-if="error"
         color="error"
@@ -903,11 +1197,10 @@ watch([messages, streamText], async () => {
         :icon="'i-lucide-triangle-alert'"
       />
 
-      <!-- 剧情流 -->
+      <!-- 剧情流:充满剩余空间,内部滚动 -->
       <div
         ref="chatRef"
-        class="flex-1 space-y-4 overflow-y-auto rounded-xl border border-neutral-200 p-4 dark:border-neutral-700"
-        style="max-height: 52vh; min-height: 240px"
+        class="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-xl border border-neutral-200 p-4 dark:border-neutral-700"
       >
         <div
           v-if="!started && !streaming"
@@ -1000,7 +1293,7 @@ watch([messages, streamText], async () => {
             />
             <p class="text-sm text-neutral-500">
               故事尚未开始。以「{{ playerName }}」的身份进入《{{ work?.overlay?.title || '' }}》
-              <template v-if="game?.opening?.mode === 'chapter'">，将从{{ game.opening.chapterTitle || '所选章节' }}的情节开始。</template>
+              <template v-if="game?.opening?.mode === 'chapter'">，将从「{{ game.opening.chapterTitle || '所选章节' }}」开头的情节开始演绎。</template>
               <template v-else-if="game?.opening?.mode === 'custom'">，将按你提供的背景故事开场。</template>
               <template v-else>，AI 将为你铺设开场。</template>
             </p>
@@ -1048,32 +1341,20 @@ watch([messages, streamText], async () => {
             v-if="streaming && !awaitingOptions"
             class="text-sm"
           >
-            <p class="whitespace-pre-line leading-relaxed text-neutral-700 dark:text-neutral-200">
-              {{ streamText }}<span class="animate-pulse">▍</span>
+            <p
+              class="whitespace-pre-line leading-relaxed text-neutral-700 dark:text-neutral-200"
+              title="点击立即显示全文"
+              @click="flushStream"
+            >
+              {{ streamDisplay }}<span class="animate-pulse">▍</span>
             </p>
           </div>
         </template>
       </div>
 
-      <!-- 选项 + 自由输入 -->
-      <div class="space-y-2">
-        <!-- 选项生成中:骨架屏占位,形状对齐真实选项按钮 -->
-        <div
-          v-if="streaming && awaitingOptions"
-          class="space-y-2"
-        >
-          <p class="text-xs text-neutral-500">
-            正在生成选项…
-          </p>
-          <div class="grid gap-2">
-            <USkeleton
-              v-for="i in 3"
-              :key="i"
-              class="h-11 w-full rounded-lg"
-            />
-          </div>
-        </div>
-
+      <!-- 底部固定:选项或「行动中」占位 + 自由输入 -->
+      <footer class="shrink-0 space-y-2 pb-3 pt-3">
+        <!-- 选项按钮 -->
         <div
           v-if="options.length && !streaming"
           class="grid gap-2"
@@ -1098,6 +1379,19 @@ watch([messages, streamText], async () => {
           </UButton>
         </div>
 
+        <!-- 无选项时「行动中」占位(AI 生成中 / 等待行动) -->
+        <div
+          v-else
+          class="flex h-11 items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-300 text-sm text-neutral-400 dark:border-neutral-700"
+        >
+          <UIcon
+            :name="streaming ? 'i-lucide-loader-circle' : 'i-lucide-hourglass'"
+            class="size-4"
+            :class="{ 'animate-spin': streaming }"
+          />
+          行动中…
+        </div>
+
         <p class="text-xs text-neutral-500">
           点击自己的行动气泡，可回滚到该行动之前重新选择。
         </p>
@@ -1120,7 +1414,7 @@ watch([messages, streamText], async () => {
             行动
           </UButton>
         </div>
-      </div>
+      </footer>
 
       <!-- 回滚菜单 -->
       <Teleport to="body">

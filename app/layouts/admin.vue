@@ -14,7 +14,8 @@ const items = computed<NavigationMenuItem[]>(() => [
   { label: '充值记录', icon: 'i-lucide-credit-card', to: '/admin/recharge', active: route.path === '/admin/recharge' },
   { label: 'Skill 审核', icon: 'i-lucide-shield-check', to: '/admin/skills', active: route.path === '/admin/skills' },
   { label: '小说审核', icon: 'i-lucide-book-open', to: '/admin/novels', active: route.path === '/admin/novels' },
-  { label: '需求管理', icon: 'i-lucide-list-checks', to: '/admin/requests', active: route.path === '/admin/requests' }
+  { label: '需求管理', icon: 'i-lucide-list-checks', to: '/admin/requests', active: route.path === '/admin/requests' },
+  { label: '公告管理', icon: 'i-lucide-megaphone', to: '/admin/announcements', active: route.path === '/admin/announcements' }
 ])
 </script>
 

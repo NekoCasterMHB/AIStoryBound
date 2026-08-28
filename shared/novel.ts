@@ -410,8 +410,14 @@ export interface LocalGame {
     mode: 'ai' | 'chapter' | 'custom'
     /** mode=chapter:所选章节标题 */
     chapterTitle?: string
+    /** mode=chapter:所选章节在作品 chapters 中的索引(定期回注定位用;旧存档缺省按标题匹配) */
+    chapterIndex?: number
     /** mode=chapter:该章节完整正文 */
     chapterText?: string
+    /** mode=chapter:上一章(背景;选了中间章节时注入,把握前情与人物关系) */
+    prevChapter?: { title?: string, text: string }
+    /** mode=chapter:下一章(情节走向;非末章时注入,供后续回合自然衔接) */
+    nextChapter?: { title?: string, text: string }
     /** mode=ai:玩家选定的开场设定;mode=custom:玩家输入的背景故事 */
     scene?: string
     /** 是否已按起始情节初始化过性欲值(避免回滚开局后重复调用) */
@@ -515,8 +521,6 @@ export interface TurnStructured {
   current_chapter?: string | null
   /** 整局剧情摘要(覆盖式更新:基于旧摘要+近期剧情压缩,保留关键关系/伏笔/进展) */
   summary?: string
-  /** 设备事件(可选;仅在用户开启设备控制时注入 schema,引擎校验后执行) */
-  device_events?: import('./toy').DeviceEvent[]
 }
 
 // ---- 简单工具 ----
