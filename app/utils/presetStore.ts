@@ -11,7 +11,7 @@ import type { CachedPreset, PresetNovelRow } from '#shared/novel'
 export async function getCachedPreset(id: string): Promise<CachedPreset | null> {
   if (typeof indexedDB === 'undefined') return null
   try {
-    return (await (await db()).get('presets', id)) ?? null
+    return (await db.table('presets').get(id)) ?? null
   } catch {
     return null
   }
@@ -36,18 +36,17 @@ export async function saveCachedPreset(
     size: text.length,
     savedAt: new Date().toISOString()
   }
-  const d = await db()
-  await d.put('presets', entry)
+  await db.table('presets').put(entry)
 }
 
 /** 清除某本预置小说的缓存(如文本已过期需重新下载) */
 export async function deleteCachedPreset(id: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  await (await db()).delete('presets', id)
+  await db.table('presets').delete(id)
 }
 
 /** 调试用:列出本地已缓存的小说 id */
 export async function listCachedPresets(): Promise<CachedPreset[]> {
   if (typeof indexedDB === 'undefined') return []
-  return (await (await db()).getAll('presets')) ?? []
+  return (await db.table('presets').toArray()) ?? []
 }

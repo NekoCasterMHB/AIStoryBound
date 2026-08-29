@@ -37,8 +37,7 @@ export function narrSpeedTierOf(cps: number): SpeedTier {
 export async function loadNarrSpeed(): Promise<number> {
   if (typeof indexedDB === 'undefined') return NARR_SPEED_DEFAULT.cps
   try {
-    const d = await db()
-    const row = await d.get(STORE_PREFS, NARR_SPEED_KEY) as { cps?: number } | undefined
+    const row = await db.table(STORE_PREFS).get(NARR_SPEED_KEY) as { cps?: number } | undefined
     let cps = row?.cps
     if (typeof cps === 'number' && Number.isFinite(cps) && cps > 0) {
       // 旧档位迁移到新档位;仍不在当前档位表则回落默认
@@ -54,8 +53,7 @@ export async function loadNarrSpeed(): Promise<number> {
 export async function saveNarrSpeed(cps: number): Promise<void> {
   if (typeof indexedDB === 'undefined') return
   try {
-    const d = await db()
-    await d.put(STORE_PREFS, { key: NARR_SPEED_KEY, cps })
+    await db.table(STORE_PREFS).put({ key: NARR_SPEED_KEY, cps })
   } catch {
     // 存储不可用忽略
   }

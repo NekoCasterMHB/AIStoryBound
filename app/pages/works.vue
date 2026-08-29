@@ -127,6 +127,7 @@ async function restoreFromCloud(id: string) {
     entities?: LocalWork['entities']
     conflicts?: LocalWork['conflicts']
     warnings?: LocalWork['warnings']
+    storyline?: LocalWork['storyline']
   }>(`/api/works/${id}`).catch(() => null)
   if (!data) return
   const existing = await getWork(id)
@@ -140,7 +141,8 @@ async function restoreFromCloud(id: string) {
     entities: data.entities,
     conflicts: data.conflicts,
     warnings: data.warnings,
-    overlay: data.overlay ?? undefined
+    overlay: data.overlay ?? undefined,
+    storyline: data.storyline ?? existing?.storyline
   })
   await refreshLocal()
 }
@@ -162,6 +164,9 @@ async function restoreCloudGame(id: string) {
     summary: string | null
     state: GameState | null
     world: LocalWork['overlay'] | null
+    entities?: LocalWork['entities']
+    conflicts?: LocalWork['conflicts']
+    storyline?: LocalWork['storyline']
     messages: LocalGame['messages']
     optionsByMessage: Record<string, { idx: number, text: string }[]>
   }>(`/api/games/${id}`).catch(() => null)
@@ -174,7 +179,10 @@ async function restoreCloudGame(id: string) {
       createdAt: new Date().toISOString(),
       chapters: [],
       syncStatus: 'synced',
-      overlay: data.world
+      overlay: data.world,
+      entities: data.entities,
+      conflicts: data.conflicts,
+      storyline: data.storyline
     })
   }
 
@@ -209,6 +217,23 @@ async function restoreCloudGame(id: string) {
 async function onDeleteWork(work: LocalWork) {
   await deleteWork(work.id)
   await refreshLocal()
+}
+
+/** 书架卡片主标签:性向 + 高频玩法,最多 4 个 */
+function workCardTags(w: LocalWork): string[] {
+  const tags: string[] = []
+  if (w.overlay?.orientation && w.overlay.orientation !== '不明') tags.push(w.overlay.orientation)
+  for (const k of w.overlay?.kinkProfile ?? []) {
+    if (k.theme && !tags.includes(k.theme)) tags.push(k.theme)
+    if (tags.length >= 4) break
+  }
+  if (tags.length < 4) {
+    for (const t of w.overlay?.tags ?? []) {
+      if (t && !tags.includes(t)) tags.push(t)
+      if (tags.length >= 4) break
+    }
+  }
+  return tags.slice(0, 4)
 }
 
 /** 每部本地作品的「更多操作」菜单:编辑作品 / 编辑角色卡 / 同步云端 / 删除 */
@@ -630,6 +655,20 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                 <p class="mt-1 truncate text-xs text-neutral-500">
                   作者: {{ w.author || '佚名' }} · {{ w.chapters.length }} 章
                 </p>
+                <div
+                  v-if="workCardTags(w).length"
+                  class="mt-1.5 flex flex-wrap gap-1"
+                >
+                  <UBadge
+                    v-for="tag in workCardTags(w)"
+                    :key="tag"
+                    color="primary"
+                    variant="subtle"
+                    size="sm"
+                  >
+                    {{ tag }}
+                  </UBadge>
+                </div>
                 <p class="mt-1 text-xs text-neutral-500">
                   最后操作: {{ fmtTime(w.updatedAt ?? w.createdAt) }}
                 </p>

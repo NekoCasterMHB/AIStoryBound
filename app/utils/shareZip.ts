@@ -3,7 +3,7 @@
 // 书架端「导入 ZIP 分享包」:校验格式与结构后,作为新的个人作品入库。
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import { uuid } from '#shared/novel'
-import type { ChapterSegment, LocalGame, LocalWork } from '#shared/novel'
+import type { ChapterSegment, HeatLevel, KinkProfileEntry, LocalGame, LocalWork, WorldOverlay } from '#shared/novel'
 import { buildGameTxt, sanitizeFilename } from './exportStory'
 
 /** 分享包格式标识:manifest.json 中的 format 字段,与本应用导出的包互相匹配 */
@@ -136,19 +136,40 @@ function normalizeWork(raw: unknown): LocalWork {
   if (!chapters.some(c => c.content.trim().length > 0)) throw new Error('作品正文为空,无法导入')
 
   // 生成产物:类型不符(如损坏/篡改)时整项丢弃,不阻止导入
-  const overlay = (() => {
+  const overlay = ((): WorldOverlay | undefined => {
     const o = r.overlay as Record<string, unknown> | null
     if (!o || typeof o !== 'object') return undefined
+    const heat: HeatLevel | undefined = o.heat === '淡' || o.heat === '中' || o.heat === '烈' ? o.heat : undefined
+    const kinkProfile: KinkProfileEntry[] | undefined = Array.isArray(o.kinkProfile)
+      ? o.kinkProfile.flatMap((k): KinkProfileEntry[] => {
+          if (!k || typeof k !== 'object') return []
+          const e = k as Record<string, unknown>
+          if (typeof e.theme !== 'string' || !e.theme.trim()) return []
+          return [{
+            theme: e.theme,
+            count: typeof e.count === 'number' && Number.isFinite(e.count) ? e.count : 1,
+            dominantView: typeof e.dominantView === 'string' ? e.dominantView : null
+          }]
+        })
+      : undefined
     return {
       title: typeof o.title === 'string' ? o.title : undefined,
       genre: typeof o.genre === 'string' ? o.genre : undefined,
       summary: typeof o.summary === 'string' ? o.summary : undefined,
-      characters: Array.isArray(o.characters) ? o.characters : undefined
+      characters: Array.isArray(o.characters) ? o.characters : undefined,
+      tags: Array.isArray(o.tags) ? o.tags.filter((t): t is string => typeof t === 'string') : undefined,
+      orientation: typeof o.orientation === 'string' ? o.orientation : undefined,
+      setting: typeof o.setting === 'string' ? o.setting : undefined,
+      heat,
+      contentWarnings: Array.isArray(o.contentWarnings) ? o.contentWarnings.filter((t): t is string => typeof t === 'string') : undefined,
+      tropes: Array.isArray(o.tropes) ? o.tropes.filter((t): t is string => typeof t === 'string') : undefined,
+      kinkProfile
     }
   })()
   const entities = r.entities && typeof r.entities === 'object' ? r.entities as LocalWork['entities'] : undefined
   const conflicts = Array.isArray(r.conflicts) ? r.conflicts as LocalWork['conflicts'] : undefined
   const warnings = Array.isArray(r.warnings) ? r.warnings.filter(w => typeof w === 'string') as string[] : undefined
+  const storyline = Array.isArray(r.storyline) ? r.storyline as LocalWork['storyline'] : undefined
 
   const now = new Date().toISOString()
   return {
@@ -165,7 +186,8 @@ function normalizeWork(raw: unknown): LocalWork {
     entities,
     conflicts,
     warnings,
-    overlay
+    overlay,
+    storyline
   }
 }
 

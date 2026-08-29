@@ -4,11 +4,11 @@
 // 进度由本地状态驱动;中间产物仅内存(单章失败=跳过+告警,>1/3 失败中止)。
 import { detectEncoding, extractFrontMatter, segmentChapters, uuid } from '#shared/novel'
 import type {
-  ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, LocalWork
+  ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, LocalWork, WorldOverlay
 } from '#shared/novel'
 import {
-  buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
-  buildSynthesizeMessages, mergeExtractions, splitUnits, verifyQuotes,
+  assembleStoryline, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
+  buildSynthesizeMessages, mergeExtractions, mergeOverlayMeta, splitUnits, summarizeWorldLocal, verifyQuotes,
   emptyExtraction, finalizeCards, normalizeExtraction, quoteByChapter,
   ADULT_GENRE, ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS
 } from '#shared/world-build'
@@ -24,11 +24,24 @@ const EXTRACT_CONCURRENCY = 4
 /** 单章失败>总数该比例则中止整本生成 */
 const MAX_FAIL_RATIO = 1 / 3
 
-/** 无视限制(测试模式)的生成参数:每章一个提取单元(1M 字符上限=不切段)、输出上限取模型上限、超时放宽 */
-const UNLIMITED_GEN_LIMITS: GenLimits = {
-  ...DEFAULT_GEN_LIMITS,
-  unitMaxChars: 1_000_000,
-  unitOverlapChars: 0
+/** 输出/超时走平台默认,不受个人中心自定义值影响;分段仍读用户配置 */
+function resolveGenLimits(limits?: GenLimits): GenLimits {
+  const user = limits ?? loadGenLimits()
+  return {
+    ...DEFAULT_GEN_LIMITS,
+    unitMaxChars: user.unitMaxChars,
+    unitOverlapChars: user.unitOverlapChars
+  }
+}
+
+/**
+ * 平台默认 384K 表示「不限制」:不要发给上游 max_tokens(DeepSeek 等常见上限 8K,传 384K 会 400,进度卡在提取 15%)。
+ * 节约模式的精简上限仍传入。
+ */
+function outputCap(n: number | undefined, ecoCap?: number): number | undefined {
+  if (ecoCap != null) return ecoCap
+  if (n == null || n >= 100_000) return undefined
+  return n
 }
 
 /** 是否值得重试的瞬时错误:网络/解析异常、429 限流、5xx 上游错误;4xx 业务失败(如配额不足)重试无意义 */
@@ -56,6 +69,12 @@ export interface GenerateProgress {
   /** 实时估算:已完成真实用量 + 流式进行中调用的估算合计(单调不减) */
   liveTokens: number
   warnings: string[]
+  /** 调试:当前在跑的提取单元标签 */
+  debugHint?: string
+  /** 调试:进行中的并发调用数 */
+  inflight?: number
+  /** 调试:单次提取输入上限(字符) */
+  unitMaxChars?: number
 }
 
 export interface GenerateResult {
@@ -78,6 +97,19 @@ interface CheckReview {
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** 给可能挂死的异步(缓存读等)设超时,超时返回 fallback */
+async function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      p,
+      new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms) })
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /** 本地解析 TXT 文件:编码检测 + 清洗 + 章节切分(与预置预览同一套 shared 纯函数) */
 export async function parseLocalNovel(file: File): Promise<{ title: string, encoding: string, chapters: ChapterSegment[], frontMatter: string }> {
@@ -141,26 +173,26 @@ async function pool<T, R>(
  * @param opts.signal 取消信号:触发后中止在途 AI 调用,抛 CancelledError
  * @param opts.eco 节约模式:只提取 5 类核心实体、引用从简;跳过 AI 一致性检查;
  *                 成书只让 AI 出标题/简介/角色定位,人物卡由提取素材本地直拼(约省一半 token)
- * @param opts.limits 生成参数(单单元输入上限/切段重叠/提取、检查、成书输出上限/调用超时);缺省读个人中心配置的本地偏好
- * @param opts.unlimited 无视限制(测试模式):覆盖个人中心生成参数——每章一个提取单元(不切段)、
- *                      输出上限取模型上限、超时放宽;用于排查自定义参数导致的提取/成书失败,正式生成请关闭
+ * @param opts.limits 生成参数;实际只采用单单元输入上限与切段重叠,输出上限/超时一律走平台默认
  */
 export async function generateWorld(
   title: string,
   chapters: ChapterSegment[],
   onProgress: (p: GenerateProgress) => void,
-  opts: { frontMatter?: string, knownAuthor?: string, signal?: AbortSignal, eco?: boolean, limits?: GenLimits, unlimited?: boolean } = {}
+  opts: { frontMatter?: string, knownAuthor?: string, signal?: AbortSignal, eco?: boolean, limits?: GenLimits } = {}
 ): Promise<GenerateResult> {
   const warnings: string[] = []
   const { signal, eco = false } = opts
-  const genLimits = opts.unlimited ? UNLIMITED_GEN_LIMITS : (opts.limits ?? loadGenLimits())
+  const genLimits = resolveGenLimits(opts.limits)
   /** 单次调用超时(秒→毫秒),随各阶段调用传给中继 */
   const relayTimeoutMs = genLimits.relayTimeoutSec * 1000
   const isAborted = () => signal?.aborted ?? false
   let tokensUsed = 0
+  const trace = (msg: string) => console.debug(`[世界生成] ${Date.now()} ${msg}`)
 
   // ---- 1) Map:分块提取(并发 4,失败重试 1 次后跳过) ----
   const units = splitUnits(chapters, genLimits.unitMaxChars, genLimits.unitOverlapChars)
+  trace(`切段完成: ${units.length} 个单元,全书 ${chapters.reduce((s, c) => s + c.content.length, 0)} 字`)
 
   /** 流式进行中调用的估算 token(按调用 key 登记,完成后删除并入真实用量) */
   const liveCalls = new Map<string, number>()
@@ -168,12 +200,21 @@ export async function generateWorld(
   let displayFloor = 0
   let lastLiveEmit = 0
 
-  const progress = (stage: GenerateProgress['stage'], doneUnits = 0) => {
+  const snapshot = (stage: GenerateProgress['stage'], extra?: Partial<GenerateProgress>): GenerateProgress => ({
+    stage,
+    doneUnits: extra?.doneUnits ?? (stage === 'extract' ? Math.min(completedUnits, units.length) : 0),
+    totalUnits: units.length,
+    tokensUsed,
+    liveTokens: displayFloor,
+    warnings: [...warnings],
+    inflight: liveCalls.size,
+    unitMaxChars: genLimits.unitMaxChars,
+    debugHint: extra?.debugHint
+  })
+
+  const progress = (stage: GenerateProgress['stage'], doneUnits = 0, debugHint?: string) => {
     displayFloor = Math.max(displayFloor, tokensUsed)
-    onProgress({
-      stage, doneUnits, totalUnits: units.length, tokensUsed,
-      liveTokens: displayFloor, warnings: [...warnings]
-    })
+    onProgress(snapshot(stage, { doneUnits, debugHint }))
   }
 
   let completedUnits = 0
@@ -190,15 +231,12 @@ export async function generateWorld(
     } else {
       displayFloor = Math.max(displayFloor, tokensUsed)
     }
-    const unitDone = stage === 'extract' ? Math.min(completedUnits, units.length) : undefined
-    onProgress({
-      stage,
-      doneUnits: unitDone ?? 0,
-      totalUnits: units.length,
-      tokensUsed,
-      liveTokens: displayFloor,
-      warnings: [...warnings]
-    })
+    const waited = live ? Math.round(live.elapsedMs / 1000) : 0
+    onProgress(snapshot(stage, {
+      debugHint: stage === 'extract'
+        ? `进行中 ${liveCalls.size} 路${waited ? ` · 已等待 ${waited}s` : ''}${live && live.tokens ? ` · 流估算 ${live.tokens}` : ''}`
+        : undefined
+    }))
   }
 
   /** 为单次 AI 调用登记实时估算(调用完成后需 delete 该 key) */
@@ -220,11 +258,24 @@ export async function generateWorld(
       warnings.push('正文未识别到作者,联网检索未能确认,可在编辑页手动补充')
     }
   }
-  progress('extract')
+  progress('extract', 0, `切段 ${units.length} 个单元,上限 ${genLimits.unitMaxChars} 字,正在计算缓存 key…`)
 
   // ---- 1) Map:分块提取(断点续跑:复用缓存中已完成单元,只重跑失败/缺失的,省 token) ----
-  const cacheKey = await extractCacheKey(title, chapters, { eco, unitMaxChars: genLimits.unitMaxChars, unitOverlapChars: genLimits.unitOverlapChars })
-  const cached = await loadExtractCache(cacheKey)
+  // 缓存只是优化,读取失败/超时一律跳过复用直接提取,绝不让缓存拖住生成。
+  let cached: Awaited<ReturnType<typeof loadExtractCache>> = null
+  let cacheKey = ''
+  try {
+    trace('计算缓存 key…')
+    cacheKey = await withTimeout(extractCacheKey(title, chapters, {
+      eco, unitMaxChars: genLimits.unitMaxChars, unitOverlapChars: genLimits.unitOverlapChars
+    }), 8000, '')
+    trace(`缓存 key 就绪: ${cacheKey.slice(0, 12)}…`)
+    progress('extract', 0, `缓存 key 已就绪,准备提取`)
+    if (cacheKey) cached = await withTimeout(loadExtractCache(cacheKey), 3000, null)
+  } catch (e) {
+    warnings.push(`提取缓存不可用(${(e as Error)?.message ?? e}),已跳过复用直接提取`)
+    progress('extract', 0, `缓存不可用,直接提取`)
+  }
   const reused = new Map<number, ChapterExtraction>()
   if (cached) {
     for (let i = 0; i < units.length; i++) {
@@ -245,14 +296,19 @@ export async function generateWorld(
   let okCount = reused.size
 
   if (todoIndexes.length > 0) {
+    warnings.push(`开始并发提取 ${todoIndexes.length} 个单元(并发 ${EXTRACT_CONCURRENCY})`)
+    progress('extract', completedUnits, `待提取 ${todoIndexes.length} 个单元`)
+    trace(`开始并发提取 ${todoIndexes.length} 个单元`)
     const results = await pool(todoIndexes, EXTRACT_CONCURRENCY, async (unitIndex) => {
       const unit = units[unitIndex]!
       const attempt = async (): Promise<ChapterExtraction> => {
+        const cap = outputCap(genLimits.extractMaxTokens, eco ? ECO_EXTRACT_MAX_TOKENS : undefined)
+        warnings.push(`开始提取「${unit.label}」(${unit.content.length} 字${cap ? `,maxTokens=${cap}` : ',不传 max_tokens'})`)
+        emitLive('extract')
+        trace(`请求发出: 单元「${unit.label}」(${unit.content.length} 字)`)
         const res = await aiChatJson<unknown>(buildExtractMessages(title, unit, eco), {
-          // 输出上限取用户配置;节约模式再压到其自身上限(只会更小不会更大)
-          maxTokens: eco ? Math.min(ECO_EXTRACT_MAX_TOKENS, genLimits.extractMaxTokens) : genLimits.extractMaxTokens,
+          maxTokens: cap,
           temperature: 0.2,
-          thinking: false,
           timeoutMs: relayTimeoutMs
         }, {
           onLive: liveHandler(`u${unitIndex}`, 'extract'),
@@ -267,6 +323,10 @@ export async function generateWorld(
         return await attempt()
       } catch (e) {
         if (isAborted()) throw new CancelledError()
+        const msg = e instanceof Error ? e.message : String(e)
+        const status = (e as { status?: number })?.status
+        warnings.push(`单元「${unit.label}」失败${status ? `(HTTP ${status})` : ''}: ${msg}`)
+        emitLive('extract')
         // 4xx 业务失败(配额/鉴权)重试无意义,直接记为本单元失败
         if (!isRetryable(e)) throw e
         // 自动重试一次(退避 1.5s,应对上游瞬时限流/偶发非 JSON 输出)
@@ -275,6 +335,10 @@ export async function generateWorld(
           return await attempt()
         } catch (e2) {
           if (isAborted()) throw new CancelledError()
+          const msg2 = e2 instanceof Error ? e2.message : String(e2)
+          const status2 = (e2 as { status?: number })?.status
+          warnings.push(`单元「${unit.label}」重试仍失败${status2 ? `(HTTP ${status2})` : ''}: ${msg2}`)
+          emitLive('extract')
           return e2 as Error
         }
       }
@@ -289,23 +353,24 @@ export async function generateWorld(
       const r = results[j]!
       if (r instanceof Error) {
         const label = units[unitIndex]?.label ?? `#${unitIndex + 1}`
-        warnings.push(`单元「${label}」提取失败: ${r.message}`)
-        // 失败原因输出到浏览器控制台,便于排查(仅前端可见,不进作品数据)
         console.warn(`[世界生成] 提取单元「${label}」失败:`, r)
       } else {
         okCount++
         extracts[unitIndex] = r
         // 增量写缓存:中断/失败后下次续跑只重跑缺失单元(失败单元不入缓存)
-        void saveExtractUnit(cacheKey, unitIndex, r, { title, eco })
-          .catch(() => { /* 缓存写入失败不影响主流程 */ })
+        // cacheKey 为空(计算超时/失败)时跳过,避免多个作品共用空 key 互相污染
+        if (cacheKey) {
+          void saveExtractUnit(cacheKey, unitIndex, r, { title, eco })
+            .catch(() => { /* 缓存写入失败不影响主流程 */ })
+        }
       }
     })
   }
   if (units.length > 0 && okCount / units.length <= 1 - MAX_FAIL_RATIO) {
     throw new Error(`提取失败率过高(${units.length - okCount}/${units.length}),已中止。可重新生成续跑,已提取部分不会重复消耗 token。`)
   }
-  // 全部单元成功 → 标记缓存完整(下次同书生成直接全量复用)
-  if (okCount === units.length) {
+  // 全部单元成功 → 标记缓存完整(下次同书生成直接全量复用);cacheKey 为空时跳过
+  if (cacheKey && okCount === units.length) {
     await markExtractComplete(cacheKey).catch(() => { /* 缓存写入失败不影响主流程 */ })
   }
   progress('merge')
@@ -314,10 +379,15 @@ export async function generateWorld(
   const { entities, conflicts } = mergeExtractions(
     extracts.map((ex, i) => ({ chapter: units[i]?.chapter ?? 0, extract: ex ?? emptyExtraction() }))
   )
-  const { unverified } = verifyQuotes(entities, chapters)
+  const { unverified } = verifyQuotes(entities, units.map(u => ({ title: u.label, content: u.content })))
   if (unverified > 0) {
     warnings.push(`${unverified} 条原文引用未通过逐字校验(记录已保留,可人工复核)`)
   }
+  const { storyline, gaps } = assembleStoryline(units, extracts)
+  if (gaps.length > 0) {
+    warnings.push(`${gaps.length} 个提取单元缺少情节细纲(失败或模型未输出),故事线已跳过这些段,未编造`)
+  }
+  const localSummary = summarizeWorldLocal(entities, storyline)
 
   // ---- 4) 一致性检查:批注既有冲突 + 发现新冲突(失败退避重试 1 次)。节约模式跳过,保留代码冲突检测 ----
   if (eco) {
@@ -325,9 +395,8 @@ export async function generateWorld(
   } else if (entities.characters.length + entities.locations.length + entities.world_rules.length > 0) {
     const checkAttempt = async (): Promise<CheckReview> => {
       const res = await aiChatJson<CheckReview>(buildCheckMessages(title, entities, conflicts), {
-        maxTokens: genLimits.checkMaxTokens,
+        maxTokens: outputCap(genLimits.checkMaxTokens),
         temperature: 0.2,
-        thinking: false,
         timeoutMs: relayTimeoutMs
       }, {
         onLive: liveHandler('check', 'check'),
@@ -388,17 +457,12 @@ export async function generateWorld(
   // ---- 5) 成书 ----
   // 完整模式:前 TOP_CHARACTERS 的完整人物卡 + 题材/简介(失败退避重试 1 次);
   // 节约模式:AI 只出标题/简介/角色定位(失败不中止,人物卡直接由实体素材本地拼出)。
-  let overlay: { title: string, genre?: string, summary?: string, characters: CharacterCard[] }
+  let overlay: WorldOverlay
   if (eco) {
-    const synthAttempt = async (): Promise<{ title?: string, summary?: string, roles?: { name?: string, role?: string }[] }> => {
-      const res = await aiChatJson<{
-        title?: string
-        summary?: string
-        roles?: { name?: string, role?: string }[]
-      }>(buildEcoSynthMessages(title, entities), {
+    const synthAttempt = async (): Promise<WorldOverlay & { roles?: { name?: string, role?: string }[] }> => {
+      const res = await aiChatJson<WorldOverlay & { roles?: { name?: string, role?: string }[] }>(buildEcoSynthMessages(title, entities, localSummary), {
         maxTokens: ECO_SYNTH_MAX_TOKENS,
         temperature: 0.3,
-        thinking: false,
         timeoutMs: relayTimeoutMs
       }, {
         onLive: liveHandler('synth', 'synthesize'),
@@ -409,7 +473,7 @@ export async function generateWorld(
       if (!res.ok) throw toAiError(res)
       return res.data ?? {}
     }
-    let ecoSynth: { title?: string, summary?: string, roles?: { name?: string, role?: string }[] } | null = null
+    let ecoSynth: (WorldOverlay & { roles?: { name?: string, role?: string }[] }) | null = null
     try {
       ecoSynth = await synthAttempt()
     } catch (e) {
@@ -432,7 +496,8 @@ export async function generateWorld(
       title: ecoSynth?.title?.trim() || title,
       genre: ADULT_GENRE,
       summary: ecoSynth?.summary?.trim() || undefined,
-      characters: buildLocalCards(entities, ecoSynth?.roles)
+      characters: buildLocalCards(entities, ecoSynth?.roles),
+      ...mergeOverlayMeta(ecoSynth, localSummary)
     }
   } else {
     const topNames = new Set(
@@ -440,15 +505,10 @@ export async function generateWorld(
         .slice(0, TOP_CHARACTERS)
         .map(c => c.name)
     )
-    const synthAttempt = async (): Promise<{ title?: string, summary?: string, characters?: CharacterCard[] }> => {
-      const res = await aiChatJson<{
-        title?: string
-        summary?: string
-        characters?: CharacterCard[]
-      }>(buildSynthesizeMessages(title, entities, conflicts, warnings), {
-        maxTokens: genLimits.synthMaxTokens,
+    const synthAttempt = async (): Promise<WorldOverlay> => {
+      const res = await aiChatJson<WorldOverlay>(buildSynthesizeMessages(title, entities, conflicts, warnings, localSummary), {
+        maxTokens: outputCap(genLimits.synthMaxTokens),
         temperature: 0.3,
-        thinking: false,
         timeoutMs: relayTimeoutMs
       }, {
         onLive: liveHandler('synth', 'synthesize'),
@@ -459,7 +519,7 @@ export async function generateWorld(
       if (!res.ok) throw toAiError(res)
       return res.data ?? {}
     }
-    let synthData: { title?: string, summary?: string, characters?: CharacterCard[] }
+    let synthData: WorldOverlay
     try {
       synthData = await synthAttempt()
     } catch (e) {
@@ -485,7 +545,8 @@ export async function generateWorld(
       title: overlayRaw.title || title,
       genre: ADULT_GENRE,
       summary: overlayRaw.summary || undefined,
-      characters
+      characters,
+      ...mergeOverlayMeta(overlayRaw, localSummary)
     }
   }
 
@@ -504,7 +565,8 @@ export async function generateWorld(
     entities,
     conflicts,
     warnings,
-    overlay
+    overlay,
+    storyline
   }
   await saveWork(work)
   return { work, usage: { tokensUsed } }
@@ -516,29 +578,25 @@ const STORE_WORKS = 'works'
 
 export async function listWorks(): Promise<LocalWork[]> {
   if (typeof indexedDB === 'undefined') return []
-  const d = await db()
   // 按最后操作时间倒序(无 updatedAt 的旧数据回退创建时间)
-  return (await d.getAll(STORE_WORKS)).sort((a, b) =>
+  return (await db.table(STORE_WORKS).toArray()).sort((a, b) =>
     (b.updatedAt ?? b.createdAt).localeCompare(a.updatedAt ?? a.createdAt)
   )
 }
 
 export async function getWork(id: string): Promise<LocalWork | null> {
   if (typeof indexedDB === 'undefined') return null
-  const d = await db()
-  return (await d.get(STORE_WORKS, id)) ?? null
+  return (await db.table(STORE_WORKS).get(id)) ?? null
 }
 
 export async function saveWork(work: LocalWork): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  await d.put(STORE_WORKS, JSON.parse(JSON.stringify(work)))
+  await db.table(STORE_WORKS).put(JSON.parse(JSON.stringify(work)))
 }
 
 export async function deleteWork(id: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  await d.delete(STORE_WORKS, id)
+  await db.table(STORE_WORKS).delete(id)
 }
 
 /** 记录一次浏览/操作:刷新最后操作时间(书架卡片展示用;无作品时静默) */

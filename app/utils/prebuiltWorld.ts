@@ -2,7 +2,7 @@
 // 预置小说「预生成世界」客户端入口:管理员预生成的成书结果(见 scripts/prebuild-presets.ts)
 // 经 /api/presets/:id/world 静态下发,用户直接使用 —— 0 token、无需跑生成管线,
 // 组装 LocalWork 落本地书架后跳 /play 选角。未预生成的书(world 404)回退原自定义生成流程。
-import type { CharacterCard, EntityConflict, LocalWork, PresetNovelRow, WorldEntities } from '#shared/novel'
+import type { CharacterCard, EntityConflict, LocalWork, PresetNovelRow, StoryBeat, WorldEntities, WorldOverlay } from '#shared/novel'
 import { ADULT_GENRE } from '#shared/world-build'
 import { loadPresetChapters } from './chapters'
 import { saveWork } from './worldGen'
@@ -15,6 +15,9 @@ export interface PrebuiltWorld {
   genre: string | null
   summary: string | null
   characters: CharacterCard[]
+  /** 新预生成 JSON 带完整 overlay;旧文件缺省时从扁平字段拼 */
+  overlay?: WorldOverlay
+  storyline?: StoryBeat[]
   entities: WorldEntities
   conflicts: EntityConflict[]
   warnings: string[]
@@ -52,11 +55,19 @@ export async function installPrebuiltWork(preset: Pick<PresetNovelRow, 'id' | 't
     conflicts: world.conflicts,
     warnings: world.warnings,
     overlay: {
-      title: world.title || preset.title,
+      title: world.overlay?.title || world.title || preset.title,
       genre: ADULT_GENRE,
-      summary: world.summary ?? undefined,
-      characters: world.characters
-    }
+      summary: world.overlay?.summary ?? world.summary ?? undefined,
+      characters: world.overlay?.characters ?? world.characters,
+      tags: world.overlay?.tags,
+      orientation: world.overlay?.orientation,
+      setting: world.overlay?.setting,
+      heat: world.overlay?.heat,
+      contentWarnings: world.overlay?.contentWarnings,
+      tropes: world.overlay?.tropes,
+      kinkProfile: world.overlay?.kinkProfile
+    },
+    storyline: world.storyline
   }
   await saveWork(work)
   return work.id

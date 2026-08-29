@@ -583,8 +583,7 @@ const aiModal = reactive({
   format: 'chat' as AiApiFormat,
   baseUrl: '',
   apiKey: '',
-  model: '',
-  thinking: false
+  model: ''
 })
 const aiModalBusy = ref(false)
 const aiModalError = ref<string | null>(null)
@@ -598,7 +597,6 @@ function openAiModal() {
   aiModal.baseUrl = ''
   aiModal.apiKey = ''
   aiModal.model = ''
-  aiModal.thinking = false
   aiModalError.value = null
   aiTestResult.value = null
   aiKeyShow.value = false
@@ -612,7 +610,6 @@ function openAiEdit(c: AiConfigItem) {
   aiModal.baseUrl = c.baseUrl
   aiModal.apiKey = c.apiKey
   aiModal.model = c.model
-  aiModal.thinking = c.thinking
   aiModalError.value = null
   aiTestResult.value = null
   aiKeyShow.value = false
@@ -653,7 +650,8 @@ async function onAiSave() {
       baseUrl: aiModal.baseUrl.trim(),
       apiKey: aiModal.apiKey.trim() || existing?.apiKey || '',
       model: aiModal.model.trim(),
-      thinking: aiModal.thinking,
+      // 思考统一关闭:自建配置不提供开关,保存时固定 false
+      thinking: false,
       // 编辑时保留原启用状态;新建/编辑都不自动切换为当前配置
       active: existing?.active
     }
@@ -742,15 +740,11 @@ function aiFormatLabel(f: AiApiFormat) {
   return aiFormatMeta(f).label
 }
 
-// ---- 生成参数(本地偏好):提取输入/输出上限 + 检查、成书输出上限(高级设置) ----
+// ---- 生成参数(本地偏好):只保留分段相关;输出上限/超时由平台默认,生成时不读用户值 ----
 const loadedLimits = loadGenLimits()
 const genForm = reactive({
   unitMaxChars: loadedLimits.unitMaxChars,
-  unitOverlapChars: loadedLimits.unitOverlapChars,
-  extractMaxTokens: loadedLimits.extractMaxTokens,
-  checkMaxTokens: loadedLimits.checkMaxTokens,
-  synthMaxTokens: loadedLimits.synthMaxTokens,
-  relayTimeoutSec: loadedLimits.relayTimeoutSec
+  unitOverlapChars: loadedLimits.unitOverlapChars
 })
 const genMsg = ref<{ kind: 'ok' | 'error', text: string } | null>(null)
 
@@ -770,28 +764,25 @@ const unitMaxHint = computed(() => {
 })
 
 /** 表单各字段的校验顺序与文案(范围取自 GEN_LIMIT_RANGE) */
-const LIMIT_FIELDS: { key: keyof GenLimits, label: string, unit: string }[] = [
+const LIMIT_FIELDS: { key: 'unitMaxChars' | 'unitOverlapChars', label: string, unit: string }[] = [
   { key: 'unitMaxChars', label: '单次输入上限', unit: '字符' },
-  { key: 'unitOverlapChars', label: '单元切段重叠', unit: '字符(0=关闭)' },
-  { key: 'extractMaxTokens', label: '提取输出上限', unit: 'tokens' },
-  { key: 'checkMaxTokens', label: '一致性检查输出上限', unit: 'tokens' },
-  { key: 'synthMaxTokens', label: '成书输出上限', unit: 'tokens' },
-  { key: 'relayTimeoutSec', label: '单次调用超时', unit: '秒' }
+  { key: 'unitOverlapChars', label: '单元切段重叠', unit: '字符(0=关闭)' }
 ]
 
 async function resetGenForm() {
   const ok = await resetGenLimits()
-  Object.assign(genForm, DEFAULT_GEN_LIMITS)
+  genForm.unitMaxChars = DEFAULT_GEN_LIMITS.unitMaxChars
+  genForm.unitOverlapChars = DEFAULT_GEN_LIMITS.unitOverlapChars
   genMsg.value = ok
     ? { kind: 'ok', text: '已恢复默认' }
     : { kind: 'error', text: '恢复默认失败,请检查网络' }
 }
 
 async function submitGenLimits() {
-  const next: GenLimits = { ...genForm }
+  const next: GenLimits = { ...DEFAULT_GEN_LIMITS }
   for (const f of LIMIT_FIELDS) {
     const range = GEN_LIMIT_RANGE[f.key]
-    const v = Math.round(next[f.key])
+    const v = Math.round(genForm[f.key])
     if (!Number.isFinite(v) || v < range.min || v > range.max) {
       genMsg.value = { kind: 'error', text: `${f.label}需在 ${range.min.toLocaleString()} ~ ${range.max.toLocaleString()} ${f.unit}之间` }
       return
@@ -800,7 +791,8 @@ async function submitGenLimits() {
   }
   const ok = await saveGenLimits(next)
   if (ok) {
-    Object.assign(genForm, next)
+    genForm.unitMaxChars = next.unitMaxChars
+    genForm.unitOverlapChars = next.unitOverlapChars
     genMsg.value = { kind: 'ok', text: '已保存到本地,下次生成世界时生效' }
   } else {
     genMsg.value = { kind: 'error', text: '保存失败,请检查网络' }
@@ -1221,7 +1213,7 @@ watch(narrLength, v => saveNarrLength(v))
             </p>
           </UCard>
 
-          <!-- 生成参数:单次调用的输入/输出上限(本地偏好) -->
+          <!-- 生成参数:只保留分段(本地偏好);输出上限/超时走平台默认 -->
           <UCard class="mb-6">
             <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -1229,7 +1221,7 @@ watch(narrLength, v => saveNarrLength(v))
                   生成参数
                 </p>
                 <p class="text-xs text-neutral-500">
-                  调大数值,单次提取覆盖更全、消耗更大,一般保持默认即可
+                  只控制正文怎么切段上传;输出上限与超时由平台默认,不再单独限制
                 </p>
               </div>
               <UButton
@@ -1275,23 +1267,23 @@ watch(narrLength, v => saveNarrLength(v))
                 </UFieldGroup>
               </UFormField>
               <UFormField
-                label="提取输出上限"
-                :help="`提取输出的封顶;当前 ${fmtCurrent(genForm.extractMaxTokens)}`"
+                label="单元切段重叠"
+                :help="`长章切段时保留的重叠,减少边界遗漏;0=关闭;当前 ${fmtCurrent(genForm.unitOverlapChars)}`"
               >
                 <UFieldGroup class="w-full">
                   <UInput
-                    v-model.number="genForm.extractMaxTokens"
+                    v-model.number="genForm.unitOverlapChars"
                     type="number"
-                    :min="GEN_LIMIT_RANGE.extractMaxTokens.min"
-                    :max="GEN_LIMIT_RANGE.extractMaxTokens.max"
-                    :step="GEN_LIMIT_RANGE.extractMaxTokens.step"
-                    :placeholder="String(DEFAULT_GEN_LIMITS.extractMaxTokens)"
+                    :min="GEN_LIMIT_RANGE.unitOverlapChars.min"
+                    :max="GEN_LIMIT_RANGE.unitOverlapChars.max"
+                    :step="GEN_LIMIT_RANGE.unitOverlapChars.step"
+                    :placeholder="String(DEFAULT_GEN_LIMITS.unitOverlapChars)"
                     class="w-full"
                   />
                   <UButton
                     color="neutral"
                     variant="subtle"
-                    label="tokens"
+                    label="字符"
                     aria-hidden="true"
                     tabindex="-1"
                     class="pointer-events-none select-none"
@@ -1299,124 +1291,6 @@ watch(narrLength, v => saveNarrLength(v))
                 </UFieldGroup>
               </UFormField>
             </div>
-            <UCollapsible
-              :unmount-on-hide="false"
-              class="mt-6"
-            >
-              <UButton
-                color="neutral"
-                variant="outline"
-                size="sm"
-                block
-                icon="i-lucide-sliders-horizontal"
-                trailing-icon="i-lucide-chevron-down"
-              >
-                高级设置
-              </UButton>
-              <template #content>
-                <div class="mt-3 grid gap-x-4 gap-y-6 sm:grid-cols-2">
-                  <UFormField
-                    label="单元切段重叠"
-                    :help="`长章切段时保留的重叠,减少边界遗漏;0=关闭;当前 ${fmtCurrent(genForm.unitOverlapChars)}`"
-                  >
-                    <UFieldGroup class="w-full">
-                      <UInput
-                        v-model.number="genForm.unitOverlapChars"
-                        type="number"
-                        :min="GEN_LIMIT_RANGE.unitOverlapChars.min"
-                        :max="GEN_LIMIT_RANGE.unitOverlapChars.max"
-                        :step="GEN_LIMIT_RANGE.unitOverlapChars.step"
-                        :placeholder="String(DEFAULT_GEN_LIMITS.unitOverlapChars)"
-                        class="w-full"
-                      />
-                      <UButton
-                        color="neutral"
-                        variant="subtle"
-                        label="字符"
-                        aria-hidden="true"
-                        tabindex="-1"
-                        class="pointer-events-none select-none"
-                      />
-                    </UFieldGroup>
-                  </UFormField>
-                  <UFormField
-                    label="一致性检查输出上限"
-                    :help="`检查设定的输出封顶;当前 ${fmtCurrent(genForm.checkMaxTokens)}`"
-                  >
-                    <UFieldGroup class="w-full">
-                      <UInput
-                        v-model.number="genForm.checkMaxTokens"
-                        type="number"
-                        :min="GEN_LIMIT_RANGE.checkMaxTokens.min"
-                        :max="GEN_LIMIT_RANGE.checkMaxTokens.max"
-                        :step="GEN_LIMIT_RANGE.checkMaxTokens.step"
-                        :placeholder="String(DEFAULT_GEN_LIMITS.checkMaxTokens)"
-                        class="w-full"
-                      />
-                      <UButton
-                        color="neutral"
-                        variant="subtle"
-                        label="tokens"
-                        aria-hidden="true"
-                        tabindex="-1"
-                        class="pointer-events-none select-none"
-                      />
-                    </UFieldGroup>
-                  </UFormField>
-                  <UFormField
-                    label="成书输出上限"
-                    :help="`简介与人物卡的输出封顶;当前 ${fmtCurrent(genForm.synthMaxTokens)}`"
-                  >
-                    <UFieldGroup class="w-full">
-                      <UInput
-                        v-model.number="genForm.synthMaxTokens"
-                        type="number"
-                        :min="GEN_LIMIT_RANGE.synthMaxTokens.min"
-                        :max="GEN_LIMIT_RANGE.synthMaxTokens.max"
-                        :step="GEN_LIMIT_RANGE.synthMaxTokens.step"
-                        :placeholder="String(DEFAULT_GEN_LIMITS.synthMaxTokens)"
-                        class="w-full"
-                      />
-                      <UButton
-                        color="neutral"
-                        variant="subtle"
-                        label="tokens"
-                        aria-hidden="true"
-                        tabindex="-1"
-                        class="pointer-events-none select-none"
-                      />
-                    </UFieldGroup>
-                  </UFormField>
-                  <UFormField
-                    label="单次调用超时"
-                    :help="`单次调用的等待上限;当前 ${fmtCurrent(genForm.relayTimeoutSec)}`"
-                  >
-                    <UFieldGroup class="w-full">
-                      <UInput
-                        v-model.number="genForm.relayTimeoutSec"
-                        type="number"
-                        :min="GEN_LIMIT_RANGE.relayTimeoutSec.min"
-                        :max="GEN_LIMIT_RANGE.relayTimeoutSec.max"
-                        :step="GEN_LIMIT_RANGE.relayTimeoutSec.step"
-                        :placeholder="String(DEFAULT_GEN_LIMITS.relayTimeoutSec)"
-                        class="w-full"
-                      />
-                      <UButton
-                        color="neutral"
-                        variant="subtle"
-                        label="秒"
-                        aria-hidden="true"
-                        tabindex="-1"
-                        class="pointer-events-none select-none"
-                      />
-                    </UFieldGroup>
-                  </UFormField>
-                </div>
-                <p class="mt-3 text-xs text-neutral-400">
-                  默认值适合大多数场景;调大输出后建议同步调大超时
-                </p>
-              </template>
-            </UCollapsible>
             <div class="mt-4 flex items-center gap-3">
               <UButton
                 color="primary"
@@ -2179,18 +2053,6 @@ watch(narrLength, v => saveNarrLength(v))
             <UInput
               v-model="aiModal.model"
               :placeholder="aiFormatMeta(aiModal.format).placeholderModel"
-              class="w-full"
-            />
-          </UFormField>
-
-          <UFormField
-            v-if="aiFormatMeta(aiModal.format).supportsThinking"
-            label="请求模式"
-          >
-            <USelect
-              v-model="aiModal.thinking"
-              :items="[{ label: '思考关闭(快/省)', value: false }, { label: '思考开启(深度推理)', value: true }]"
-              value-key="value"
               class="w-full"
             />
           </UFormField>

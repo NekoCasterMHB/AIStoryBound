@@ -239,7 +239,7 @@ async function onSave() {
     if (!work) throw new Error('本地未找到该作品')
     await saveWork({
       ...work,
-      overlay: { ...work.overlay, title: work.overlay?.title, genre: work.overlay?.genre, summary: work.overlay?.summary, characters: cards },
+      overlay: { ...work.overlay, characters: cards },
       updatedAt: new Date().toISOString()
     })
     emit('saved')

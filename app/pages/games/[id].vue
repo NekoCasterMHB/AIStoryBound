@@ -8,7 +8,7 @@ import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
 import { loadScenePrefs, saveScenePrefs } from '../../utils/scenePrefs'
 import { loadNarrTemp, saveNarrTemp, NARR_TEMP_MIN, NARR_TEMP_MAX, NARR_TEMP_STEP } from '../../utils/narrPrefs'
 import { loadEnabledAiSkillObjects, listInstalledSkills, loadEnabledAiSkills, saveEnabledAiSkills } from '../../utils/aiSkills'
-import { buildTurnPrompt, cardBrief, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, REINJECT_CHAPTER_EVERY, REINJECT_WINDOW_CHARS } from '#shared/game'
+import { ADULT_CONTENT_POLICY, buildTurnPrompt, cardBrief, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, REINJECT_CHAPTER_EVERY, REINJECT_WINDOW_CHARS } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
 import { getLocalGame, saveLocalGame, syncGameToCloud } from '../../utils/gameStore'
@@ -85,12 +85,20 @@ function submitScenePrefs() {
 /** 回注定位:当前章索引 + 章内字符偏移(AI 报告进入新章时重置偏移) */
 const plotPos = ref({ idx: 0, offset: 0 })
 
-/** 解析回注定位的章节索引:优先开局 chapterIndex,再按标题匹配作品章节(旧存档回退),缺省 0 */
+/** 解析回注定位的章节索引:优先细纲段起始偏移定位,再按标题匹配作品章节(旧存档回退),缺省 0 */
 function resolveChapterIndex(title: string | null | undefined): number {
   const chapters = work.value?.chapters ?? []
   const op = game.value?.opening
-  if (op?.mode === 'chapter' && typeof op.chapterIndex === 'number' && chapters[op.chapterIndex]) {
-    return op.chapterIndex
+  // 细纲段开场:用段起始字符偏移定位到章节
+  if (op?.mode === 'beat' && typeof op.beatIndex === 'number') {
+    const beat = work.value?.storyline?.[op.beatIndex]
+    if (beat && typeof beat.startChar === 'number') {
+      let acc = 0
+      for (let i = 0; i < chapters.length; i++) {
+        if (beat.startChar >= acc && beat.startChar < acc + chapters[i].content.length + 1) return i
+        acc += chapters[i].content.length + 1
+      }
+    }
   }
   if (title) {
     const idx = chapters.findIndex(c => c.title === title || (c.title && (c.title.startsWith(title) || title.startsWith(c.title))))
@@ -160,6 +168,11 @@ onMounted(async () => {
   const g = await getLocalGame(gameId)
   if (!g) {
     loadError.value = '本地未找到该游戏会话(可能已在新设备上;请到书架「云端游戏」恢复)'
+    return
+  }
+  // 旧版「从章节开始」存档:章节识别不可靠已下线,这类存档无法继续,提示后不进入游戏
+  if (g.opening?.mode === 'chapter') {
+    loadError.value = '该存档基于已下线的「从章节开始」开局,已失效。请返回选角页,改用「按细纲段开始」或其它开场方式重新开局。'
     return
   }
   game.value = g
@@ -325,14 +338,14 @@ async function generateOpenings() {
       [
         {
           role: 'system',
-          content: `你是故事开场设计师。基于作品设定与玩家角色,构思 3~4 个互不相同的开场剧情点,每个包含标题与场景描述(须写清玩家所处场景与第一个矛盾,80~150 字,第二人称叙述)。输出 JSON:\n{"openings":[{"title":"开场标题","scene":"场景描述"}]}`
+          content: `${ADULT_CONTENT_POLICY}\n你是故事开场设计师。基于作品设定与玩家角色,构思 3~4 个互不相同的开场剧情点,每个包含标题与场景描述(须写清玩家所处场景与第一个矛盾,80~150 字,第二人称叙述)。允许成人向开场,不要因题材拒绝。输出 JSON:\n{"openings":[{"title":"开场标题","scene":"场景描述"}]}`
         },
         {
           role: 'user',
-          content: `作品《${work.value?.overlay?.title || '未命名小说'}》,题材:${work.value?.overlay?.genre ?? '未知'}\n故事背景:${work.value?.overlay?.summary ?? '无'}\n玩家扮演:${brief}\n当前状态:${JSON.stringify(state.value)}`
+          content: `作品《${work.value?.overlay?.title || '未命名小说'}》,题材:${work.value?.overlay?.genre ?? '未知'}${work.value?.overlay?.orientation ? `，性向:${work.value.overlay.orientation}` : ''}${work.value?.overlay?.heat ? `，尺度:${work.value.overlay.heat}` : ''}${work.value?.overlay?.setting ? `，舞台:${work.value.overlay.setting}` : ''}${work.value?.overlay?.tags?.length ? `，标签:${work.value.overlay.tags.slice(0, 8).join('、')}` : ''}\n故事背景:${work.value?.overlay?.summary ?? '无'}\n玩家扮演:${brief}\n当前状态:${JSON.stringify(state.value)}`
         }
       ],
-      { maxTokens: 800, temperature: 1.0, thinking: false }
+      { maxTokens: 800, temperature: 1.0 }
     )
     if (!res.ok) throw new Error(res.message)
     void addWorkTokens(game.value?.workId ?? '', res.usage?.totalTokens ?? 0)
@@ -363,7 +376,7 @@ function confirmOpening() {
 async function seedDesiresByOpening(): Promise<void> {
   const op = game.value?.opening
   if (!op || op.desiresSeeded) return
-  const scene = op.mode === 'chapter' ? op.chapterText : op.scene
+  const scene = op.mode === 'beat' ? op.beatText : op.scene
   if (!scene?.trim()) return
   const briefs = cards.value.map(cardBrief)
   if (briefs.length === 0) return
@@ -378,7 +391,7 @@ async function seedDesiresByOpening(): Promise<void> {
         content: `起始情节:\n${scene.trim().slice(0, 1500)}\n\n人物卡:\n${briefs.join('\n')}\n\n当前公式播种值(仅参考,请按情节覆盖):${JSON.stringify(state.value.desires ?? {})}`
       }
     ],
-    { maxTokens: 400, temperature: 0.4, thinking: false }
+    { maxTokens: 400, temperature: 0.4 }
   )
   if (!res.ok) return
   void addWorkTokens(game.value?.workId ?? '', res.usage?.totalTokens ?? 0)
@@ -508,7 +521,7 @@ async function sendTurn(choice?: string) {
     const deviceSpec = deviceEnabled ? narratorDeviceSpec(enabledBriefs) : ''
     // 章节回注:每 REINJECT_CHAPTER_EVERY 回合,按当前定位取当前章剩余情节窗口 + 下一章开头窗口
     const turnIndex = messages.value.filter(m => m.role === 'narrator').length
-    const reinjectPlot = turnIndex > 0 && turnIndex % REINJECT_CHAPTER_EVERY === 0 && game.value.opening?.mode === 'chapter'
+    const reinjectPlot = turnIndex > 0 && turnIndex % REINJECT_CHAPTER_EVERY === 0 && game.value.opening?.mode === 'beat'
       ? buildReinjectWindow()
       : undefined
     // 1) 叙事流式(中继 SSE)
@@ -532,9 +545,18 @@ async function sendTurn(choice?: string) {
       narrLength: narrLength.value,
       entities: work.value?.entities,
       conflicts: work.value?.conflicts,
+      storyline: work.value?.storyline,
+      overlayMeta: work.value?.overlay
+        ? {
+            orientation: work.value.overlay.orientation,
+            setting: work.value.overlay.setting,
+            heat: work.value.overlay.heat,
+            tags: work.value.overlay.tags
+          }
+        : undefined,
       reinjectPlot
     })
-    const narr = await aiChat(prompt, { maxTokens: Math.min(2400, Math.max(800, Math.round(narrLength.value * 2))), temperature: narrTemp.value, thinking: false }, {
+    const narr = await aiChat(prompt, { maxTokens: Math.min(2400, Math.max(800, Math.round(narrLength.value * 2))), temperature: narrTemp.value }, {
       onDelta: (d) => {
         // 解析器增量识别 [[dev:...]] / [[pause:...]],打字机按序消费(文本限速 + 停顿;指令到句执行)
         const tokens = narrParser?.feed(d) ?? []
@@ -574,7 +596,7 @@ async function sendTurn(choice?: string) {
           content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(state.value)}\n上文剧情:\n${messages.value.slice(-12).map(m => m.content).join('\n')}`
         }
       ],
-      { maxTokens: 1200, temperature: narrTemp.value, thinking: false }
+      { maxTokens: 1200, temperature: narrTemp.value }
     )
     if (!optRes.ok) throw new Error(optRes.message)
     void addWorkTokens(game.value.workId, optRes.usage?.totalTokens ?? 0)
@@ -733,7 +755,33 @@ watch([messages, streamDisplay], async () => {
 </script>
 
 <template>
-  <div class="flex h-full flex-col px-4">
+  <!-- 旧版章节开局存档已失效:只提示,不渲染游戏主体 -->
+  <div
+    v-if="loadError"
+    class="flex min-h-dvh items-center justify-center px-4"
+  >
+    <div class="w-full max-w-md">
+      <UAlert
+        color="error"
+        variant="soft"
+        icon="i-lucide-triangle-alert"
+        :title="loadError"
+      />
+      <div class="mt-4 flex justify-center gap-3">
+        <UButton
+          label="返回书架"
+          icon="i-lucide-arrow-left"
+          color="neutral"
+          variant="outline"
+          to="/works"
+        />
+      </div>
+    </div>
+  </div>
+  <div
+    v-else
+    class="flex h-full flex-col px-4"
+  >
     <div class="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden">
       <!-- 顶栏(固定置顶):标题行 + 地点/时间等状态排 -->
       <div class="shrink-0 space-y-4 pt-4">
@@ -1293,7 +1341,7 @@ watch([messages, streamDisplay], async () => {
             />
             <p class="text-sm text-neutral-500">
               故事尚未开始。以「{{ playerName }}」的身份进入《{{ work?.overlay?.title || '' }}》
-              <template v-if="game?.opening?.mode === 'chapter'">，将从「{{ game.opening.chapterTitle || '所选章节' }}」开头的情节开始演绎。</template>
+              <template v-if="game?.opening?.mode === 'beat'">，将从「{{ game.opening.beatTitle || '所选细纲段' }}」的情节开始演绎。</template>
               <template v-else-if="game?.opening?.mode === 'custom'">，将按你提供的背景故事开场。</template>
               <template v-else>，AI 将为你铺设开场。</template>
             </p>

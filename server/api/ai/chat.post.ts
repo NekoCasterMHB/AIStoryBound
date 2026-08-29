@@ -26,6 +26,7 @@ interface ChatRelayBody {
   json?: boolean
   maxTokens?: number
   temperature?: number
+  /** 思考开关:统一关闭(false);缺省按关闭处理 */
   thinking?: boolean
   /** 单次调用超时(毫秒);缺省用平台默认 600s */
   timeoutMs?: number
@@ -73,13 +74,13 @@ export default defineEventHandler(async (event) => {
     relay = { format: ai.format, baseUrl: ai.baseUrl, apiKey: ai.apiKey, model: ai.model, userKey: false }
   }
 
-  // ---- 按格式构建上游请求并转发 ----
+  // ---- 按格式构建上游请求并转发(思考统一关闭:缺省 false 也显式传,chat 格式会发 thinking:{type:'disabled'}) ----
   const req = buildUpstreamRequest(relay, {
     messages,
     json: body.json,
     maxTokens: body.maxTokens,
     temperature: body.temperature,
-    thinking: body.thinking,
+    thinking: body.thinking === true,
     stream: true
   })
 

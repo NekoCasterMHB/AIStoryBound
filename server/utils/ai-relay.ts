@@ -21,6 +21,7 @@ export interface RelayInput {
   json?: boolean
   maxTokens?: number
   temperature?: number
+  /** 思考开关:所有调用统一传 false(关闭)。chat 格式显式发送 thinking:{type:'disabled'} 强制关闭 */
   thinking?: boolean
   stream?: boolean
 }
@@ -31,7 +32,7 @@ interface UpstreamRequest {
   body: Record<string, unknown>
 }
 
-/** 按格式构建上游请求(stream=false 用于测试连接/非流式) */
+/** 按格式构建上游请求(stream=false 用于测试连接/非流式)。思考(thinking)统一关闭:调用方固定传 false。 */
 export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): UpstreamRequest {
   const base = cfg.baseUrl.replace(/\/+$/, '')
   const json = input.json ?? false
@@ -44,11 +45,13 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
       .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
     const body: Record<string, unknown> = {
       model: cfg.model,
-      max_tokens: input.maxTokens ?? 4096,
+      // Anthropic Messages 必填 max_tokens;未指定时用高上限,不再硬填 4096 截断完整提取/成书
+      max_tokens: input.maxTokens && input.maxTokens > 0 ? input.maxTokens : 32768,
       messages
     }
     if (input.stream) body.stream = true
     if (input.temperature !== undefined) body.temperature = input.temperature
+    // Anthropic 思考关闭即不发 thinking 字段(缺省不开启);开启才显式设置
     if (thinking) body.thinking = { type: 'enabled', budget_tokens: 1024 }
     if (json) {
       // Anthropic 无 response_format,在 system 里要求纯 JSON,前端仍用 extractJson 兜底
@@ -81,6 +84,7 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
     if (input.temperature !== undefined) body.temperature = input.temperature
     if (system) body.instructions = system
     if (json) body.text = { format: { type: 'json_object' } }
+    // Responses 思考关闭即不发 reasoning 字段(缺省不开启);开启才显式设置
     if (thinking) body.reasoning = { effort: 'high' }
     return {
       url: `${base}/responses`,
@@ -104,6 +108,8 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
   }
   if (json) body.response_format = { type: 'json_object' }
   if (input.maxTokens) body.max_tokens = input.maxTokens
+  // chat 格式必须显式带 thinking 字段:DeepSeek 等模型默认可能开启思考,
+  // 不传等于让模型自行决定;传 {type:'disabled'} 才是明确关闭。
   if (input.thinking !== undefined) body.thinking = { type: input.thinking ? 'enabled' : 'disabled' }
   return {
     url: `${base}/chat/completions`,

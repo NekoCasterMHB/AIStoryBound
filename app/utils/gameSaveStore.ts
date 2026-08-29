@@ -28,16 +28,14 @@ export interface GameSavePoint {
 
 export async function saveGamePoint(point: GameSavePoint): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
   // 入库存纯数据:Vue reactive proxy 结构化克隆会抛 DataCloneError
-  await d.put(STORE, JSON.parse(JSON.stringify(point)))
+  await db.table(STORE).put(JSON.parse(JSON.stringify(point)))
 }
 
 /** 列出某游戏的全部存档点,按序号倒序(最新的在前) */
 export async function listGamePoints(gameId: string): Promise<GameSavePoint[]> {
   if (typeof indexedDB === 'undefined') return []
-  const d = await db()
-  const all = await d.getAll(STORE)
+  const all = await db.table(STORE).toArray()
   return all
     .filter(p => p.gameId === gameId)
     .sort((a, b) => b.idx - a.idx)
@@ -46,11 +44,10 @@ export async function listGamePoints(gameId: string): Promise<GameSavePoint[]> {
 /** 删除某游戏序号 >= fromIdx 的存档点(回滚后清理失效快照) */
 export async function pruneGamePoints(gameId: string, fromIdx: number): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  const all = await d.getAll(STORE)
+  const all = await db.table(STORE).toArray()
   for (const p of all) {
     if (p.gameId === gameId && p.idx >= fromIdx) {
-      await d.delete(STORE, p.key)
+      await db.table(STORE).delete(p.key)
     }
   }
 }
@@ -58,10 +55,9 @@ export async function pruneGamePoints(gameId: string, fromIdx: number): Promise<
 /** 删除某游戏会话的全部存档点(删除会话时清理,避免 IndexedDB 残留) */
 export async function deleteGamePoints(gameId: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  const all = await d.getAll(STORE)
+  const all = await db.table(STORE).toArray()
   for (const p of all) {
-    if (p.gameId === gameId) await d.delete(STORE, p.key)
+    if (p.gameId === gameId) await db.table(STORE).delete(p.key)
   }
 }
 
@@ -71,11 +67,10 @@ export const MAX_SAVE_POINTS = 50
 /** 截断某游戏的存档点:只保留序号最新的 MAX_SAVE_POINTS 个 */
 export async function capGamePoints(gameId: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  const all = await d.getAll(STORE)
+  const all = await db.table(STORE).toArray()
   const mine = all.filter(p => p.gameId === gameId).sort((a, b) => b.idx - a.idx)
   if (mine.length <= MAX_SAVE_POINTS) return
   for (const p of mine.slice(MAX_SAVE_POINTS)) {
-    await d.delete(STORE, p.key)
+    await db.table(STORE).delete(p.key)
   }
 }

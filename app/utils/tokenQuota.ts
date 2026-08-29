@@ -1,7 +1,7 @@
 // app/utils/tokenQuota.ts
 // 生成世界前的平台 token 额度预检:自建 API Key 模式不消耗平台余额,无需检测
 import { getActiveRelayConfig } from './aiConfigStore'
-import { loadGenLimits } from './genSettings'
+import { DEFAULT_GEN_LIMITS, loadGenLimits } from './genSettings'
 import type { GenLimits } from './genSettings'
 import { CJK_TOKEN_PER_CHAR } from '#shared/token-estimate'
 
@@ -18,9 +18,9 @@ export interface TokenQuotaInfo {
 /** 每提取单元:系统 schema + 指令的输入开销(tokens) */
 const EXTRACT_INPUT_OVERHEAD_TOKENS = 2500
 /** 每提取单元:典型提取 JSON 输出(tokens;输出上限之外的常见量级) */
-const EXTRACT_OUTPUT_TOKENS = 3000
-/** 节约模式每提取单元输出:5 类实体、引用从简 */
-const ECO_EXTRACT_OUTPUT_TOKENS = 1200
+const EXTRACT_OUTPUT_TOKENS = 3300
+/** 节约模式每提取单元输出:5 类实体 + 情节细纲、引用从简 */
+const ECO_EXTRACT_OUTPUT_TOKENS = 1500
 /** 一致性检查输入:紧凑实体库 ≈ 全书 token 数的该比例(压缩后远小于正文) */
 const CHECK_INPUT_TOKEN_RATIO = 0.12
 /** 一致性检查:指令输入开销 + 输出(tokens) */
@@ -34,8 +34,8 @@ const SYNTH_INPUT_OVERHEAD_TOKENS = 1500
 const SYNTH_OUTPUT_TOKENS = 5000
 /** 节约模式成书输入更轻(只带头部角色轻量素材) */
 const ECO_SYNTH_INPUT_TOKEN_RATIO = 0.10
-/** 节约模式成书输出:标题/简介/角色定位 */
-const ECO_SYNTH_OUTPUT_TOKENS = 600
+/** 节约模式成书输出:标题/简介/角色定位 + 标签/性向/设定 */
+const ECO_SYNTH_OUTPUT_TOKENS = 1000
 /** 作者识别(正文抽样输入 + 未命中时联网检索,输出极少) */
 const AUTHOR_TOKENS = 1500
 /** 综合余量:覆盖 tokenizer 差异、失败重试、切段重叠等不可预知项(预检宁高勿低) */
@@ -48,7 +48,7 @@ const SAFETY_FACTOR = 1.2
  */
 export function estimateWorldGenTokens(totalChars: number, eco = false, limits: GenLimits = loadGenLimits()): number {
   if (!Number.isFinite(totalChars) || totalChars <= 0) return 1
-  const unitMax = Math.max(1000, limits.unitMaxChars)
+  const unitMax = Math.max(1000, limits.unitMaxChars || DEFAULT_GEN_LIMITS.unitMaxChars)
   const units = Math.max(1, Math.ceil(totalChars / unitMax))
   // 提取:输入 = 全书正文 + 每单元提示词开销;输出 = 每单元典型提取 JSON
   const textTokens = Math.ceil(totalChars * CJK_TOKEN_PER_CHAR)

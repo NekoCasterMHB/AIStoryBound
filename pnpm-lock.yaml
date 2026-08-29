@@ -23,15 +23,15 @@ importers:
       better-auth:
         specifier: ^1.7.1
         version: 1.7.1(@cloudflare/workers-types@5.20260820.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260820.1)(@libsql/client@0.17.4)(kysely@0.29.5))(vue@3.5.41(typescript@5.9.3))
+      dexie:
+        specifier: ^4.4.5
+        version: 4.4.5
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@cloudflare/workers-types@5.20260820.1)(@libsql/client@0.17.4)(kysely@0.29.5)
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
-      idb:
-        specifier: ^8.0.3
-        version: 8.0.3
       js-yaml:
         specifier: ^5.4.0
         version: 5.4.0
@@ -4201,6 +4201,9 @@ packages:
   devlop@1.1.0:
     resolution: {integrity: sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==}
 
+  dexie@4.4.5:
+    resolution: {integrity: sha512-wWCHdihT3dmlUSuNhn5mMZDWSpG0suxjAni7YjjiZdzabZcKmy3uNZGZ7AeYYXBoLbpSXX35fikPLkPC44Osiw==}
+
   diff@8.0.4:
     resolution: {integrity: sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw==}
     engines: {node: '>=0.3.1'}
@@ -5069,9 +5072,6 @@ packages:
 
   idb@7.1.1:
     resolution: {integrity: sha512-gchesWBzyvGHRO9W8tzUWFDycow5gwjvFKfyV9FF32Y7F50yZMp7mP+T2mJIWFx49zicqyC4uefHM17o6xKIVQ==}
-
-  idb@8.0.3:
-    resolution: {integrity: sha512-LtwtVyVYO5BqRvcsKuB2iUMnHwPVByPCXFXOpuU96IZPPoPN6xjOGxZQ74pgSVVLQWtUOYgyeL4GE98BY5D3wg==}
 
   identifier-regex@1.1.0:
     resolution: {integrity: sha512-SLX4H/vtcYlYnL7XqnuJKHU7Z8517TgsW9nmQiGOgMCjQ8V/deLYu6bEmbGoXe7WMMhc9+EUGyFFneHja8KabA==}
@@ -12056,6 +12056,8 @@ snapshots:
     dependencies:
       dequal: 2.0.3
 
+  dexie@4.4.5: {}
+
   diff@8.0.4: {}
 
   dom-serializer@2.0.0:
@@ -13160,8 +13162,6 @@ snapshots:
   human-signals@5.0.0: {}
 
   idb@7.1.1: {}
-
-  idb@8.0.3: {}
 
   identifier-regex@1.1.0:
     dependencies:

@@ -13,8 +13,7 @@ const SETTINGS_KEY = 'default'
 
 export async function loadToySettings(): Promise<ToySettings> {
   if (typeof indexedDB === 'undefined') return { ...DEFAULT_TOY_SETTINGS }
-  const d = await db()
-  const row = await d.get(STORE_TOY_SETTINGS, SETTINGS_KEY) as { settings?: ToySettings } | undefined
+  const row = await db.table(STORE_TOY_SETTINGS).get(SETTINGS_KEY) as { settings?: ToySettings } | undefined
   // 与默认值合并:新版本新增字段时旧存档自动补全
   const stored = (row?.settings ?? {}) as ToySettings
   return { ...DEFAULT_TOY_SETTINGS, ...stored }
@@ -22,8 +21,7 @@ export async function loadToySettings(): Promise<ToySettings> {
 
 export async function saveToySettings(settings: ToySettings): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  await d.put(STORE_TOY_SETTINGS, { key: SETTINGS_KEY, settings })
+  await db.table(STORE_TOY_SETTINGS).put({ key: SETTINGS_KEY, settings })
 }
 
 // ---- 玩家导入的插件(新版 PluginDescriptor 格式) ----
@@ -38,8 +36,7 @@ export interface ImportedPluginRecord {
 
 export async function listImportedAdapters(): Promise<ImportedPluginRecord[]> {
   if (typeof indexedDB === 'undefined') return []
-  const d = await db()
-  return (await d.getAll(STORE_TOY_ADAPTERS))
+  return (await db.table(STORE_TOY_ADAPTERS).toArray())
     // 只认新版记录(descriptor 结构);旧格式记录忽略(放弃旧版兼容)
     .filter((r): r is ImportedPluginRecord => !!r && typeof r === 'object' && !!(r as ImportedPluginRecord).descriptor)
     .sort((a, b) => a.importedAt.localeCompare(b.importedAt))
@@ -47,31 +44,27 @@ export async function listImportedAdapters(): Promise<ImportedPluginRecord[]> {
 
 export async function getImportedAdapter(id: string): Promise<ImportedPluginRecord | null> {
   if (typeof indexedDB === 'undefined') return null
-  const d = await db()
-  const r = await d.get(STORE_TOY_ADAPTERS, id)
+  const r = await db.table(STORE_TOY_ADAPTERS).get(id)
   return r && typeof r === 'object' && (r as ImportedPluginRecord).descriptor ? r as ImportedPluginRecord : null
 }
 
 export async function saveImportedAdapter(record: ImportedPluginRecord): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  await d.put(STORE_TOY_ADAPTERS, record)
+  await db.table(STORE_TOY_ADAPTERS).put(record)
 }
 
 export async function deleteImportedAdapter(id: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  await d.delete(STORE_TOY_ADAPTERS, id)
+  await db.table(STORE_TOY_ADAPTERS).delete(id)
 }
 
 /** 清空旧格式导入记录(放弃旧版兼容;新格式仅 descriptor 结构) */
 export async function clearLegacyImportedAdapters(): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  const all = await d.getAll(STORE_TOY_ADAPTERS)
+  const all = await db.table(STORE_TOY_ADAPTERS).toArray()
   for (const r of all) {
     if (!r || typeof r !== 'object' || !(r as ImportedPluginRecord).descriptor) {
-      await d.delete(STORE_TOY_ADAPTERS, (r as { id?: string })?.id ?? '')
+      await db.table(STORE_TOY_ADAPTERS).delete((r as { id?: string })?.id ?? '')
     }
   }
 }

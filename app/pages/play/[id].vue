@@ -26,45 +26,73 @@ onMounted(async () => {
 
 const cards = computed(() => work.value?.overlay?.characters ?? [])
 
-// ---- 开场方式:ai=AI 生成开场供选择(默认) chapter=从小说章节开始 custom=玩家输入背景故事 ----
+// ---- 开场方式:ai=AI 生成开场供选择(默认) beat=按细纲段开始 custom=玩家输入背景故事 ----
+// 不用章节:上传 txt 的章节识别不可靠,细纲段按字数切分,兼容任意 txt。
 
-type OpeningMode = 'ai' | 'chapter' | 'custom'
+type OpeningMode = 'ai' | 'beat' | 'custom'
 const openingMode = ref<OpeningMode>('ai')
 const openingModes = [
   { label: 'AI 生成开场', value: 'ai', description: '进入游戏后生成多个开场设定供选择' },
-  { label: '从小说章节开始', value: 'chapter', description: '从所选章节的情节展开' },
+  { label: '按细纲段开始', value: 'beat', description: '从所选细纲段的情节展开' },
   { label: '输入背景故事', value: 'custom', description: '按你写的背景设定生成开场' }
 ] satisfies { label: string, value: OpeningMode, description: string }[]
 
-const chapters = computed(() => work.value?.chapters ?? [])
-const chapterIndex = ref(0)
 const customScene = ref('')
 
-function chapterLabel(i: number) {
-  const ch = chapters.value[i]
-  if (!ch) return ''
-  return ch.title || (i === 0 ? '前言' : `第 ${i + 1} 部分`)
+// ---- 细纲段:storyline 按段序(带 startChar,可定位到章节正文窗口) ----
+
+const beats = computed(() => work.value?.storyline ?? [])
+const beatIndex = ref(0)
+const selectedBeat = computed(() => beats.value[beatIndex.value] ?? null)
+
+/** 章节累计字符偏移(与 splitUnits 的 join('\n') 对齐):每章前加 1 个换行 */
+const chapterCharStarts = computed(() => {
+  let acc = 0
+  return chapters.value.map((c) => {
+    const start = acc
+    acc += c.content.length + 1
+    return start
+  })
+})
+
+/** 细纲段 startChar → 章节下标 + 章内偏移 */
+function locateChapter(startChar: number): { chapterIndex: number, offset: number } | null {
+  const starts = chapterCharStarts.value
+  if (starts.length === 0) return null
+  for (let i = starts.length - 1; i >= 0; i--) {
+    if (startChar >= starts[i]) {
+      return { chapterIndex: i, offset: Math.max(0, startChar - starts[i]) }
+    }
+  }
+  return { chapterIndex: 0, offset: 0 }
 }
 
-const selectedChapter = computed(() => chapters.value[chapterIndex.value] ?? null)
+/** 从细纲段起始位置取一段正文窗口(约 2500 字) */
+function beatTextWindow(beat: { startChar: number }): string {
+  const loc = locateChapter(beat.startChar)
+  if (!loc) return ''
+  const ch = chapters.value[loc.chapterIndex]
+  if (!ch) return ''
+  return ch.content.slice(loc.offset, loc.offset + 2500)
+}
 
 /** 按所选模式构造开局设定;返回 error 表示缺必填内容 */
 function buildOpening(): { opening: LocalGame['opening'], currentChapter?: string | null, error?: string } {
-  if (openingMode.value === 'chapter') {
-    const ch = selectedChapter.value
-    if (!ch) return { opening: undefined, error: '请选择起始章节' }
-    const label = chapterLabel(chapterIndex.value)
-    // 携带上一章(背景)与下一章(情节走向):中间章节注入,首章/末章按存在性省略
-    const prev = chapterIndex.value > 0 ? chapters.value[chapterIndex.value - 1] : null
-    const next = chapterIndex.value < chapters.value.length - 1 ? chapters.value[chapterIndex.value + 1] : null
+  if (openingMode.value === 'beat') {
+    const beat = selectedBeat.value
+    if (!beat) return { opening: undefined, error: '请选择起始细纲段' }
+    const label = beat.label || `第${beat.index + 1}段`
+    const prev = beats.value[beatIndex.value - 1]
+    const next = beats.value[beatIndex.value + 1]
     return {
       opening: {
-        mode: 'chapter',
-        chapterTitle: label,
-        chapterIndex: chapterIndex.value,
-        chapterText: ch.content,
-        ...(prev ? { prevChapter: { title: chapterLabel(chapterIndex.value - 1), text: prev.content } } : {}),
-        ...(next ? { nextChapter: { title: chapterLabel(chapterIndex.value + 1), text: next.content } } : {})
+        mode: 'beat',
+        beatIndex: beat.index,
+        beatTitle: label,
+        beatSummary: beat.summary,
+        beatText: beatTextWindow(beat),
+        ...(prev ? { prevBeat: { title: prev.label, text: prev.summary } } : {}),
+        ...(next ? { nextBeat: { title: next.label, text: next.summary } } : {})
       },
       currentChapter: label
     }
@@ -120,6 +148,29 @@ function roleColor(role: string | undefined) {
         <p class="text-sm text-neutral-500">
           {{ work?.overlay?.summary || '选择你要扮演的角色' }}
         </p>
+        <p
+          v-if="work?.overlay?.orientation || work?.overlay?.setting"
+          class="mt-1 text-xs text-neutral-500"
+        >
+          <span v-if="work.overlay.orientation">{{ work.overlay.orientation }}</span>
+          <span v-if="work.overlay.orientation && work.overlay.heat"> · </span>
+          <span v-if="work.overlay.heat">{{ work.overlay.heat }}</span>
+          <span v-if="work.overlay.setting"> · {{ work.overlay.setting }}</span>
+        </p>
+        <div
+          v-if="work?.overlay?.tags?.length"
+          class="mt-2 flex flex-wrap gap-1.5"
+        >
+          <UBadge
+            v-for="tag in work.overlay.tags.slice(0, 8)"
+            :key="tag"
+            color="primary"
+            variant="subtle"
+            size="sm"
+          >
+            {{ tag }}
+          </UBadge>
+        </div>
       </div>
       <UButton
         label="返回"
@@ -145,6 +196,24 @@ function roleColor(role: string | undefined) {
       title="该作品还没有人物卡"
       description="请先在首页重新生成世界。"
     />
+
+    <details
+      v-if="work?.storyline?.length"
+      class="mb-4 rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900/60"
+    >
+      <summary class="cursor-pointer text-sm font-medium">
+        故事线 · {{ work.storyline.length }} 段
+      </summary>
+      <ol class="mt-3 max-h-64 space-y-2 overflow-y-auto text-sm text-neutral-600 dark:text-neutral-400">
+        <li
+          v-for="beat in work.storyline"
+          :key="beat.index"
+        >
+          <span class="font-medium text-highlighted">段{{ beat.index + 1 }}</span>
+          {{ beat.summary }}
+        </li>
+      </ol>
+    </details>
 
     <UCard class="mb-4">
       <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -177,33 +246,36 @@ function roleColor(role: string | undefined) {
           size="sm"
         />
         <div
-          v-if="openingMode === 'chapter'"
+          v-if="openingMode === 'beat'"
           class="flex flex-col gap-2"
         >
           <p
-            v-if="chapters.length === 0"
+            v-if="beats.length === 0"
             class="text-xs text-amber-600 dark:text-amber-400"
           >
-            该作品没有章节正文,无法从章节开始
+            该作品没有细纲段,无法按细纲开始(请重新生成世界)
           </p>
           <template v-else>
             <USelect
-              v-model="chapterIndex"
-              :items="chapters.map((_, i) => ({ label: chapterLabel(i), value: i }))"
+              v-model="beatIndex"
+              :items="beats.map((b, i) => ({ label: `${b.label || `第${i + 1}段`}: ${b.summary.slice(0, 40)}${b.summary.length > 40 ? '…' : ''}`, value: i }))"
               value-key="value"
               label-key="label"
             />
             <p
-              v-if="selectedChapter"
+              v-if="selectedBeat"
               class="whitespace-pre-line text-xs text-neutral-500"
             >
-              {{ selectedChapter.content.slice(0, 300) }}<template v-if="selectedChapter.content.length > 300">…</template>
+              <span class="font-medium text-neutral-700 dark:text-neutral-300">{{ selectedBeat.label || `第${selectedBeat.index + 1}段` }}</span>
+              {{ selectedBeat.summary }}
+              <template v-if="selectedBeat.place"> · {{ selectedBeat.place }}</template>
+              <template v-if="selectedBeat.cast?.length"> · {{ selectedBeat.cast.slice(0, 4).join('、') }}</template>
             </p>
             <p
-              v-if="selectedChapter"
+              v-if="selectedBeat"
               class="text-[11px] text-neutral-400"
             >
-              共 {{ selectedChapter.content.length }} 字,将以完整正文注入开场;中间章节会连带注入上一章背景与下一章走向,从本章开头开始演绎
+              将从该段起始位置开始演绎,并连带注入前一段背景与后一段走向
             </p>
           </template>
         </div>

@@ -17,9 +17,17 @@ export default defineEventHandler(async (event) => {
     genre: body.overlay?.genre ?? null,
     summary: body.overlay?.summary ?? null,
     characters: body.overlay?.characters ?? [],
+    tags: body.overlay?.tags ?? [],
+    orientation: body.overlay?.orientation ?? null,
+    setting: body.overlay?.setting ?? null,
+    heat: body.overlay?.heat ?? null,
+    contentWarnings: body.overlay?.contentWarnings ?? [],
+    tropes: body.overlay?.tropes ?? [],
+    kinkProfile: body.overlay?.kinkProfile ?? [],
     entities: body.entities ?? null,
     conflicts: body.conflicts ?? [],
-    warnings: body.warnings ?? []
+    warnings: body.warnings ?? [],
+    storyline: body.storyline ?? []
   })
 
   const existing = await getNovel(event, body.id)

@@ -12,26 +12,22 @@ type FlatMsg = LocalGame['messages'][number]
 
 export async function listLocalGames(): Promise<LocalGame[]> {
   if (typeof indexedDB === 'undefined') return []
-  const d = await db()
-  return (await d.getAll(STORE)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  return (await db.table(STORE).toArray()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
 
 export async function getLocalGame(id: string): Promise<LocalGame | null> {
   if (typeof indexedDB === 'undefined') return null
-  const d = await db()
-  return (await d.get(STORE, id)) ?? null
+  return (await db.table(STORE).get(id)) ?? null
 }
 
 export async function saveLocalGame(game: LocalGame): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  await d.put(STORE, JSON.parse(JSON.stringify({ ...game, updatedAt: new Date().toISOString() })))
+  await db.table(STORE).put(JSON.parse(JSON.stringify({ ...game, updatedAt: new Date().toISOString() })))
 }
 
 export async function deleteLocalGame(id: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  await d.delete(STORE, id)
+  await db.table(STORE).delete(id)
 }
 
 /** 新建本地游戏会话(选角页调用) */

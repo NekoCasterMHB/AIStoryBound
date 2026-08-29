@@ -14,13 +14,17 @@ const LS_KEY = 'gen-limits-v2'
 
 /** 旧默认值(输入分段/输出上限沿用旧默认会与新版行为不一致或截断输出);存过旧默认值的账号升级到新默认,其余自定义字段保留 */
 const LEGACY_UNIT_MAX_CHARS = 20000
+const LEGACY_UNIT_MAX_CHARS_V2 = 30000
+const LEGACY_UNIT_MAX_CHARS_V3 = 50000
 const LEGACY_EXTRACT_MAX_TOKENS = 10000
 const LEGACY_CHECK_MAX_TOKENS = 20000
 const LEGACY_SYNTH_MAX_TOKENS = 32768
 
 /** 迁移旧版默认值:仍为旧默认的字段升级到新默认,其余自定义字段保留 */
 function migrateLegacyDefaults(limits: GenLimits): GenLimits {
-  if (limits.unitMaxChars === LEGACY_UNIT_MAX_CHARS) {
+  if (limits.unitMaxChars === LEGACY_UNIT_MAX_CHARS
+    || limits.unitMaxChars === LEGACY_UNIT_MAX_CHARS_V2
+    || limits.unitMaxChars === LEGACY_UNIT_MAX_CHARS_V3) {
     limits.unitMaxChars = DEFAULT_GEN_LIMITS.unitMaxChars
   }
   if (limits.extractMaxTokens === LEGACY_EXTRACT_MAX_TOKENS) {

@@ -33,12 +33,13 @@ export interface AiChatOptions {
   json?: boolean
   maxTokens?: number
   temperature?: number
-  thinking?: boolean
   /** 单次中继调用超时(毫秒);缺省用平台默认 600s */
   timeoutMs?: number
+  /** 思考开关:不提供 UI,调用方也不得开启;服务端 chat 格式收到 false 会显式发送 thinking:{type:'disabled'} 强制关闭 */
+  thinking?: boolean
 }
 
-/** 解析上游 SSE 的 data: 行(可能跨块,按行缓冲) */
+/** 解析上游 SSE 的 data: 行(可能跨块,按行缓冲);onData 拿到原始 JSON,由调用方决定取哪些字段 */
 function makeDataLineParser(onData: (json: string) => void) {
   let buf = ''
   return (text: string) => {
@@ -52,6 +53,29 @@ function makeDataLineParser(onData: (json: string) => void) {
       if (!json || json === '[DONE]') continue
       onData(json)
     }
+  }
+}
+
+/**
+ * 解析单条上游 SSE JSON,提取正文增量。
+ * DeepSeek 推理模型把思考过程放在 reasoning_content,正文在 content;
+ * 有的模型只给 reasoning_content 而 content 为空(输出 0 字符的根因),
+ * 这里把 content 与 reasoning_content 合并为正文增量,保证结构化调用能拿到文本。
+ */
+interface UpstreamDelta {
+  content?: string
+  reasoning_content?: string
+}
+
+function parseUpstreamChunk(json: string): { delta?: UpstreamDelta, usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number } } | null {
+  try {
+    const d = JSON.parse(json) as {
+      choices?: { delta?: UpstreamDelta }[]
+      usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
+    }
+    return { delta: d.choices?.[0]?.delta, usage: d.usage }
+  } catch {
+    return null
   }
 }
 
@@ -77,7 +101,7 @@ export async function aiChat(
   const onOuterAbort = () => ctrl.abort()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   signal?.addEventListener('abort', onOuterAbort)
-  const timeoutError = () => new Error(`AI 调用超时(超过 ${Math.round(timeoutMs / 1000)}s),请重试或调高生成超时设置`)
+  const timeoutError = () => new Error(`AI 调用超时(超过 ${Math.round(timeoutMs / 1000)}s),请重试`)
   let res: Response
   try {
     try {
@@ -86,7 +110,8 @@ export async function aiChat(
         headers: { 'Content-Type': 'application/json' },
         signal: ctrl.signal,
         // 浏览器本地自建配置随请求临时携带(不落库);未启用自建时为 undefined,平台模式
-        body: JSON.stringify({ messages, ...opts, config: await getActiveRelayConfig() ?? undefined })
+        // 思考统一关闭:thinking 缺省 false,请求体始终带 thinking:false,让服务端显式禁用
+        body: JSON.stringify({ messages, ...opts, thinking: opts.thinking === true ? true : false, config: await getActiveRelayConfig() ?? undefined })
       })
     } catch (e) {
       if (signal?.aborted) throw new CancelledError()
@@ -107,23 +132,19 @@ export async function aiChat(
     let usage: RelayedUsage | undefined
     try {
       await readSseDataLines(res, (json) => {
-        try {
-          const d = JSON.parse(json) as {
-            choices?: { delta?: { content?: string } }[]
-            usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
+        const chunk = parseUpstreamChunk(json)
+        if (!chunk) return
+        const delta = chunk.delta
+        // 正文增量优先;content 为空但 reasoning_content 有内容时兜底(推理模型场景)
+        const text = delta?.content || delta?.reasoning_content
+        if (text) handlers.onDelta?.(text)
+        if (chunk.usage) {
+          usage = {
+            promptTokens: chunk.usage.prompt_tokens,
+            completionTokens: chunk.usage.completion_tokens,
+            totalTokens: chunk.usage.total_tokens
           }
-          const delta = d.choices?.[0]?.delta?.content
-          if (delta) handlers.onDelta?.(delta)
-          if (d.usage) {
-            usage = {
-              promptTokens: d.usage.prompt_tokens,
-              completionTokens: d.usage.completion_tokens,
-              totalTokens: d.usage.total_tokens
-            }
-            handlers.onUsage?.(usage)
-          }
-        } catch {
-          // 忽略非 JSON 分片
+          handlers.onUsage?.(usage)
         }
       })
     } catch (e) {
@@ -165,23 +186,32 @@ export async function aiChatJson<T = unknown>(
   // 输入在整个流式过程中固定不变:调用前一次性估算 prompt,实时展示 = 输入 + 已流出输出。
   // 只算输出的话,提取这类"大输入小输出"的调用会远低于真实消耗。
   const promptTokens = estimateMessagesTokens(messages)
-  const res = await aiChat(messages, { ...opts, json: true }, {
-    onDelta: (d) => {
-      buffer += d
-      // 实时估算(节流 150ms),UI 显示"进行中消耗"
-      const now = Date.now()
-      if (handlers.onLive && now - lastEmit >= 150) {
-        lastEmit = now
-        const elapsedMs = now - startedAt
-        const tokens = promptTokens + estimateTextTokens(buffer)
-        handlers.onLive({
-          tokens,
-          speed: elapsedMs > 0 ? Math.round((tokens / elapsedMs) * 1000) : 0,
-          elapsedMs
-        })
+  const emitLive = (force = false) => {
+    if (!handlers.onLive) return
+    const now = Date.now()
+    if (!force && now - lastEmit < 150) return
+    lastEmit = now
+    const elapsedMs = now - startedAt
+    const tokens = promptTokens + estimateTextTokens(buffer)
+    handlers.onLive({
+      tokens,
+      speed: elapsedMs > 0 ? Math.round((tokens / elapsedMs) * 1000) : 0,
+      elapsedMs
+    })
+  }
+  emitLive(true)
+  const waitTimer = setInterval(() => emitLive(true), 1000)
+  let res: Awaited<ReturnType<typeof aiChat>>
+  try {
+    res = await aiChat(messages, { ...opts, json: true }, {
+      onDelta: (d) => {
+        buffer += d
+        emitLive()
       }
-    }
-  }, handlers.signal)
+    }, handlers.signal)
+  } finally {
+    clearInterval(waitTimer)
+  }
   if (!res.ok) return { ok: false, status: res.status, message: res.message }
   const data = extractJson<T>(buffer)
   if (data === null) {

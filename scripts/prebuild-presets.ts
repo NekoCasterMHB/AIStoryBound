@@ -16,13 +16,12 @@ import { parseNovelBytes } from '../server/utils/novel-parser'
 import { buildUpstreamRequest } from '../server/utils/ai-relay'
 import type { RelayTarget } from '../server/utils/ai-relay'
 import { extractJson } from '../shared/json'
-import type { ChapterExtraction, CharacterCard, ChapterSegment, EntityConflict, WorldEntities } from '../shared/novel'
+import type { ChapterExtraction, CharacterCard, ChapterSegment, EntityConflict, StoryBeat, WorldEntities, WorldOverlay } from '../shared/novel'
 import {
-  buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
-  buildSynthesizeMessages, finalizeCards, mergeExtractions, normalizeExtraction,
-  quoteByChapter, splitUnits, verifyQuotes,
-  CHECK_MAX_TOKENS, ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS,
-  SYNTH_MAX_TOKENS, TOP_CHARACTERS
+  assembleStoryline, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
+  buildSynthesizeMessages, emptyExtraction, finalizeCards, mergeExtractions, mergeOverlayMeta,
+  normalizeExtraction, quoteByChapter, splitUnits, summarizeWorldLocal, verifyQuotes,
+  ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS
 } from '../shared/world-build'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -79,7 +78,7 @@ interface AiCallResult {
 /** 单次非流式直连上游(免登录免扣费,只消耗你配置的 key) */
 async function callAI(
   messages: { role: 'system' | 'user' | 'assistant', content: string }[],
-  opts: { maxTokens: number, temperature: number }
+  opts: { maxTokens?: number, temperature: number }
 ): Promise<AiCallResult> {
   const req = buildUpstreamRequest(relay, {
     messages,
@@ -195,11 +194,11 @@ function loadBook(file: string): { id: string, title: string, author: string | n
 
 async function buildWorld(book: { id: string, title: string, chapters: ChapterSegment[] }): Promise<{
   title: string
-  summary?: string
-  characters: CharacterCard[]
+  overlay: WorldOverlay
   entities: WorldEntities
   conflicts: EntityConflict[]
   warnings: string[]
+  storyline: StoryBeat[]
   tokensUsed: number
 }> {
   const { title, chapters } = book
@@ -212,7 +211,7 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
   const results = await pool(units, EXTRACT_CONCURRENCY, async (unit) => {
     const attempt = async (): Promise<ChapterExtraction> => {
       const { data, totalTokens } = await callAI(buildExtractMessages(title, unit, eco), {
-        maxTokens: eco ? Math.min(ECO_EXTRACT_MAX_TOKENS, 10000) : 10000,
+        maxTokens: eco ? ECO_EXTRACT_MAX_TOKENS : undefined,
         temperature: 0.2
       })
       tokensUsed += totalTokens
@@ -242,12 +241,17 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
 
   // 2) 合并 + 引用校验
   const { entities, conflicts } = mergeExtractions(
-    extracts.map((ex, i) => ({ chapter: units[i]?.chapter ?? 0, extract: ex ?? { characters: [], locations: [], factions: [], timeline_events: [], world_rules: [], items: [], foreshadowing: [] } }))
+    extracts.map((ex, i) => ({ chapter: units[i]?.chapter ?? 0, extract: ex ?? emptyExtraction() }))
   )
-  const { unverified } = verifyQuotes(entities, chapters)
+  const { unverified } = verifyQuotes(entities, units.map(u => ({ title: u.label, content: u.content })))
   if (unverified > 0) {
     warnings.push(`${unverified} 条原文引用未通过逐字校验(记录已保留,可人工复核)`)
   }
+  const { storyline, gaps } = assembleStoryline(units, extracts)
+  if (gaps.length > 0) {
+    warnings.push(`${gaps.length} 个提取单元缺少情节细纲(失败或模型未输出),故事线已跳过这些段,未编造`)
+  }
+  const localSummary = summarizeWorldLocal(entities, storyline)
 
   // 3) 一致性检查(完整模式;瞬时错误退避 1.5s 重试一次,仍失败降级为告警,不中止)
   if (!eco && entities.characters.length + entities.locations.length + entities.world_rules.length > 0) {
@@ -289,7 +293,6 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
     }
     const checkAttempt = async () => {
       const { data } = await callAI(buildCheckMessages(title, entities, conflicts), {
-        maxTokens: CHECK_MAX_TOKENS,
         temperature: 0.2
       })
       applyCheck(data)
@@ -314,25 +317,23 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
   }
 
   // 4) 成书
-  let overlay: { title: string, summary?: string, characters: CharacterCard[] }
+  let overlay: WorldOverlay
   if (eco) {
-    let roles: { name?: string, role?: string }[] | undefined
-    let summary: string | undefined
+    let ecoSynth: (WorldOverlay & { roles?: { name?: string, role?: string }[] }) | null = null
     try {
-      const { data } = await callAI(buildEcoSynthMessages(title, entities), {
+      const { data } = await callAI(buildEcoSynthMessages(title, entities, localSummary), {
         maxTokens: ECO_SYNTH_MAX_TOKENS,
         temperature: 0.3
       })
-      const d = (data ?? {}) as { title?: string, summary?: string, roles?: { name?: string, role?: string }[] }
-      summary = d.summary?.trim() || undefined
-      roles = d.roles
+      ecoSynth = (data ?? {}) as WorldOverlay & { roles?: { name?: string, role?: string }[] }
     } catch (e) {
       warnings.push(`节约模式:成书概览生成失败(${(e as Error).message}),人物卡已按提取素材直接生成`)
     }
     overlay = {
-      title,
-      summary,
-      characters: buildLocalCards(entities, roles)
+      title: ecoSynth?.title?.trim() || title,
+      summary: ecoSynth?.summary?.trim() || undefined,
+      characters: buildLocalCards(entities, ecoSynth?.roles),
+      ...mergeOverlayMeta(ecoSynth, localSummary)
     }
   } else {
     const topNames = new Set(
@@ -340,22 +341,20 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
         .slice(0, TOP_CHARACTERS)
         .map(c => c.name)
     )
-    let synthData: { title?: string, summary?: string, characters?: CharacterCard[] }
+    let synthData: WorldOverlay
     try {
-      const { data } = await callAI(buildSynthesizeMessages(title, entities, conflicts, warnings), {
-        maxTokens: SYNTH_MAX_TOKENS,
+      const { data } = await callAI(buildSynthesizeMessages(title, entities, conflicts, warnings, localSummary), {
         temperature: 0.3
       })
-      synthData = (data ?? {}) as { title?: string, summary?: string, characters?: CharacterCard[] }
+      synthData = (data ?? {}) as WorldOverlay
     } catch (e) {
       if (!isRetryable(e)) throw new Error(`成书失败: ${(e as Error).message}`, { cause: e })
       await sleep(1500)
       try {
-        const { data } = await callAI(buildSynthesizeMessages(title, entities, conflicts, warnings), {
-          maxTokens: SYNTH_MAX_TOKENS,
+        const { data } = await callAI(buildSynthesizeMessages(title, entities, conflicts, warnings, localSummary), {
           temperature: 0.3
         })
-        synthData = (data ?? {}) as { title?: string, summary?: string, characters?: CharacterCard[] }
+        synthData = (data ?? {}) as WorldOverlay
       } catch (e2) {
         throw new Error(`成书失败: ${(e2 as Error).message}`, { cause: e2 })
       }
@@ -363,17 +362,18 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
     overlay = {
       title: synthData.title?.trim() || title,
       summary: synthData.summary?.trim() || undefined,
-      characters: finalizeCards(synthData, entities, topNames)
+      characters: finalizeCards(synthData, entities, topNames),
+      ...mergeOverlayMeta(synthData, localSummary)
     }
   }
 
   return {
-    title: overlay.title,
-    summary: overlay.summary,
-    characters: overlay.characters,
+    title: overlay.title || title,
+    overlay,
     entities,
     conflicts,
     warnings,
+    storyline,
     tokensUsed
   }
 }
@@ -413,19 +413,21 @@ for (const book of targets) {
       title: world.title,
       author: book.author,
       genre: book.genre,
-      summary: world.summary ?? null,
-      characters: world.characters,
+      summary: world.overlay.summary ?? null,
+      characters: world.overlay.characters ?? [],
+      overlay: world.overlay,
+      storyline: world.storyline,
       entities: world.entities,
       conflicts: world.conflicts,
       warnings: world.warnings,
       tokensUsed: world.tokensUsed,
       mode: eco ? 'eco' : 'full',
       generatedAt: new Date().toISOString(),
-      version: 1
+      version: 2
     }
     writeFileSync(outFile, JSON.stringify(payload), 'utf-8')
     const secs = ((Date.now() - t0) / 1000).toFixed(0)
-    console.log(`  ✓ ${book.title}(${book.id}): ${world.tokensUsed.toLocaleString()} tokens, ${world.characters.length} 角色卡, ${world.entities.characters.length} 实体角色, ${world.conflicts.length} 冲突, ${world.warnings.length} 告警, ${secs}s → worlds/${book.id}.json`)
+    console.log(`  ✓ ${book.title}(${book.id}): ${world.tokensUsed.toLocaleString()} tokens, ${(world.overlay.characters ?? []).length} 角色卡, ${world.storyline.length} 细纲, ${world.entities.characters.length} 实体角色, ${world.conflicts.length} 冲突, ${world.warnings.length} 告警, ${secs}s → worlds/${book.id}.json`)
     results.push({ id: book.id, title: book.title, ok: true, tokensUsed: world.tokensUsed })
   } catch (e) {
     console.error(`  ✗ ${book.title}(${book.id}): ${(e as Error).message}`)

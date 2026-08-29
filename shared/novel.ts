@@ -144,12 +144,37 @@ export function desireTierName(v: number | null | undefined): string | null {
   return tier?.label ?? null
 }
 
+/** 全书玩法聚合(成书写入 overlay;本地聚合也可直接产出) */
+export interface KinkProfileEntry {
+  theme: string
+  count: number
+  /** 该玩法最常见态度:喜欢/厌恶/接受/无感 */
+  dominantView: string | null
+}
+
+/** 尺度档位(成书/本地聚合写入 overlay.heat) */
+export type HeatLevel = '淡' | '中' | '烈'
+
 /** 世界观速览(规划 §5),整体存于 novels.world_state */
 export interface WorldOverlay {
   title?: string
   genre?: string
   summary?: string
   characters?: CharacterCard[]
+  /** 子类型 + 玩法 + 关系原型,8~12 个短标签 */
+  tags?: string[]
+  /** 全书主性向:男女/女女/男男/混合/不明 */
+  orientation?: string
+  /** 舞台 + 体系一句话 */
+  setting?: string
+  /** 整体尺度 */
+  heat?: HeatLevel
+  /** 内容警告(与 LocalWork.warnings 生成告警区分) */
+  contentWarnings?: string[]
+  /** 关系/剧情原型 */
+  tropes?: string[]
+  /** 全书玩法 Top N */
+  kinkProfile?: KinkProfileEntry[]
 }
 
 // ---- 世界观生成流水线(浏览器本地编排 + 服务器 AI 中继;实体库/冲突仅存 IndexedDB) ----
@@ -228,6 +253,35 @@ export interface ExtractedForeshadow {
   quote?: string | null
 }
 
+/** 单提取单元的情节纪要(按字数切段,不依赖章节标题) */
+export interface PlotBeat {
+  /** 本段发生了什么(80-150 字,按时间顺序) */
+  summary: string
+  /** 出场人名 */
+  cast?: string[]
+  /** 主要地点 */
+  place?: string | null
+  /** 本段相对上一段的推进/转折 */
+  turn?: string | null
+  /** 段末未完成的悬念 */
+  hook?: string | null
+}
+
+/** 合并后的故事线一拍(按提取单元顺序,失败单元跳过不编造) */
+export interface StoryBeat {
+  /** 0-based 段序(对应提取单元下标) */
+  index: number
+  /** 本段在全书中的起始字符偏移 */
+  startChar: number
+  /** 展示标签(沿用提取单元 label,仅展示) */
+  label: string
+  summary: string
+  cast: string[]
+  place?: string | null
+  turn?: string | null
+  hook?: string | null
+}
+
 /** 一个提取单元(一章或超长章节的一段)输出的结构化结果 */
 export interface ChapterExtraction {
   characters: ExtractedCharacter[]
@@ -237,6 +291,8 @@ export interface ChapterExtraction {
   world_rules: ExtractedWorldRule[]
   items: ExtractedItem[]
   foreshadowing: ExtractedForeshadow[]
+  /** 本段情节纪要(按字数切段;失败/旧缓存可缺) */
+  plot_beat?: PlotBeat | null
 }
 
 /** 合并后的实体(Merge 阶段产物,sources 携带全文溯源) */
@@ -382,12 +438,9 @@ export interface LocalWork {
   entities?: WorldEntities
   conflicts?: EntityConflict[]
   warnings?: string[]
-  overlay?: {
-    title?: string
-    genre?: string
-    summary?: string
-    characters?: CharacterCard[]
-  }
+  overlay?: WorldOverlay
+  /** 按字数切段合并的完整故事线(与 overlay 并列,避免人物卡保存踩到大数组) */
+  storyline?: StoryBeat[]
 }
 
 /** 本地游戏会话(浏览器驱动回合,本地落盘;登录用户可手动同步云端) */
@@ -406,18 +459,20 @@ export interface LocalGame {
   lastSyncedIdx?: number
   /** 开局设定(仅对首回合生效;旧存档无此字段=原有自由开场) */
   opening?: {
-    /** ai=AI 生成开场供选择 chapter=从小说章节开始 custom=玩家输入背景故事 */
-    mode: 'ai' | 'chapter' | 'custom'
-    /** mode=chapter:所选章节标题 */
-    chapterTitle?: string
-    /** mode=chapter:所选章节在作品 chapters 中的索引(定期回注定位用;旧存档缺省按标题匹配) */
-    chapterIndex?: number
-    /** mode=chapter:该章节完整正文 */
-    chapterText?: string
-    /** mode=chapter:上一章(背景;选了中间章节时注入,把握前情与人物关系) */
-    prevChapter?: { title?: string, text: string }
-    /** mode=chapter:下一章(情节走向;非末章时注入,供后续回合自然衔接) */
-    nextChapter?: { title?: string, text: string }
+    /** ai=AI 生成开场供选择 beat=按细纲段开始 custom=玩家输入背景故事 */
+    mode: 'ai' | 'beat' | 'custom'
+    /** mode=beat:细纲段在 storyline 中的下标(0-based) */
+    beatIndex?: number
+    /** mode=beat:细纲段标题,如「第3段」 */
+    beatTitle?: string
+    /** mode=beat:细纲段情节摘要 */
+    beatSummary?: string
+    /** mode=beat:该段起始章节正文(供开场演绎,约 2500 字窗口) */
+    beatText?: string
+    /** mode=beat:前一段情节(背景;非首段时注入) */
+    prevBeat?: { title?: string, text: string }
+    /** mode=beat:后一段情节(走向;非末段时注入) */
+    nextBeat?: { title?: string, text: string }
     /** mode=ai:玩家选定的开场设定;mode=custom:玩家输入的背景故事 */
     scene?: string
     /** 是否已按起始情节初始化过性欲值(避免回滚开局后重复调用) */

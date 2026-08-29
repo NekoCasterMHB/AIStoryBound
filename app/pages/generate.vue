@@ -4,6 +4,7 @@
 // 也支持预置小说详情页跳转(?from=preset&id=xxx&eco=0|1):自动加载该小说为附件,直接进入确认页由用户确认;
 // 支持创意工坊「书架」购买的本地作品跳转(?from=work&id=xxx):从本地书架加载章节进入确认页。
 import { parseLocalNovel, generateWorld, getWork } from '../utils/worldGen'
+import { clearExtractCache } from '../utils/extractCache'
 import { CancelledError } from '../utils/aiRelay'
 import { checkWorldGenQuota, estimateWorldGenTokens } from '../utils/tokenQuota'
 import { loadPresetChapters } from '../utils/chapters'
@@ -60,8 +61,6 @@ const pendingGen = ref<{ title: string, chapters: ChapterSegment[], frontMatter:
 
 /** 生成模式:false=完整(默认),true=节约(跳过一致性检查与人物卡润色,省约一半 token) */
 const ecoMode = ref(false)
-/** 无视限制(测试模式):覆盖个人中心生成参数(每章一个提取单元/输出上限取模型上限/超时放宽),排查生成失败用 */
-const unlimitedMode = ref(false)
 
 /** 全书字数(与额度预检同口径:各章正文长度合计) */
 const totalChars = computed(() =>
@@ -241,6 +240,8 @@ async function handleFile(file: File) {
   shownCur = 0
   liveShown.value = 0
   genState.value = { phase: 'parsing', title: file.name, progress: null, error: null, resultId: null, tokensUsed: 0 }
+  // 重新上传/换文件:清空旧提取缓存(带超时,不阻塞解析)
+  void clearExtractCache()
   try {
     const parsed = await parseLocalNovel(file)
     genState.value.title = parsed.title
@@ -377,7 +378,6 @@ async function runGeneration(title: string, chapters: Parameters<typeof generate
       frontMatter,
       signal: ctrl.signal,
       eco: ecoMode.value,
-      unlimited: unlimitedMode.value,
       // 预置小说元数据自带作者:直接采用,跳过正文/联网识别(省 token)
       knownAuthor
     })
@@ -389,6 +389,8 @@ async function runGeneration(title: string, chapters: Parameters<typeof generate
     resultWork.value = work
     abortCtrl.value = null
     lastFailedGen.value = null
+    // 生成完成:清空提取缓存,防止多次生成后 IndexedDB 无限累加
+    await clearExtractCache().catch(() => { /* 清缓存失败不影响结果展示 */ })
   } catch (err) {
     if (seq !== runSeq) return // 已被新任务接管
     abortCtrl.value = null
@@ -457,7 +459,7 @@ function repickFile() {
 }
 
 /** 取消生成:中止在途 AI 调用、作废当前管线并回到上传态 */
-function cancelGeneration() {
+async function cancelGeneration() {
   runSeq++
   abortCtrl.value?.abort()
   abortCtrl.value = null
@@ -469,6 +471,8 @@ function cancelGeneration() {
   presetMeta.value = null
   lastFailedGen.value = null
   genState.value = { phase: 'idle', title: '', progress: null, error: null, resultId: null, tokensUsed: 0 }
+  // 取消后清空提取缓存,防止多次取消残留累计
+  await clearExtractCache().catch(() => { /* 清缓存失败不影响状态复位 */ })
   toast.add({
     title: '已取消生成',
     description: '未产生任何扣费,可重新上传开始。',
@@ -765,25 +769,6 @@ const features = [
             </p>
           </div>
 
-          <!-- 无视限制(测试模式):排查自定义生成参数导致的失败 -->
-          <div class="flex flex-col gap-2 rounded-xl border border-dashed border-amber-300/70 bg-amber-50/40 px-4 py-3 dark:border-amber-500/30 dark:bg-amber-500/5">
-            <div class="flex items-center justify-between gap-3">
-              <div class="min-w-0">
-                <p class="text-sm font-semibold">
-                  无视限制(测试模式)
-                </p>
-                <p class="text-xs text-neutral-500">
-                  覆盖个人中心生成参数:每章一个提取单元(不切段)、输出上限取模型上限、超时放宽。仅用于排查生成失败,正式生成请关闭
-                </p>
-              </div>
-              <USwitch
-                v-model="unlimitedMode"
-                color="warning"
-                class="shrink-0"
-              />
-            </div>
-          </div>
-
           <div class="flex flex-wrap items-center justify-end gap-3">
             <UButton
               color="neutral"
@@ -916,23 +901,43 @@ const features = [
             </UButton>
           </div>
 
-          <!-- 阶段告警 -->
-          <ul
-            v-if="genState.progress?.warnings?.length"
-            class="space-y-1"
-          >
-            <li
-              v-for="(w, i) in genState.progress.warnings.slice(0, 3)"
-              :key="i"
-              class="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400"
+          <!-- 调试:阶段/单元/错误即时可见,避免卡在 15% 时只能看进度条 -->
+          <div class="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900/50 dark:text-neutral-400">
+            <p class="font-medium text-neutral-700 dark:text-neutral-300">
+              调试
+              <span class="ms-1 font-normal text-neutral-500">
+                {{ genState.progress?.stage ?? 'parse' }}
+                · {{ genState.progress?.doneUnits ?? 0 }}/{{ genState.progress?.totalUnits ?? 0 }} 单元
+                · 进行中 {{ genState.progress?.inflight ?? 0 }}
+                · 分段 {{ (genState.progress?.unitMaxChars ?? 0).toLocaleString() }} 字
+                · 已入账 {{ (genState.progress?.tokensUsed ?? 0).toLocaleString() }} / 估算 {{ liveShown.toLocaleString() }} tokens
+              </span>
+            </p>
+            <p
+              v-if="genState.progress?.debugHint"
+              class="mt-1"
             >
-              <UIcon
-                name="i-lucide-triangle-alert"
-                class="mt-0.5 size-3.5 shrink-0"
-              />
-              {{ w }}
-            </li>
-          </ul>
+              {{ genState.progress.debugHint }}
+            </p>
+            <ul
+              v-if="genState.progress?.warnings?.length"
+              class="mt-2 max-h-40 space-y-1 overflow-y-auto"
+            >
+              <li
+                v-for="(w, i) in genState.progress.warnings.slice(-12)"
+                :key="i"
+                class="break-all text-amber-700 dark:text-amber-400"
+              >
+                {{ w }}
+              </li>
+            </ul>
+            <p
+              v-else
+              class="mt-1 text-neutral-400"
+            >
+              暂无告警。若进度停在 15% 且估算 tokens 一直为 0,多半是上游请求尚未返回或被拒绝。
+            </p>
+          </div>
         </div>
 
         <!-- 完成 -->
@@ -981,6 +986,46 @@ const features = [
               消耗 {{ genState.tokensUsed.toLocaleString() }} tokens
             </span>
           </div>
+          <p
+            v-if="resultWork?.overlay?.setting || resultWork?.overlay?.orientation"
+            class="mx-auto mt-3 max-w-lg text-sm text-neutral-600 dark:text-neutral-400"
+          >
+            <span v-if="resultWork.overlay.orientation">{{ resultWork.overlay.orientation }}</span>
+            <span v-if="resultWork.overlay.orientation && resultWork.overlay.heat"> · </span>
+            <span v-if="resultWork.overlay.heat">{{ resultWork.overlay.heat }}</span>
+            <span v-if="resultWork.overlay.setting"> · {{ resultWork.overlay.setting }}</span>
+          </p>
+          <div
+            v-if="resultWork?.overlay?.tags?.length"
+            class="mt-3 flex flex-wrap items-center justify-center gap-1.5"
+          >
+            <UBadge
+              v-for="tag in resultWork.overlay.tags.slice(0, 12)"
+              :key="tag"
+              color="primary"
+              variant="subtle"
+              size="sm"
+            >
+              {{ tag }}
+            </UBadge>
+          </div>
+          <details
+            v-if="resultWork?.storyline?.length"
+            class="mx-auto mt-5 max-w-xl text-left"
+          >
+            <summary class="cursor-pointer text-center text-sm text-neutral-500">
+              故事线 · {{ resultWork.storyline.length }} 段
+            </summary>
+            <ol class="mt-3 space-y-2 text-sm text-neutral-600 dark:text-neutral-400">
+              <li
+                v-for="beat in resultWork.storyline"
+                :key="beat.index"
+              >
+                <span class="font-medium text-highlighted">段{{ beat.index + 1 }}</span>
+                {{ beat.summary }}
+              </li>
+            </ol>
+          </details>
           <div class="mt-8 flex justify-center">
             <UButton
               color="primary"

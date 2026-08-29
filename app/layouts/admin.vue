@@ -3,8 +3,13 @@ import type { NavigationMenuItem } from '@nuxt/ui'
 
 // /admin 管理后台专用布局:左侧可折叠侧边栏(仪表盘 / 兑换码 / 充值记录 / Skill 审核)+ 内容区。
 // 不套 default.vue 的全站导航与页脚;页面级鉴权由各页 definePageMeta middleware: 'admin' 负责。
-const open = ref(true)
+// 小屏默认收起:open=true 会立刻弹出抽屉,顶栏切换按钮被挡住且没有关闭钮,展开后收不回去。
+const open = ref(false)
 const route = useRoute()
+
+watch(() => route.fullPath, () => {
+  open.value = false
+})
 
 const items = computed<NavigationMenuItem[]>(() => [
   { label: '仪表盘', icon: 'i-lucide-layout-dashboard', to: '/admin', active: route.path === '/admin' },
@@ -24,6 +29,7 @@ const items = computed<NavigationMenuItem[]>(() => [
     <USidebar
       v-model:open="open"
       collapsible="icon"
+      close
       :ui="{
         container: 'h-full',
         body: 'py-2'
