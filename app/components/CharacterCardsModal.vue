@@ -145,7 +145,8 @@ function relNum(v: string | number | null | undefined): number {
 type StrKey = 'alias' | 'age' | 'identity' | 'appearance' | 'background' | 'first_appearance'
 function strField(key: StrKey) {
   return computed({
-    get: () => sel.value?.[key] ?? '',
+    // 旧数据 age 可能是数字,统一转字符串再绑定输入框
+    get: () => (sel.value?.[key] == null ? '' : String(sel.value[key])),
     set: (v: string) => { if (sel.value) sel.value[key] = v }
   })
 }

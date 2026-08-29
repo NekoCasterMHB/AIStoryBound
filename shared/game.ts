@@ -162,7 +162,8 @@ export function cardBrief(c: CharacterCard): string {
   const base = `${c.name}(${c.role}${c.gender ? `,${c.gender}` : ''},${c.identity ?? '未知身份'})`
   const bits: string[] = [base]
   if (c.alias?.trim()) bits.push(`别名:${c.alias}`)
-  if (c.age?.trim()) bits.push(`年龄:${c.age}`)
+  // age 旧数据可能被模型写成数字,统一转字符串再判断
+  if (c.age != null && String(c.age).trim()) bits.push(`年龄:${String(c.age)}`)
   if (c.appearance?.trim()) bits.push(`外貌:${c.appearance}`)
   const personality = (c.personality ?? []).filter(Boolean)
   if (personality.length) bits.push(`性格:${personality.join('/')}`)

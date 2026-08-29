@@ -378,6 +378,10 @@ export function mergeExtractions(units: { chapter: number, extract: ChapterExtra
   ) => {
     if (value === undefined || value === null || value === '') return
     const prev = acc.entity[field]
+    // age 模型可能输出数字(如 25),统一转字符串,避免下游 cardBrief 的 age.trim() 在数字上抛错
+    if (field === 'age' && typeof value === 'number' && Number.isFinite(value)) {
+      value = String(value)
+    }
     if (prev === undefined || prev === null || prev === '') {
       acc.entity[field] = value
       acc.scalarSources[field] = source
