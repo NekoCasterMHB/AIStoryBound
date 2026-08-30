@@ -69,9 +69,13 @@ export default defineNuxtConfig({
 
   hooks: {
     'nitro:config'(nitroConfig) {
-      // cloudflare_module 构建:改用自定义入口(额外导出 WorldGenWorkflow 类,
-      // wrangler [[workflows]] 绑定要求类从主模块导出;见 entry.cloudflare.mjs)
-      if (nitroConfig.preset === 'cloudflare_module') {
+      // cloudflare worker 类构建:改用自定义入口(额外导出 WorldGenWorkflow 类,
+      // wrangler [[workflows]] 绑定要求类从主模块导出;见 entry.cloudflare.mjs)。
+      // preset 写法归一化后再匹配:规范名是 cloudflare-module(连字符),
+      // 本地脚本用 --preset cloudflare_module(下划线),Workers Builds 用的也是规范名,
+      // 严格相等会漏掉其中一种导致部署时 Workflows 类未导出。
+      const preset = String(nitroConfig.preset ?? '').replace(/_/g, '-').toLowerCase()
+      if (preset === 'cloudflare-module' || preset === 'cloudflare-worker' || preset === 'cloudflare') {
         nitroConfig.entry = fileURLToPath(new URL('./entry.cloudflare.mjs', import.meta.url))
       }
     }
