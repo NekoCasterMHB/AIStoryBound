@@ -120,7 +120,10 @@ function batteryColor(v: number): string {
   >
     <template #title>
       <span class="flex items-center gap-2">
-        <UIcon name="i-lucide-bluetooth" class="size-4 text-primary" />
+        <UIcon
+          name="i-lucide-bluetooth"
+          class="size-4 text-primary"
+        />
         连接设备 · {{ props.adapterName }}
       </span>
     </template>

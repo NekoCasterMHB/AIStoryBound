@@ -2,9 +2,9 @@
 // /works — 我的书架(登录后):推荐书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
 import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, parseChaptersFromText } from '../utils/worldGen'
-import { listLocalGames, saveLocalGame } from '../utils/gameStore'
-import { downloadGameAsTxt } from '../utils/exportStory'
-import { downloadGameAsZip, importWorkFromZip } from '../utils/shareZip'
+import { listLocalGames, saveLocalGame, deleteLocalGame } from '../utils/gameStore'
+import { deleteGamePoints } from '../utils/gameSaveStore'
+import { importWorkFromZip } from '../utils/shareZip'
 import { listReadingProgress } from '../utils/readingStore'
 import { fetchPrebuiltWorld, installPrebuiltWork } from '../utils/prebuiltWorld'
 import type { PrebuiltWorld } from '../utils/prebuiltWorld'
@@ -101,13 +101,24 @@ onMounted(() => {
   void loadCloudGames()
 })
 
-// ---- 云端同步(手动) ----
+// ---- 云端同步(手动):成功/失败都出 toast,不再静默吞 ----
+const syncingWorkId = ref<string | null>(null)
+
 async function syncWorkToCloud(work: LocalWork) {
-  const res = await $fetch('/api/works', { method: 'POST', body: work }).catch(() => null)
-  if (res) {
+  if (syncingWorkId.value) return
+  syncingWorkId.value = work.id
+  try {
+    const res = await $fetch('/api/works', { method: 'POST', body: JSON.parse(JSON.stringify(work)) }).catch(() => null)
+    if (!res) {
+      toast.add({ title: '同步失败,请稍后重试', color: 'error' })
+      return
+    }
     work.syncStatus = 'synced'
     await saveWork(work)
     await refreshLocal()
+    toast.add({ title: '已同步到云端', color: 'success' })
+  } finally {
+    syncingWorkId.value = null
   }
 }
 
@@ -194,6 +205,8 @@ async function restoreCloudGame(id: string) {
       summary = null
     }
   }
+  // 云端镜像存的是段标签字符串(如「第3段」),恢复时反解回段号;旧格式原样忽略
+  const beatMatch = /^第(\d+)段$/.exec(data.current_chapter ?? '')
 
   await saveLocalGame({
     id: data.id,
@@ -203,7 +216,7 @@ async function restoreCloudGame(id: string) {
     state: data.state ?? {},
     messages: data.messages ?? [],
     optionsByMessage: data.optionsByMessage,
-    currentChapter: data.current_chapter,
+    currentBeat: beatMatch ? Number(beatMatch[1]) - 1 : null,
     summary,
     status: data.status === 'ended' ? 'ended' : 'active',
     createdAt: new Date().toISOString(),
@@ -214,15 +227,53 @@ async function restoreCloudGame(id: string) {
   toast.add({ title: '已恢复到本机,可在「继续游戏」中进入' })
 }
 
-async function onDeleteWork(work: LocalWork) {
-  await deleteWork(work.id)
-  await refreshLocal()
+// ---- 删除作品:二次确认 + 同步清理关联游戏会话/存盘点(避免孤儿数据不可见不可清) ----
+const deleteOpen = ref(false)
+const deleteTarget = ref<LocalWork | null>(null)
+
+function askDeleteWork(w: LocalWork) {
+  deleteTarget.value = w
+  deleteOpen.value = true
 }
 
-/** 书架卡片主标签:性向 + 高频玩法,最多 4 个 */
+const deleteGamesCount = computed(() =>
+  deleteTarget.value ? games.value.filter(g => g.workId === deleteTarget.value!.id).length : 0)
+
+async function confirmDeleteWork() {
+  const w = deleteTarget.value
+  if (!w) return
+  const orphanGames = games.value.filter(g => g.workId === w.id)
+  for (const g of orphanGames) {
+    await deleteGamePoints(g.id).catch(() => {})
+    await deleteLocalGame(g.id).catch(() => {})
+  }
+  await deleteWork(w.id)
+  deleteOpen.value = false
+  deleteTarget.value = null
+  await refreshLocal()
+  toast.add({
+    title: '已删除',
+    description: `《${w.title}》${orphanGames.length ? `及其 ${orphanGames.length} 个游戏存档` : ''}已从本机移除`,
+    color: 'neutral'
+  })
+}
+
+/** 云端恢复且无正文:阅读不可用,可「补全正文」后重跑生成 */
+function isCloudRestored(w: LocalWork): boolean {
+  return w.chapters.length === 0 && !!w.overlay?.characters?.length
+}
+
+/** 实体库总数(人物/地点/势力/规则/时间线/物品/伏笔) */
+function entityCount(w: LocalWork): number {
+  const e = w.entities
+  if (!e) return 0
+  return e.characters.length + e.locations.length + e.factions.length
+    + e.timeline_events.length + e.world_rules.length + e.items.length + e.foreshadowing.length
+}
+
+/** 卡片标签:性向单独徽章展示(语义不同),这里只返回玩法/标签,最多 4 个 */
 function workCardTags(w: LocalWork): string[] {
   const tags: string[] = []
-  if (w.overlay?.orientation && w.overlay.orientation !== '不明') tags.push(w.overlay.orientation)
   for (const k of w.overlay?.kinkProfile ?? []) {
     if (k.theme && !tags.includes(k.theme)) tags.push(k.theme)
     if (tags.length >= 4) break
@@ -236,18 +287,35 @@ function workCardTags(w: LocalWork): string[] {
   return tags.slice(0, 4)
 }
 
-/** 每部本地作品的「更多操作」菜单:编辑作品 / 编辑角色卡 / 同步云端 / 删除 */
+/** 去重后的标签总数(超过展示数显示 +N) */
+function workCardTagTotal(w: LocalWork): number {
+  const kinks = (w.overlay?.kinkProfile ?? []).map(k => k.theme).filter(Boolean)
+  return new Set([...kinks, ...(w.overlay?.tags ?? [])].filter(Boolean)).size
+}
+
+/** 每部本地作品的「更多操作」菜单:世界详情 / 编辑正文 / 编辑角色卡 / 重新生成世界 / 同步云端 / 删除 */
 function workMenuItems(w: LocalWork): DropdownMenuItem[][] {
   return [
     [
-      { label: '编辑作品', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
+      { label: '世界详情', icon: 'i-lucide-globe', onSelect: () => openWorldDetail(w.id) },
+      { label: w.chapters.length === 0 ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
       { label: '编辑角色卡', icon: 'i-lucide-users', onSelect: () => openCharEditor(w.id) },
-      { label: '同步云端', icon: 'i-lucide-cloud-upload', onSelect: () => syncWorkToCloud(w) }
+      { label: '重新生成世界', icon: 'i-lucide-refresh-cw', onSelect: () => navigateTo(`/generate?from=work&id=${w.id}`) },
+      { label: '同步云端', icon: 'i-lucide-cloud-upload', disabled: syncingWorkId.value === w.id, onSelect: () => syncWorkToCloud(w) }
     ],
     [
-      { label: '删除', icon: 'i-lucide-trash-2', color: 'error', onSelect: () => onDeleteWork(w) }
+      { label: '删除', icon: 'i-lucide-trash-2', color: 'error', onSelect: () => askDeleteWork(w) }
     ]
   ]
+}
+
+// ---- 世界详情弹窗(生成产物总览 + 概览元数据编辑) ----
+const worldDetailOpen = ref(false)
+const worldDetailWorkId = ref('')
+
+function openWorldDetail(id: string) {
+  worldDetailWorkId.value = id
+  worldDetailOpen.value = true
 }
 
 // ---- 编辑角色卡(操作本地作品 overlay.characters) ----
@@ -313,38 +381,6 @@ function pickRole(name: string) {
   continueOpen.value = false
   if (!id) return
   navigateTo(`/games/continue?workId=${id}&character=${encodeURIComponent(name)}`)
-}
-
-/** 导出游戏剧情为 TXT(剔除玩家行动与选项,仅保留旁白原文) */
-function exportGameTxt(g: LocalGame) {
-  const ok = downloadGameAsTxt({
-    title: works.value.find(w => w.id === g.workId)?.title,
-    playerName: g.playerName,
-    chapter: g.currentChapter,
-    messages: g.messages
-  })
-  if (!ok) toast.add({ title: '该会话还没有剧情可导出', description: '进入游戏开始故事后再导出', color: 'warning' })
-}
-
-/** 导出游戏会话为 ZIP 分享包(完整作品 + 会话 + 剧情,与游戏页「分享全部」一致) */
-function exportGameZip(g: LocalGame) {
-  const work = works.value.find(w => w.id === g.workId) ?? null
-  downloadGameAsZip({
-    title: work?.title,
-    playerName: g.playerName,
-    chapter: g.currentChapter,
-    work,
-    game: g,
-    messages: g.messages
-  })
-}
-
-/** 每局游戏的分享菜单(与游戏页顶栏一致:TXT 剧情 / 全部 ZIP) */
-function gameShareItems(g: LocalGame) {
-  return [
-    { label: '分享剧情 TXT', icon: 'i-lucide-file-text', onSelect: () => exportGameTxt(g) },
-    { label: '分享全部 ZIP', icon: 'i-lucide-file-archive', onSelect: () => exportGameZip(g) }
-  ]
 }
 
 const shelfTabs = ref<TabsItem[]>([
@@ -635,12 +671,28 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     已同步
                   </UBadge>
                   <UBadge
+                    v-else-if="w.syncStatus === 'dirty'"
+                    color="warning"
+                    variant="soft"
+                    size="sm"
+                  >
+                    待同步
+                  </UBadge>
+                  <UBadge
                     v-else
                     color="neutral"
                     variant="soft"
                     size="sm"
                   >
                     本地
+                  </UBadge>
+                  <UBadge
+                    v-if="isCloudRestored(w)"
+                    color="warning"
+                    variant="soft"
+                    size="sm"
+                  >
+                    云端恢复 · 无正文
                   </UBadge>
                   <UBadge
                     v-for="b in readBadges(progressFor('work', w.id))"
@@ -653,12 +705,27 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                   </UBadge>
                 </div>
                 <p class="mt-1 truncate text-xs text-neutral-500">
-                  作者: {{ w.author || '佚名' }} · {{ w.chapters.length }} 章
+                  作者: {{ w.author || '佚名' }} · {{ w.chapters.length ? `${w.chapters.length} 章` : '无正文' }}
+                </p>
+                <p
+                  v-if="w.overlay?.setting || w.overlay?.heat"
+                  class="mt-1 truncate text-xs text-neutral-500"
+                >
+                  {{ [w.overlay?.heat ? `尺度:${w.overlay.heat}` : '', w.overlay?.setting].filter(Boolean).join(' · ') }}
                 </p>
                 <div
-                  v-if="workCardTags(w).length"
+                  v-if="w.overlay?.orientation || workCardTags(w).length"
                   class="mt-1.5 flex flex-wrap gap-1"
                 >
+                  <UBadge
+                    v-if="w.overlay?.orientation && w.overlay.orientation !== '不明'"
+                    color="info"
+                    variant="subtle"
+                    size="sm"
+                    icon="i-lucide-heart"
+                  >
+                    {{ w.overlay.orientation }}
+                  </UBadge>
                   <UBadge
                     v-for="tag in workCardTags(w)"
                     :key="tag"
@@ -667,6 +734,52 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     size="sm"
                   >
                     {{ tag }}
+                  </UBadge>
+                  <UBadge
+                    v-if="workCardTagTotal(w) > workCardTags(w).length"
+                    color="neutral"
+                    variant="subtle"
+                    size="sm"
+                  >
+                    +{{ workCardTagTotal(w) - workCardTags(w).length }}
+                  </UBadge>
+                </div>
+                <div
+                  v-if="entityCount(w) || w.conflicts?.length || w.warnings?.length"
+                  class="mt-1.5 flex flex-wrap gap-1"
+                >
+                  <UBadge
+                    v-if="entityCount(w)"
+                    color="neutral"
+                    variant="subtle"
+                    size="sm"
+                    icon="i-lucide-globe"
+                    class="cursor-pointer"
+                    @click="openWorldDetail(w.id)"
+                  >
+                    实体 {{ entityCount(w) }}
+                  </UBadge>
+                  <UBadge
+                    v-if="w.conflicts?.length"
+                    color="warning"
+                    variant="subtle"
+                    size="sm"
+                    icon="i-lucide-git-merge"
+                    class="cursor-pointer"
+                    @click="openWorldDetail(w.id)"
+                  >
+                    冲突 {{ w.conflicts.length }}
+                  </UBadge>
+                  <UBadge
+                    v-if="w.warnings?.length"
+                    color="warning"
+                    variant="subtle"
+                    size="sm"
+                    icon="i-lucide-triangle-alert"
+                    class="cursor-pointer"
+                    @click="openWorldDetail(w.id)"
+                  >
+                    告警 {{ w.warnings.length }}
                   </UBadge>
                 </div>
                 <p class="mt-1 text-xs text-neutral-500">
@@ -685,12 +798,22 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                 </div>
                 <div class="mt-3 flex flex-wrap items-center gap-1.5">
                   <UButton
+                    v-if="!isCloudRestored(w)"
                     :label="readBtnLabel(progressFor('work', w.id))"
                     icon="i-lucide-book-open"
                     color="primary"
                     variant="soft"
                     size="sm"
                     :to="`/read/work/${w.id}`"
+                  />
+                  <UButton
+                    v-else
+                    :label="readBtnLabel(progressFor('work', w.id))"
+                    icon="i-lucide-book-open"
+                    color="neutral"
+                    variant="soft"
+                    size="sm"
+                    @click="toast.add({ title: '云端恢复的作品暂无正文', description: '在「更多 → 补全正文」粘贴全文保存后即可阅读', color: 'warning' })"
                   />
                   <UButton
                     v-if="!w.overlay?.characters?.length"
@@ -813,7 +936,6 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
               </UCard>
             </div>
           </div>
-
         </div>
       </template>
     </UTabs>
@@ -886,6 +1008,46 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       :work-id="charEditWorkId"
       @saved="onCardsSaved"
     />
+
+    <!-- 世界详情(产物总览 + 概览编辑) -->
+    <WorldDetailModal
+      v-model:open="worldDetailOpen"
+      :work-id="worldDetailWorkId"
+      @saved="refreshLocal"
+    />
+
+    <!-- 删除作品确认(同时清理该作品的本地游戏存档) -->
+    <UModal
+      v-model:open="deleteOpen"
+      title="删除作品"
+      description="此操作不可撤销"
+    >
+      <template #body>
+        <p class="text-sm text-neutral-600 dark:text-neutral-300">
+          确定删除《{{ deleteTarget?.title }}》?
+          <template v-if="deleteGamesCount">
+            该作品下的 {{ deleteGamesCount }} 个本地游戏存档将一并删除。
+          </template>
+          作品与存档只保存在本机,删除后无法恢复。
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="取消"
+            color="neutral"
+            variant="outline"
+            @click="deleteOpen = false"
+          />
+          <UButton
+            label="删除"
+            icon="i-lucide-trash-2"
+            color="error"
+            @click="confirmDeleteWork"
+          />
+        </div>
+      </template>
+    </UModal>
 
     <!-- 继续游戏:选择角色(该作品有会话的角色) -->
     <UModal

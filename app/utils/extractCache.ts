@@ -19,7 +19,7 @@ export interface ExtractCacheEntry {
 
 /** 按章增量哈希:避免整本 JSON.stringify 卡主线程(45×5 万字会让提取停在 15%、进行中 0)。
  *  crypto.subtle 在非安全上下文(http 非 localhost)不可用,回退 FNV-1a;缓存 key 只需一致性,不要求密码学强度。 */
-async function sha1Hex(bytes: Uint8Array): Promise<string> {
+async function sha1Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const subtle = globalThis.crypto?.subtle
   if (subtle) {
     const digest = await subtle.digest('SHA-1', bytes)
@@ -57,12 +57,12 @@ export async function extractCacheKey(
     for (;;) {
       const i = next++
       if (i >= chapters.length) return
-      hashes[i] = await sha1Hex(enc.encode(chapters[i].content))
+      hashes[i] = await sha1Hex(enc.encode(chapters[i]!.content))
     }
   })
   await Promise.all(workers)
   for (let i = 0; i < chapters.length; i++) {
-    parts.push(chapters[i].title ?? '')
+    parts.push(chapters[i]!.title ?? '')
     parts.push(hashes[i])
   }
   return sha1Hex(enc.encode(parts.join('\n')))
@@ -72,7 +72,7 @@ export async function extractCacheKey(
 async function withTimeout<T>(p: Promise<T>, fallback: T): Promise<T> {
   return Promise.race([
     p,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), 2000))
+    new Promise<T>(resolve => setTimeout(() => resolve(fallback), 2000))
   ])
 }
 

@@ -19,6 +19,8 @@ const loadError = ref('')
 const title = ref('')
 const author = ref('')
 const text = ref('')
+/** 云端恢复且无正文的作品:显示补全正文提示条 */
+const cloudRestored = ref(false)
 const settings = ref<ReaderSettings>({ ...DEFAULT_READER_SETTINGS })
 
 const fontFamilyCss = computed(() => {
@@ -60,10 +62,12 @@ async function loadSettings() {
 async function loadBook() {
   try {
     const work = await getWork(id)
-    if (!work || work.chapters.length === 0) throw new Error('本地未找到该作品或没有可编辑的章节')
+    if (!work) throw new Error('本地未找到该作品')
     original.value = work
     title.value = work.title
     author.value = work.author ?? ''
+    // 云端恢复的作品可能没有正文(chapters 为空):允许进入并提示粘贴全文补全,不再直接报错
+    cloudRestored.value = work.chapters.length === 0
     text.value = joinChapters(work.chapters)
     dirty.value = false
     saveState.value = 'saved'
@@ -233,6 +237,8 @@ async function flushSave() {
       title: title.value.trim() || '未命名作品',
       author: author.value.trim() || undefined,
       chapters: parsed,
+      // 内容有实际改动:云端已有对应作品时标记待同步,书架卡片会显示「待同步」徽章
+      syncStatus: base.syncStatus === 'synced' ? 'dirty' : base.syncStatus,
       createdAt: base.createdAt,
       updatedAt: new Date().toISOString()
     })
@@ -259,7 +265,9 @@ watch([title, author, text], () => {
 
 const saveStatus = computed(() => {
   if (saveState.value === 'saving') return '保存中…'
-  if (saveState.value === 'error') return '自动保存失败,稍后重试'
+  if (saveState.value === 'error') {
+    return text.value.trim() ? '自动保存失败,稍后重试' : '正文为空,粘贴全文后会自动保存'
+  }
   if (dirty.value) return '有未保存的修改'
   return lastSavedAt.value
     ? `已保存 ${new Date(lastSavedAt.value).toLocaleTimeString('zh-CN', { hour12: false })}`
@@ -385,6 +393,12 @@ useSeoMeta({ title: computed(() => `${title.value.trim() || '编辑'} · AI Word
         v-else
         class="reader-pane mx-auto max-w-3xl px-6 pb-44 pt-28 sm:px-10"
       >
+        <div
+          v-if="cloudRestored"
+          class="mb-6 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300"
+        >
+          该作品为云端恢复,本机暂无正文。在下方粘贴小说全文后会自动按章节切分保存,之后可回书架「重新生成世界」或直接阅读。
+        </div>
         <input
           v-model="title"
           class="edit-book-title"

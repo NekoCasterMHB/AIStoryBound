@@ -21,7 +21,8 @@ export interface GameSavePoint {
   gameId: string
   idx: number
   state: GameState
-  currentChapter: string | null
+  /** 剧情当前推进到的细纲段下标(0-based;旧存档点为已废弃的 currentChapter 字符串) */
+  currentBeat: number | null
   messages: SaveMsg[]
   savedAt: string
 }

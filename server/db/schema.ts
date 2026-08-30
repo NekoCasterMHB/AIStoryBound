@@ -556,6 +556,16 @@ export const aiProviderConfigs = sqliteTable('ai_provider_configs', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
 }, t => [index('idx_aipc_active').on(t.active)])
 
+// ---- 用户自建 AI 配置验证记录(个人中心测试连接通过后留痕;/api/ai/chat 用户模式凭指纹准入) ----
+// 指纹 = HMAC-SHA256(userId|format|baseUrl|apiKey|model),见 server/utils/ai-fingerprint.ts;
+// 每用户滚动保留至多 AI_USER_CONFIG_LIMIT 条(shared/ai-config.ts),改 key/baseUrl/model 任一字段需重新测试。
+export const aiConfigVerifications = sqliteTable('ai_config_verifications', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  fingerprint: text('fingerprint').notNull(),
+  verifiedAt: integer('verified_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [index('idx_acv_user').on(t.userId)])
+
 // ---- 公告(管理员后台发布;客户端弹窗展示,localStorage 记已读游标,有新公告才再次提示) ----
 export const announcements = sqliteTable('announcements', {
   id: text('id').primaryKey(),

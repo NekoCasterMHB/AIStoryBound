@@ -218,6 +218,8 @@ function normalizeCards(): CharacterCard[] {
     }
     if (c.sex?.condom === true || c.sex?.condom === false) sex.condom = c.sex.condom
     if (Object.keys(sex).length) patch.sex = sex
+    // 章节变体不进编辑表单(生成流水线产物),保存时原样保留,避免被丢弃
+    if ((c.chapterVariants ?? []).length) patch.chapterVariants = c.chapterVariants
     return patch
   })
 }
@@ -241,6 +243,8 @@ async function onSave() {
     await saveWork({
       ...work,
       overlay: { ...work.overlay, characters: cards },
+      // 云端已有对应作品时标记待同步,书架卡片会显示「待同步」徽章
+      syncStatus: work.syncStatus === 'synced' ? 'dirty' : work.syncStatus,
       updatedAt: new Date().toISOString()
     })
     emit('saved')
@@ -250,6 +254,18 @@ async function onSave() {
   } finally {
     saving.value = false
   }
+}
+
+// ---- 删除角色确认(误删后点保存即不可逆) ----
+const removeConfirmOpen = ref(false)
+
+function askRemoveCard() {
+  removeConfirmOpen.value = true
+}
+
+function confirmRemoveCard() {
+  removeConfirmOpen.value = false
+  removeCard(selIdx.value)
 }
 </script>
 
@@ -328,7 +344,7 @@ async function onSave() {
                   color="error"
                   variant="subtle"
                   size="xs"
-                  @click="removeCard(selIdx)"
+                  @click="askRemoveCard"
                 />
               </h4>
               <div class="grid grid-cols-2 gap-3">
@@ -726,6 +742,36 @@ async function onSave() {
           color="primary"
           :loading="saving"
           @click="onSave"
+        />
+      </div>
+    </template>
+  </UModal>
+
+  <!-- 删除角色确认(草稿删除;点「保存」后不可逆) -->
+  <UModal
+    v-model:open="removeConfirmOpen"
+    title="删除角色"
+    description="从当前编辑中移除该角色"
+  >
+    <template #body>
+      <p class="text-sm text-neutral-600 dark:text-neutral-300">
+        确定删除角色「{{ sel?.name || '未命名' }}」?
+        删除后需点击「保存」才会生效;保存后无法恢复。
+      </p>
+    </template>
+    <template #footer>
+      <div class="flex justify-end gap-2">
+        <UButton
+          label="取消"
+          color="neutral"
+          variant="outline"
+          @click="removeConfirmOpen = false"
+        />
+        <UButton
+          label="删除"
+          icon="i-lucide-trash-2"
+          color="error"
+          @click="confirmRemoveCard"
         />
       </div>
     </template>

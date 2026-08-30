@@ -5,7 +5,7 @@ import { skillPromptBlocks } from './ai-skills'
 import { desireTierName } from './novel'
 import type { PluginBrief } from './plugin'
 import type { AiSkill } from './ai-skills'
-import type { CharacterCard, GameState, LocalGame, StoryBeat, TurnStructured, WorldEntities, EntityConflict, WorldOverlay } from './novel'
+import type { CharacterCard, CharacterDynamicState, GameState, LocalGame, StoryBeat, TurnStructured, WorldEntities, EntityConflict, WorldOverlay } from './novel'
 
 export type AiRole = 'system' | 'user' | 'assistant'
 export interface ChatMsg { role: AiRole, content: string }
@@ -54,9 +54,10 @@ export function turnOptionsSchema(): string {
     "relationships": {"角色名": "相对当前好感度的整数增量,可为负,区间 -100~100 内(number,无变化省略)"},
     "desires": {"角色名": "性欲值整数增量,可为负,区间 0~100 内;或 {"delta": 增量, "kink": "本回合触发的玩法名,如 打屁股", "scene": "reward|punish,缺省 reward"}——reward=奖励/自愿(命中「喜欢」大幅加速,「厌恶」几乎不涨);punish=惩罚/强制(犯大错时故意用角色「厌恶」的玩法,羞耻与服从叠加大幅加速);无变化省略"},
     "quests": ["任务目标(string)"],
-    "flags": {"flag名": true}
+    "flags": {"flag名": true},
+    "character_states": {"角色名": {"status": "该角色当前处境/状态一句话(如「被软禁在卧室」「身份暴露,仓皇出逃」)","location": "该角色当前位置(string)","mood": "该角色当前情绪(string)","dead": true|false,"人物卡字段名": "该角色发生永久变化的人物卡字段,如 identity/appearance/personality/goals/secrets/speech_style/abilities 等(string|string[]|number,数组整体替换)"}}
   },
-  "current_chapter": "当前所处章节标题(每回合都要报告,仍在原章则保持同值;无明确章节概念时可省略)",
+  "current_beat": "剧情当前推进到的细纲段序号(1-based 整数,每回合报告;仍在同段保持同值;不确定可省略)",
   "summary": "整局剧情摘要(基于旧摘要与上文剧情压缩至 500 字左右,保留关键人物关系/伏笔/进展;无重大变化可省略)"
 }`
 }
@@ -105,10 +106,14 @@ function kinkBoostFactor(card: CharacterCard | undefined, kinkName: string | und
   return 1
 }
 
+/** 角色动态状态白名单合并:已知键(status/location/mood/dead)特殊处理,其余键视为人物卡字段补丁(数组/字符串整体替换) */
+const DYN_RESERVED_KEYS = new Set(['status', 'location', 'mood', 'dead', 'log', 'patch'])
+
 /** 轻量状态引擎:白名单合并 state_delta,数值做增量与钳制;LLM 不直接写库(铁律 3)
  *  desires 变化曲线:原始增量钳 ±30 × 性欲强度因子(强度/50,0.2~2.0,低=性冷淡波动小)
- *  × 高值加速因子(1+当前值/100,1.0~2.0,低值难涨高值加速) × 嗜好放大(仅正增量,戳中「喜欢」×2.5) */
-export function mergeState(prev: GameState, delta: TurnStructured['state_delta'] | undefined, cards?: CharacterCard[]): GameState {
+ *  × 高值加速因子(1+当前值/100,1.0~2.0,低值难涨高值加速) × 嗜好放大(仅正增量,戳中「喜欢」×2.5)
+ *  character_states:角色动态状态合并,变化摘要追加进该角色 log(章节时间线展示用);cards 建议传有效卡 */
+export function mergeState(prev: GameState, delta: TurnStructured['state_delta'] | undefined, cards?: CharacterCard[], turnIdx?: number): GameState {
   const s: GameState = { ...prev }
   if (!delta) return s
   if (delta.location !== undefined) s.location = delta.location
@@ -135,6 +140,53 @@ export function mergeState(prev: GameState, delta: TurnStructured['state_delta']
       const boost = raw > 0 ? kinkBoostFactor(card, kink, scene) : 1
       s.desires[name] = clamp(Math.round(cur + clamp(raw, -30, 30) * base * boost), 0, 100)
     }
+  }
+  if (delta.character_states) {
+    s.characterStates = { ...(s.characterStates ?? {}) }
+    for (const [name, rawDyn] of Object.entries(delta.character_states)) {
+      if (!rawDyn || typeof rawDyn !== 'object') continue
+      const d = rawDyn as CharacterDynamicState & Record<string, unknown>
+      const prevDyn: CharacterDynamicState = s.characterStates[name] ?? {}
+      const next: CharacterDynamicState = { ...prevDyn, patch: { ...(prevDyn.patch ?? {}) } }
+      const bits: string[] = []
+      const setText = (key: 'status' | 'location' | 'mood', label: string) => {
+        const v = d[key]
+        if (typeof v === 'string' && v.trim() && v.trim() !== (prevDyn[key] ?? '').trim()) {
+          next[key] = v.trim()
+          bits.push(`${label}:${v.trim()}`)
+        }
+      }
+      setText('status', '状态')
+      setText('location', '位置')
+      setText('mood', '情绪')
+      if (typeof d.dead === 'boolean' && d.dead !== prevDyn.dead) {
+        next.dead = d.dead
+        bits.push(d.dead ? '身亡' : '未死/复活')
+      }
+      // 其余键 → 人物卡字段补丁(全字段可变;字符串/数组/数值整体替换,数组过滤非字符串项)
+      const patchRec = next.patch as Record<string, unknown>
+      for (const [k, v] of Object.entries(d)) {
+        if (DYN_RESERVED_KEYS.has(k)) continue
+        if (Array.isArray(v)) {
+          const arr = v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map(x => x.trim())
+          if (arr.length && JSON.stringify(arr) !== JSON.stringify((prevDyn.patch as Record<string, unknown> | undefined)?.[k])) {
+            patchRec[k] = arr
+            bits.push(`${k}:${arr.join('/')}`)
+          }
+        } else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+          if (v !== '' && v !== (prevDyn.patch as Record<string, unknown> | undefined)?.[k]) {
+            patchRec[k] = v
+            bits.push(`${k}:${v}`)
+          }
+        }
+      }
+      // 无实际变化不落库,避免空对象膨胀(新角色且无变化则不建条目)
+      if (bits.length > 0) {
+        next.log = [...(prevDyn.log ?? []), { idx: turnIdx ?? 0, text: bits.join(';') }].slice(-20)
+        s.characterStates[name] = next
+      }
+    }
+    if (Object.keys(s.characterStates).length === 0) delete s.characterStates
   }
   return s
 }
@@ -163,9 +215,42 @@ export function parseState(raw: string | null | undefined): GameState {
   }
 }
 
-/** 人物卡的一句话摘要(进 prompt;kinks 全量注入不截断,含具体表现,防止嗜好信息丢失导致 OOC) */
-/** 人物卡完整摘要:全部字段原样注入(不截断;空值省略),供系统提示词/人设提醒/性欲播种共用 */
-export function cardBrief(c: CharacterCard): string {
+/** 应用部分补丁到人物卡(sex 逐键浅合并,其余字段整体替换) */
+function applyCardPatch(card: CharacterCard, patch: Partial<CharacterCard>): CharacterCard {
+  const next: CharacterCard = { ...card, ...patch }
+  if (patch.sex) next.sex = { ...(card.sex ?? {}), ...patch.sex } as NonNullable<CharacterCard['sex']>
+  return next
+}
+
+/** 有效角色卡 = 基础卡(全书终态)→ 依序叠加阶段段号 ≤ stageIndex 的阶段变体 → 运行时动态补丁。
+ *  stageIndex 缺省时不叠阶段变体;dyn 缺省表示该角色尚无互动变化。
+ *  变体 stage 为 0-based 细纲段下标;旧数据只有 chapter(旧章节下标),缺失时兜底读取。 */
+export function effectiveCard(card: CharacterCard, stageIndex?: number | null, dyn?: CharacterDynamicState): CharacterCard {
+  let c = card
+  const variants = card.chapterVariants ?? []
+  if (variants.length && stageIndex != null && stageIndex >= 0) {
+    for (const v of variants) {
+      const stage = v.stage ?? v.chapter ?? -1
+      if (stage < 0 || stage > stageIndex) continue
+      c = applyCardPatch(c, v.patch)
+    }
+  }
+  if (dyn) {
+    if (dyn.patch && Object.keys(dyn.patch).length) c = applyCardPatch(c, dyn.patch)
+    if (dyn.dead != null) c = { ...c, dead: dyn.dead }
+  }
+  return c
+}
+
+/** 批量有效卡:按 GameState.characterStates 为每张卡叠加运行时状态 */
+export function effectiveCards(cards: CharacterCard[], stageIndex?: number | null, state?: GameState): CharacterCard[] {
+  const dyn = state?.characterStates ?? {}
+  return cards.map(c => effectiveCard(c, stageIndex, dyn[c.name]))
+}
+
+/** 人物卡完整摘要:全部字段原样注入(不截断;空值省略),供系统提示词/人设提醒/性欲播种共用。
+ *  dyn(运行时动态状态)存在时,末尾追加当前处境/情绪/位置,提示词以此为准。 */
+export function cardBrief(c: CharacterCard, dyn?: CharacterDynamicState): string {
   const base = `${c.name}(${c.role}${c.gender ? `,${c.gender}` : ''},${c.identity ?? '未知身份'})`
   const bits: string[] = [base]
   if (c.alias?.trim()) bits.push(`别名:${c.alias}`)
@@ -195,6 +280,10 @@ export function cardBrief(c: CharacterCard): string {
     c.desire != null ? `性欲强度${desireTierName(c.desire)}(${c.desire})` : ''
   ].filter(Boolean)
   if (stats.length) bits.push(`数值:${stats.join('/')}`)
+  // 运行时动态状态:当前处境/情绪/位置随互动演进,prompt 以为准
+  if (dyn?.status?.trim()) bits.push(`当前状态:${dyn.status.trim()}`)
+  if (dyn?.mood?.trim()) bits.push(`当前情绪:${dyn.mood.trim()}`)
+  if (dyn?.location?.trim()) bits.push(`当前位置:${dyn.location.trim()}`)
   const kinks = (c.kinks ?? [])
     .filter(k => k.theme?.trim())
     .map(k => `${k.theme}${k.view ? `·${k.view}` : ''}${k.role ? `/${k.role}` : ''}${k.detail ? `(${k.detail})` : ''}`)
@@ -240,8 +329,10 @@ export interface TurnPromptArgs {
   deviceSpec?: string
   /** 每回合生成字数(个人中心滑动条设置):回合正文目标篇幅;缺省维持原有段落字数约束 */
   narrLength?: number
-  /** 章节回注(每 N 回合):当前章剩余情节窗口 + 下一章开头窗口,由页面按字符定位计算后传入 */
-  reinjectPlot?: { currentTitle?: string, window: string, nextWindow?: string }
+  /** 章节回注(每 N 回合):当前段情节 + 段起始原文窗口,由页面按细纲段定位计算后传入 */
+  reinjectPlot?: { beatTitle?: string, beatSummary?: string, window: string, nextBeat?: { title?: string, summary?: string } }
+  /** 当前阶段段下标(0-based,细纲段):据此给人物卡叠加阶段变体(段差异化卡);缺省不叠加 */
+  stageIndex?: number | null
   /** 世界观提取产物(规则/势力/地点/伏笔) */
   entities?: WorldEntities
   /** 设定冲突与裁决(剧情轨道的一部分;可选注入,取前几条) */
@@ -295,7 +386,7 @@ function plotTrackBlock(args: {
 
   const window = storylineWindow(args.storyline, args.opening)
   if (window.length) {
-    lines.push(`故事线(按原文先后):\n${window.map(b => {
+    lines.push(`故事线(按原文先后):\n${window.map((b) => {
       const extra = [b.place, b.cast?.slice(0, 4).join('、')].filter(Boolean).join(' · ')
       return `[段${b.index + 1}] ${b.summary}${extra ? `（${extra}）` : ''}`
     }).join('\n')}`)
@@ -336,8 +427,14 @@ function plotTrackBlock(args: {
 
 /** 组装叙事 prompt(系统规则 + 世界 + 人物卡 + 状态 + 摘要 + 历史 + 玩家本轮输入) */
 export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
-  const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening, deviceSpec, narrLength, reinjectPlot, entities, conflicts, storyline, overlayMeta } = args
-  const others = cards.filter(c => c.name !== playerName)
+  const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening, deviceSpec, narrLength, reinjectPlot, entities, conflicts, storyline, overlayMeta, stageIndex } = args
+  // 有效卡:基础卡 + 阶段变体(≤当前段)+ 运行时动态状态,prompt 全程使用有效卡防 OOC
+  const dyn = state.characterStates ?? {}
+  const effCards = cards.map(c => effectiveCard(c, stageIndex, dyn[c.name]))
+  const effPlayer = playerCard ? effectiveCard(playerCard, stageIndex, dyn[playerCard.name]) : undefined
+  const others = effCards.filter(c => c.name !== playerName)
+  // 运行时动态状态(处境/位置/情绪/字段变化)有任一角色存在时,提示 AI 以其为准并继续回报变化
+  const hasDynStates = Object.keys(dyn).length > 0
 
   // 规则:系统规则在前,用户偏好场景/避免场景追加在后,明确声明其优先级低于系统规则
   // AI Skill 玩法:开启的技能按 SKILL.md 正文(含参考附件)完整注入,不做裁剪——
@@ -378,10 +475,11 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
     role: 'system',
     content: [
       ADULT_CONTENT_POLICY,
-      `你是《${title}》的互动叙事引擎。玩家扮演「${playerName}」(${playerCard ? cardBrief(playerCard) : '原著角色'})。`,
+      `你是《${title}》的互动叙事引擎。玩家扮演「${playerName}」(${effPlayer ? cardBrief(effPlayer, dyn[playerName]) : '原著角色'})。`,
       overlayToneLine(genre, summary, overlayMeta),
-      `可能出场的其他角色:\n${others.map(cardBrief).join('\n')}`,
+      `可能出场的其他角色:\n${others.map(c => cardBrief(c, dyn[c.name])).join('\n')}`,
       `当前游戏状态:${JSON.stringify(state, null, 0)}`,
+      ...(hasDynStates ? ['角色动态状态:state.characterStates 记录各角色随互动演进后的当前处境/位置/情绪及已变化的字段(卡上「当前状态/当前情绪/当前位置」同源),演绎时以此为准;人物卡其余字段被互动永久改变时(如身份、目标、秘密曝光),也一并写入收尾的 state_delta.character_states 回报。'] : []),
       ...(deviceSpec?.trim() ? ['设备联动(指令对玩家不可见):', deviceSpec.trim()] : []),
       '规则:',
       ...rules.map((r, i) => `${i + 1}. ${r}`),
@@ -397,6 +495,8 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
     parts.push(`【剧情回顾】${summaryText}`)
   }
   const recent = history.slice(-12)
+  // 本轮行动已在尾部「玩家本轮行动」单独强调,历史里去重,避免同一行动重复出现稀释指令
+  if (choice && recent.at(-1)?.role === 'user' && recent.at(-1)!.content === choice) recent.pop()
   if (recent.length > 0) {
     parts.push(recent.map(m => (m.role === 'user' ? `【玩家】${m.content}` : `【剧情】${m.content}`)).join('\n'))
   }
@@ -424,26 +524,34 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
       parts.push(`【开场】故事刚开始,请描写玩家「${playerName}」所处的开场场景,引入剧情与第一个矛盾。`)
     }
   }
-  // 章节回注(每 N 回合):按字符窗口重注入当前章剩余情节 + 下一章开头,防止长局偏离原著
-  if (reinjectPlot?.window?.trim()) {
-    const reinjectParts = [`【本章/下一章情节线(回注)】当前处于「${reinjectPlot.currentTitle || opening?.beatTitle || '未知章节'}」,本章剩余情节窗口:\n${reinjectPlot.window}`]
-    if (reinjectPlot.nextWindow?.trim()) {
-      reinjectParts.push(`接下来的情节走向(下一章开头 ${REINJECT_WINDOW_CHARS} 字):\n${reinjectPlot.nextWindow}`)
+  // 段回注(每 N 回合):按细纲段注入当前段情节 + 段起始原文窗口,防止长局偏离故事线
+  if (reinjectPlot?.window?.trim() || reinjectPlot?.beatSummary?.trim()) {
+    const reinjectParts: string[] = []
+    if (reinjectPlot.beatSummary?.trim()) {
+      reinjectParts.push(`【当前段情节对照(回注)】剧情当前处于细纲「${reinjectPlot.beatTitle || '当前段'}」,本段情节走向:\n${reinjectPlot.beatSummary}`)
     }
-    reinjectParts.push('请沿上述情节线继续推进:先完成当前章剩余情节,推进到本章末尾后自然衔接下一章走向;不要跳章、不要提前结束本章。若玩家行动已把情节推进到下一章场景,则按下一章走向继续。')
+    if (reinjectPlot.window?.trim()) {
+      reinjectParts.push(`本段原文片段(对照参考):\n${reinjectPlot.window}`)
+    }
+    if (reinjectPlot.nextBeat?.summary?.trim()) {
+      reinjectParts.push(`接下来的情节走向(后段${reinjectPlot.nextBeat.title ? `「${reinjectPlot.nextBeat.title}」` : ''}):\n${reinjectPlot.nextBeat.summary}`)
+    }
+    reinjectParts.push('上述内容是故事线对照参考,帮助你把握本段设定细节与人物动向;玩家自由行动已使剧情偏离故事线时,顺着玩家行动继续演绎,不要生硬跳到原文事件或把窗口里的情节硬接上来;仅在剧情自然走到对应节点时才呼应情节线。')
     parts.push(reinjectParts.join('\n\n'))
   }
   // 防人设漂移:核心人设复述在 user 尾部(长对话后注意力偏离开头 system 的设定,社区验证
   // 此处重贴可显著降低 OOC/指令衰减);位置放在玩家本轮行动之前,不稀释当前指令的注意力
   const anchors = [
-    playerCard ? `玩家「${playerName}」:${cardBrief(playerCard)}` : null,
-    ...others.map(cardBrief)
+    effPlayer ? `玩家「${playerName}」:${cardBrief(effPlayer, dyn[playerName])}` : null,
+    ...others.map(c => cardBrief(c, dyn[c.name]))
   ].filter((x): x is string => !!x)
   if (anchors.length > 0) {
     parts.push(`【人设提醒】再次强调,以下核心角色严格忠于设定,勿 OOC:\n${anchors.map((a, i) => `${i + 1}. ${a}`).join('\n')}`)
   }
   if (choice) {
-    parts.push(`【玩家本轮行动】${choice}`)
+    // 自由输入的行动不像选项按钮那样贴合剧情走向,需显式声明其最高优先级,
+    // 否则容易被前文的全量细纲/回注原文窗口带跑,输出与行动无关的情节
+    parts.push(`【玩家本轮行动】${choice}\n(此行动是下一幕的直接起点:剧情必须具体回应此行动及其后果;除非该行动在当前场景明显不可能成立,否则不得忽略它、不得转向与本行动无关的情节线。若需要衔接前述故事线,应在本行动引起的因果链上自然发生。)`)
   }
 
   return [system, { role: 'user', content: `${parts.join('\n\n')}\n\n请以此为接续,生成下一段剧情。` }]

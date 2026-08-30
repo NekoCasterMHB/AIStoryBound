@@ -4,7 +4,7 @@
 // 提取/检查/成书的 LLM 调用由浏览器编排,经服务器 /api/ai/chat 中继执行。
 import { SEX_TEXT_KEYS, uuid } from './novel'
 import type {
-  ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, EntitySource,
+  ChapterExtraction, ChapterSegment, CharacterCard, CharacterChapterVariant, EntityConflict, EntitySource,
   HeatLevel, KinkProfileEntry, MergedCharacter, PlotBeat, StoryBeat, WorldEntities, WorldOverlay
 } from './novel'
 
@@ -25,7 +25,9 @@ export const ECO_QUOTE_MAX_CHARS = 40
 /** 节约模式:成书输出上限(标题/简介/角色定位 + 标签/性向/设定) */
 export const ECO_SYNTH_MAX_TOKENS = 1600
 /** 提取 schema 版本:写入缓存 key,变更后旧提取缓存作废(避免复用没有 plot_beat / 切段方式不同的结果) */
-export const EXTRACT_SCHEMA_VERSION = 3
+export const EXTRACT_SCHEMA_VERSION = 4
+/** 单角色章节变体上限:只保留前 N 处变化,防止超长作品变体膨胀 */
+export const MAX_STAGE_VARIANTS = 30
 /** 一致性检查单次输出上限(tokens);个人中心「生成参数-高级设置」可调。默认=主流模型输出上限(384K),等于不限制 */
 export const CHECK_MAX_TOKENS = 384000
 /** 成书单次输出上限(tokens);个人中心「生成参数-高级设置」可调。默认=主流模型输出上限(384K),等于不限制 */
@@ -98,7 +100,7 @@ const PLOT_BEAT_SCHEMA = '"plot_beat": {"summary": "本段发生了什么,按时
 
 /** 7 类实体提取的 JSON schema(引用逐字、必填字段带 quote) */
 export const EXTRACT_SCHEMA_HINT = `{
-  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄,null 可","identity": "身份职业|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标动机"],"fears": ["恐惧弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"desire": "性欲强度 0-100 整数,按原文行为推断,null 可","kinks": [{"theme": "成人题材玩法,如 打屁股/捆绑/训诫/SM/强制高潮 等","view": "喜欢|厌恶|接受|null","role": "承受|施予|双方|null","quote": "支持该喜好的原文句|null"}],${SEX_SCHEMA_EXTRACT},"quote": "本段最能代表该人物的原文句"}],
+  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄,null 可","identity": "身份职业|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标动机"],"fears": ["恐惧弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"status": "该角色在本段的处境/状态一句话(身份转变、受伤、被囚、身亡等,仅本段可证实)|null","desire": "性欲强度 0-100 整数,按原文行为推断,null 可","kinks": [{"theme": "成人题材玩法,如 打屁股/捆绑/训诫/SM/强制高潮 等","view": "喜欢|厌恶|接受|null","role": "承受|施予|双方|null","quote": "支持该喜好的原文句|null"}],${SEX_SCHEMA_EXTRACT},"quote": "本段最能代表该人物的原文句"}],
   "locations": [{"name": "地点名","type": "类别|null","description": "描述|null","notable": ["标志性的人/事/物"],"quote": "原文句"}],
   "factions": [{"name": "势力名","description": "描述|null","goal": "目标|null","members": ["成员名"],"quote": "原文句"}],
   "timeline_events": [{"time": "时间/先后|null","event": "事件概述","characters_involved": ["人物名"],"quote": "原文句"}],
@@ -112,7 +114,7 @@ export const JSON_ONLY_SYSTEM = `你必须只输出一个合法的 JSON 对象,�
 
 /** 节约模式:只提取 5 类核心实体(去掉 items/foreshadowing),字段说明从简 */
 export const EXTRACT_SCHEMA_HINT_ECO = `{
-  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄|null","identity": "身份|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标"],"fears": ["弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"desire": "性欲强度 0-100 整数,null 可","kinks": [{"theme": "成人题材玩法,如 打屁股/捆绑/训诫/SM/强制高潮 等","view": "喜欢|厌恶|接受|null","role": "承受|施予|双方|null","quote": "支持该喜好的原文句|null"}],${SEX_SCHEMA_EXTRACT},"quote": "最能代表该人物的原文句"}],
+  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄|null","identity": "身份|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标"],"fears": ["弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"status": "该角色在本段的处境/状态一句话(身份转变、受伤、被囚、身亡等,仅本段可证实)|null","desire": "性欲强度 0-100 整数,null 可","kinks": [{"theme": "成人题材玩法,如 打屁股/捆绑/训诫/SM/强制高潮 等","view": "喜欢|厌恶|接受|null","role": "承受|施予|双方|null","quote": "支持该喜好的原文句|null"}],${SEX_SCHEMA_EXTRACT},"quote": "最能代表该人物的原文句"}],
   "locations": [{"name": "地点名","type": "类别|null","description": "描述|null","notable": ["标志性的人/事/物"],"quote": "原文句"}],
   "factions": [{"name": "势力名","description": "描述|null","goal": "目标|null","members": ["成员名"],"quote": "原文句"}],
   "timeline_events": [{"time": "时间/先后|null","event": "事件概述","characters_involved": ["人物名"],"quote": "原文句"}],
@@ -362,7 +364,8 @@ export function buildLocalCards(entities: WorldEntities, roles?: { name?: string
           role: k.role ?? null,
           detail: k.quote ? truncate(k.quote, 60) : null
         })),
-        sex: c.sex && Object.keys(c.sex).length ? { ...c.sex } : undefined
+        sex: c.sex && Object.keys(c.sex).length ? { ...c.sex } : undefined,
+        chapterVariants: (c.chapterVariants ?? []).length ? c.chapterVariants : undefined
       }
     })
 }
@@ -389,7 +392,73 @@ function safeScalar(v: unknown): string | boolean | number | null | undefined {
 }
 
 /** 合并全部单元提取 → 实体库 + 冲突清单(别名消歧、标量后文为准、数组去重并集) */
-export function mergeExtractions(units: { chapter: number, extract: ChapterExtraction }[]): { entities: WorldEntities, conflicts: EntityConflict[] } {
+/** 角色章节变体追踪的标量字段(相邻快照 diff 出 patch) */
+const VARIANT_SCALAR_FIELDS = ['identity', 'appearance', 'desire'] as const
+
+/** 单提取单元的角色标量快照(章节变体 diff 素材;合并过程中逐段记录) */
+interface CharacterUnitSnapshot {
+  /** 1-based 段序号(溯源) */
+  unit: number
+  /** 本段在全书中的起始偏移(映射章节用;-1=未知) */
+  startChar: number
+  /** 本段处境/状态一句话(模型提取) */
+  status?: string | null
+  identity?: string | null
+  appearance?: string | null
+  dead?: boolean | null
+  desire?: number | null
+  sex?: Record<string, unknown> | null
+}
+
+const hasText = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0
+
+/** 由按段快照序列生成阶段变体:相邻快照 diff,值变化才记录;首拍记录起点值(基底卡是全书终态,前期段需要起点)。
+ *  finalDead=该角色全书终态是否死亡:首拍未死而终态已死时,首拍显式记录 dead:false,防止前期段继承终态死亡。
+ *  同段内多拍合并为一条;段号直接取快照的单元序号(unit 为 1-based 段序),不经过章节;每卡上限 MAX_STAGE_VARIANTS 条(超出丢弃尾部)。 */
+function buildStageVariants(snaps: CharacterUnitSnapshot[], finalDead: boolean): CharacterChapterVariant[] {
+  const out: CharacterChapterVariant[] = []
+  let prev: CharacterUnitSnapshot | null = null
+  for (const s of snaps) {
+    if (s.unit < 1) continue
+    const stage = s.unit - 1
+    const patch: Record<string, unknown> = {}
+    for (const f of VARIANT_SCALAR_FIELDS) {
+      const cur = s[f]
+      if (!hasText(cur) && typeof cur !== 'number') continue
+      if (!prev || prev[f] !== cur) patch[f] = cur
+    }
+    const deadVal = s.dead === true
+    const prevDead = prev ? prev.dead === true : finalDead
+    if (deadVal !== prevDead) patch.dead = deadVal
+    // 性爱属性逐键 diff
+    if (s.sex && Object.keys(s.sex).length) {
+      const sexPatch: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(s.sex)) {
+        if (v === undefined || v === null || v === '') continue
+        if (!prev?.sex || prev.sex[k] !== v) sexPatch[k] = v
+      }
+      if (Object.keys(sexPatch).length) patch.sex = sexPatch
+    }
+    // status:与上一拍不同才记录,避免同状态每章重复
+    const status = hasText(s.status) ? s.status.trim() : null
+    const last = out[out.length - 1]
+    if (last && last.stage === stage) {
+      // 同段多拍:并入已有变体(patch 后写覆盖前写)
+      Object.assign(last.patch, patch)
+      if (status) last.status = status
+    } else if (Object.keys(patch).length > 0 || status) {
+      out.push({ stage, title: `第${s.unit}段`, status, patch: patch as CharacterChapterVariant['patch'] })
+    }
+    prev = s
+  }
+  return out.length > MAX_STAGE_VARIANTS ? out.slice(0, MAX_STAGE_VARIANTS) : out
+}
+
+/** 合并全部单元提取 → 实体库 + 冲突清单(别名消歧、标量后文为准、数组去重并集)。
+ *  同时按段快照为出场最多的角色生成阶段变体(chapterVariants,段语义)。 */
+export function mergeExtractions(
+  units: { chapter: number, extract: ChapterExtraction, startChar?: number }[]
+): { entities: WorldEntities, conflicts: EntityConflict[] } {
   const conflicts: EntityConflict[] = []
 
   // 别名消歧:name + alias → 正名
@@ -413,6 +482,8 @@ export function mergeExtractions(units: { chapter: number, extract: ChapterExtra
     mentionCount: number
     /** 字段名 → 该标量最近一次写入的来源(冲突证据用) */
     scalarSources: Record<string, EntitySource>
+    /** 按段标量快照(仅角色;章节变体 diff 素材) */
+    snaps: CharacterUnitSnapshot[]
     // 合并字段类型混杂(标量/数组/关系对),统一按 unknown 存取
     entity: Record<string, unknown>
   }
@@ -469,7 +540,7 @@ export function mergeExtractions(units: { chapter: number, extract: ChapterExtra
   const getOrCreate = (map: Map<string, Acc>, key: string, displayName: string, make: () => Record<string, unknown>): Acc => {
     let acc = map.get(key)
     if (!acc) {
-      acc = { key, displayName, sources: [], mentionCount: 0, scalarSources: {}, entity: make() }
+      acc = { key, displayName, sources: [], mentionCount: 0, scalarSources: {}, snaps: [], entity: make() }
       map.set(key, acc)
     }
     return acc
@@ -540,6 +611,19 @@ export function mergeExtractions(units: { chapter: number, extract: ChapterExtra
         }
         acc.entity.relationships = cur
       }
+      // 阶段变体素材:记录本段结束后的标量累积值 + 本段 status
+      {
+        acc.snaps.push({
+          unit: u.chapter,
+          startChar: u.startChar ?? -1,
+          status: hasText(c.status) ? c.status.trim() : null,
+          identity: hasText(acc.entity.identity) ? acc.entity.identity as string : null,
+          appearance: hasText(acc.entity.appearance) ? acc.entity.appearance as string : null,
+          dead: acc.entity.dead === true,
+          desire: typeof acc.entity.desire === 'number' ? acc.entity.desire : null,
+          sex: acc.entity.sex ? { ...(acc.entity.sex as Record<string, unknown>) } : null
+        })
+      }
     }
 
     for (const l of ex.locations ?? []) {
@@ -592,6 +676,16 @@ export function mergeExtractions(units: { chapter: number, extract: ChapterExtra
       const key = norm(f.hint)
       const acc = getOrCreate(foreshadow, key, f.hint || key, () => initEntity(f.hint || key))
       addSource(acc, { ...source, quote: f.quote || null })
+    }
+  }
+
+  // 阶段变体:按段快照 diff 为出场最多的 TOP_CHARACTERS 个角色生成(成卡阶段挂到卡上)
+  {
+    const top = [...chars.values()].sort((a, b) => b.mentionCount - a.mentionCount).slice(0, TOP_CHARACTERS)
+    for (const acc of top) {
+      if (!acc.snaps.length) continue
+      const variants = buildStageVariants(acc.snaps, acc.entity.dead === true)
+      if (variants.length) acc.entity.chapterVariants = variants
     }
   }
 
@@ -844,8 +938,8 @@ function pickStorySpine(storyline: StoryBeat[]): WorldLocalSummary['storySpine']
   const picked = ordered.length <= 8
     ? ordered
     : [ordered[0]!, ...ordered.slice(1, -1).filter(b => b.turn?.trim()).slice(0, 6), ordered[ordered.length - 1]!]
-      .filter((b, i, arr) => arr.findIndex(x => x.index === b.index) === i)
-      .slice(0, 8)
+        .filter((b, i, arr) => arr.findIndex(x => x.index === b.index) === i)
+        .slice(0, 8)
   return picked.map(b => ({ index: b.index, summary: truncate(b.summary, 80) ?? b.summary, turn: b.turn ?? null }))
 }
 
@@ -1038,6 +1132,10 @@ export function finalizeCards(
       // 成书漏填性爱属性时,用提取实体里按原文推断的值兜底
       if (!patched.sex && ent && ent.sex && Object.keys(ent.sex).length) {
         patched = { ...patched, sex: { ...ent.sex } }
+      }
+      // 章节变体:合并阶段生成的按章差异挂到卡上(成书模型不感知)
+      if (!(patched.chapterVariants ?? []).length && ent && (ent.chapterVariants ?? []).length) {
+        patched = { ...patched, chapterVariants: ent.chapterVariants }
       }
       return patched
     })

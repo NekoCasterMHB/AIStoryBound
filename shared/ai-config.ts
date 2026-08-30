@@ -47,6 +47,9 @@ export const AI_API_FORMATS: AiApiFormatMeta[] = [
   }
 ]
 
+/** 每用户自建配置数量上限(前端「最多可保存 N 套配置」与服务端验证记录滚动保留共用) */
+export const AI_USER_CONFIG_LIMIT = 5
+
 export function aiFormatMeta(format: AiApiFormat): AiApiFormatMeta {
   return AI_API_FORMATS.find(f => f.value === format) ?? AI_API_FORMATS[0]!
 }

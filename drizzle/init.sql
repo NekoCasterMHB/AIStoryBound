@@ -446,6 +446,15 @@ CREATE TABLE IF NOT EXISTS `ai_provider_configs` (
 	FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null
 );
 
+-- ---- 用户自建 AI 配置验证记录(个人中心测试连接通过后留痕;/api/ai/chat 用户模式凭指纹准入;每用户滚动保留至多 5 条) ----
+CREATE TABLE IF NOT EXISTS `ai_config_verifications` (
+	`id` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`fingerprint` text NOT NULL,
+	`verified_at` integer NOT NULL,
+	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+
 -- ---- 公告(管理员后台发布;客户端弹窗展示,localStorage 记已读游标,有新公告才再次提示) ----
 CREATE TABLE IF NOT EXISTS `announcements` (
 	`id` text PRIMARY KEY NOT NULL,
@@ -495,5 +504,6 @@ CREATE INDEX IF NOT EXISTS `idx_frl_user` ON `feature_request_likes` (`user_id`)
 CREATE INDEX IF NOT EXISTS `idx_ai_usage_time` ON `ai_usage` (`created_at`);
 CREATE INDEX IF NOT EXISTS `idx_ai_usage_user` ON `ai_usage` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_aipc_active` ON `ai_provider_configs` (`active`);
+CREATE INDEX IF NOT EXISTS `idx_acv_user` ON `ai_config_verifications` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_ann_published_created` ON `announcements` (`published`,`created_at`);
 CREATE INDEX IF NOT EXISTS `idx_skill_purchase_buyer` ON `skill_purchases` (`buyer_id`);

@@ -25,6 +25,8 @@ onMounted(async () => {
 })
 
 const cards = computed(() => work.value?.overlay?.characters ?? [])
+/** 作品章节(细纲段 startChar 定位与正文窗口取用) */
+const chapters = computed(() => work.value?.chapters ?? [])
 
 // ---- 开场方式:ai=AI 生成开场供选择(默认) beat=按细纲段开始 custom=玩家输入背景故事 ----
 // 不用章节:上传 txt 的章节识别不可靠,细纲段按字数切分,兼容任意 txt。
@@ -39,45 +41,23 @@ const openingModes = [
 
 const customScene = ref('')
 
-// ---- 细纲段:storyline 按段序(带 startChar,可定位到章节正文窗口) ----
+// ---- 细纲段:storyline 按段序(带 startChar,直接在全书拼接正文上取原文窗口,不经章节) ----
 
 const beats = computed(() => work.value?.storyline ?? [])
 const beatIndex = ref(0)
 const selectedBeat = computed(() => beats.value[beatIndex.value] ?? null)
 
-/** 章节累计字符偏移(与 splitUnits 的 join('\n') 对齐):每章前加 1 个换行 */
-const chapterCharStarts = computed(() => {
-  let acc = 0
-  return chapters.value.map((c) => {
-    const start = acc
-    acc += c.content.length + 1
-    return start
-  })
-})
-
-/** 细纲段 startChar → 章节下标 + 章内偏移 */
-function locateChapter(startChar: number): { chapterIndex: number, offset: number } | null {
-  const starts = chapterCharStarts.value
-  if (starts.length === 0) return null
-  for (let i = starts.length - 1; i >= 0; i--) {
-    if (startChar >= starts[i]) {
-      return { chapterIndex: i, offset: Math.max(0, startChar - starts[i]) }
-    }
-  }
-  return { chapterIndex: 0, offset: 0 }
-}
+/** 全书拼接正文(与 splitUnits 的 join('\n') 对齐) */
+const joinedText = computed(() => chapters.value.map(c => c.content).join('\n'))
 
 /** 从细纲段起始位置取一段正文窗口(约 2500 字) */
 function beatTextWindow(beat: { startChar: number }): string {
-  const loc = locateChapter(beat.startChar)
-  if (!loc) return ''
-  const ch = chapters.value[loc.chapterIndex]
-  if (!ch) return ''
-  return ch.content.slice(loc.offset, loc.offset + 2500)
+  if (beat.startChar < 0 || beat.startChar >= joinedText.value.length) return ''
+  return joinedText.value.slice(beat.startChar, beat.startChar + 2500)
 }
 
 /** 按所选模式构造开局设定;返回 error 表示缺必填内容 */
-function buildOpening(): { opening: LocalGame['opening'], currentChapter?: string | null, error?: string } {
+function buildOpening(): { opening: LocalGame['opening'], currentBeat?: number | null, error?: string } {
   if (openingMode.value === 'beat') {
     const beat = selectedBeat.value
     if (!beat) return { opening: undefined, error: '请选择起始细纲段' }
@@ -94,7 +74,7 @@ function buildOpening(): { opening: LocalGame['opening'], currentChapter?: strin
         ...(prev ? { prevBeat: { title: prev.label, text: prev.summary } } : {}),
         ...(next ? { nextBeat: { title: next.label, text: next.summary } } : {})
       },
-      currentChapter: label
+      currentBeat: beat.index
     }
   }
   if (openingMode.value === 'custom') {
@@ -111,7 +91,7 @@ watch(adultOn, v => setAdultModeEnabled(v))
 
 async function startAs(characterName: string) {
   if (creating.value) return
-  const { opening, currentChapter, error } = buildOpening()
+  const { opening, currentBeat, error } = buildOpening()
   if (error) {
     toast.add({ title: error, color: 'error' })
     return
@@ -124,7 +104,7 @@ async function startAs(characterName: string) {
     }
     const state: GameState = ensureDesires({ location: '', time: '', health: '良好', mood: '平静', relationships, quests: [], flags: {} }, cards.value)
     const gameId = uuid()
-    await createLocalGame({ id: gameId, workId, playerName: characterName, characterName, state, opening, currentChapter })
+    await createLocalGame({ id: gameId, workId, playerName: characterName, characterName, state, opening, currentBeat })
     router.push(`/games/${gameId}`)
   } finally {
     creating.value = false
@@ -136,6 +116,9 @@ function roleColor(role: string | undefined) {
   if (role === '反派') return 'error'
   return 'neutral'
 }
+
+// ---- 世界详情弹窗(查看生成产物/编辑概览元数据) ----
+const worldDetailOpen = ref(false)
 </script>
 
 <template>
@@ -172,14 +155,24 @@ function roleColor(role: string | undefined) {
           </UBadge>
         </div>
       </div>
-      <UButton
-        label="返回"
-        icon="i-lucide-arrow-left"
-        color="neutral"
-        variant="outline"
-        size="sm"
-        to="/"
-      />
+      <div class="flex flex-wrap gap-2">
+        <UButton
+          label="世界详情"
+          icon="i-lucide-globe"
+          color="neutral"
+          variant="outline"
+          size="sm"
+          @click="worldDetailOpen = true"
+        />
+        <UButton
+          label="返回"
+          icon="i-lucide-arrow-left"
+          color="neutral"
+          variant="outline"
+          size="sm"
+          to="/"
+        />
+      </div>
     </div>
 
     <UAlert
@@ -194,8 +187,27 @@ function roleColor(role: string | undefined) {
       color="warning"
       variant="soft"
       title="该作品还没有人物卡"
-      description="请先在首页重新生成世界。"
-    />
+      description="回到书架重新生成世界,或先补全正文后再生成。"
+    >
+      <template #actions>
+        <UButton
+          label="去生成世界"
+          icon="i-lucide-sparkles"
+          size="sm"
+          color="warning"
+          variant="soft"
+          :to="`/generate?from=work&id=${workId}`"
+        />
+        <UButton
+          label="返回书架"
+          icon="i-lucide-library"
+          size="sm"
+          color="neutral"
+          variant="soft"
+          to="/works"
+        />
+      </template>
+    </UAlert>
 
     <details
       v-if="work?.storyline?.length"
@@ -268,8 +280,12 @@ function roleColor(role: string | undefined) {
             >
               <span class="font-medium text-neutral-700 dark:text-neutral-300">{{ selectedBeat.label || `第${selectedBeat.index + 1}段` }}</span>
               {{ selectedBeat.summary }}
-              <template v-if="selectedBeat.place"> · {{ selectedBeat.place }}</template>
-              <template v-if="selectedBeat.cast?.length"> · {{ selectedBeat.cast.slice(0, 4).join('、') }}</template>
+              <template v-if="selectedBeat.place">
+                · {{ selectedBeat.place }}
+              </template>
+              <template v-if="selectedBeat.cast?.length">
+                · {{ selectedBeat.cast.slice(0, 4).join('、') }}
+              </template>
             </p>
             <p
               v-if="selectedBeat"
@@ -350,5 +366,11 @@ function roleColor(role: string | undefined) {
         </UButton>
       </UCard>
     </div>
+
+    <!-- 世界详情弹窗 -->
+    <WorldDetailModal
+      v-model:open="worldDetailOpen"
+      :work-id="workId"
+    />
   </div>
 </template>

@@ -4,6 +4,7 @@
 // 协议:fromIdx=-1 全量重建;fromIdx>=0 增量(仅重建该序号之后的消息与选项,兼容回滚截断)。
 import { gunzipSync, strFromU8 } from 'fflate'
 import { requireUserId } from '../../utils/authz'
+import { getNovel } from '../../utils/db'
 import {
   getGame,
   createGame,
@@ -21,6 +22,8 @@ import type { LocalGame } from '../../../shared/novel'
 interface SyncBody extends LocalGame {
   /** -1=全量重建;>=0=增量(云端截断该序号之后,再插入本次上传的消息/选项) */
   fromIdx?: number
+  /** 进度段标签字符串(如「第3段」;存 D1 current_chapter 列,仅展示用) */
+  currentChapter?: string | null
 }
 
 export default defineEventHandler(async (event) => {
@@ -49,6 +52,14 @@ export default defineEventHandler(async (event) => {
   const fromIdx = typeof body.fromIdx === 'number' ? body.fromIdx : -1
   const messages = body.messages ?? []
   const optionsByMessage: Record<string, { idx: number, text: string }[]> = body.optionsByMessage ?? {}
+
+  // 归属校验:workId 指向的作品必须属于当前用户,防止借 game 挂载他人作品读其世界观
+  if (body.workId) {
+    const work = await getNovel(event, body.workId)
+    if (work && work.user_id !== userId) {
+      throw createError({ statusCode: 404, statusMessage: 'Game not found' })
+    }
+  }
 
   const patch = {
     novel_id: body.workId ?? null,

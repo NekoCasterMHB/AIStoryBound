@@ -32,6 +32,10 @@ export default defineEventHandler(async (event) => {
 
   const existing = await getNovel(event, body.id)
   if (existing) {
+    // 归属校验:非本人作品与不存在同响应,不泄露资源存在性
+    if (existing.user_id !== userId) {
+      throw createError({ statusCode: 404, statusMessage: 'Work not found' })
+    }
     await updateNovel(event, body.id, {
       title: body.title,
       author: body.author ?? null,

@@ -1,13 +1,13 @@
 // shared/token-estimate.ts
 // 字符 → token 估算(浏览器/服务器共用,零框架依赖)。
 // 用于生成前预检与流式进行中的实时消耗展示,收尾始终以流尾真实 usage 为准。
-// 中文字符按 CJK_TOKEN_PER_CHAR 折算:该系数取主流中文 tokenizer 的保守中位
-// (DeepSeek/Qwen/GLM 约 1.0-1.3,GPT-4o 约 1.1,Claude 约 0.6,LLaMA/Mistral 约 1.5-2.0),
-// 非 CJK 字符按 4 字符 1 token(英文惯例)。老版按 字符数/1.7 会把中文多的文本低估约 2 倍,
-// 实时数字明显低于真实消耗,故改为分字符类折算、宁可略高估。
+// 中文字符按 CJK_TOKEN_PER_CHAR 折算:实测主流中文 tokenizer 约 1 汉字 ≈ 0.6~0.9 token
+// (DeepSeek ≈ 0.6,Qwen/GLM ≈ 0.6-0.7,GPT-4o ≈ 0.8-1.0,Claude ≈ 0.7),
+// 系数取略偏保守的 0.7(宁高勿低,但不再像旧值 1.3 那样高估约一倍)。
+// 非 CJK 字符按 4 字符 1 token(英文惯例)。
 
-/** 单个 CJK 字符折算的 token 数(调高更保守,如上游为 LLaMA 系可上调) */
-export const CJK_TOKEN_PER_CHAR = 1.3
+/** 单个 CJK 字符折算的 token 数(上游为 LLaMA 系等中文压缩差的模型可上调) */
+export const CJK_TOKEN_PER_CHAR = 0.7
 /** 非 CJK 字符平均多少字符折算 1 token */
 export const NON_CJK_CHARS_PER_TOKEN = 4
 

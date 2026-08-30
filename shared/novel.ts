@@ -126,6 +126,39 @@ export interface CharacterCard {
   kinks?: { theme: string, view: string | null, role: string | null, detail: string | null }[]
   /** 成人性爱向属性(体位/语言挑逗/尺寸/持久等,影响叙事细节演绎) */
   sex?: SexAttrs
+  /** 阶段变体:按细纲段与基础卡的差异(生成流水线从原著提取;游玩时按当前段叠加,stage 为 0-based 段下标)。
+   *  字段名保留 chapterVariants 旧名是为兼容 IndexedDB 旧数据,语义已从"章节"改为"段" */
+  chapterVariants?: CharacterChapterVariant[]
+}
+
+/** 角色在某阶段(细纲段/提取单元)与基础卡(或上一段快照)的差异;patch 只记录变化的字段 */
+export interface CharacterChapterVariant {
+  /** 0-based 阶段段号(对应 storyline 细纲段下标,与提取单元一一对应) */
+  stage: number
+  /** @deprecated 旧章节下标(仅旧存档数据存在;读取时以 stage 优先,缺失时兜底) */
+  chapter?: number
+  /** 段标签(展示用,如「第3段」;旧数据为章节标题) */
+  title?: string | null
+  /** 本段处境/状态一句话(身份转变、受伤、被囚、身亡等) */
+  status?: string | null
+  /** 与基础卡(或上一段快照)的差异:仅记录该段发生变化的字段 */
+  patch: Partial<Omit<CharacterCard, 'name' | 'role' | 'chapterVariants'>>
+}
+
+/** 角色运行时动态状态(随互动演进;LLM 每回合回报,白名单合并) */
+export interface CharacterDynamicState {
+  /** 当前处境/状态一句话 */
+  status?: string | null
+  /** 当前位置 */
+  location?: string | null
+  /** 当前情绪 */
+  mood?: string | null
+  /** 生死 */
+  dead?: boolean | null
+  /** 其余人物卡字段补丁(全字段可变;字符串/数组整体替换) */
+  patch?: Partial<Omit<CharacterCard, 'name' | 'role' | 'chapterVariants'>>
+  /** 变化履历(代码按每回合 delta 生成摘要;章节时间线展示用) */
+  log?: { idx: number, text: string }[]
 }
 
 /** 性欲强度 0-100 的五档位(展示与提示词共用;区间 0-19 / 20-39 / 40-59 / 60-79 / 80-100) */
@@ -203,6 +236,8 @@ export interface ExtractedCharacter {
   secrets?: string[]
   relationships?: { name: string, type: string }[]
   dead?: boolean | null
+  /** 该角色在本提取单元的处境/状态一句话(身份转变、受伤、被囚、身亡等;章节变体素材) */
+  status?: string | null
   /** 性欲强度,0-100 整数(提取时按原文行为推断) */
   desire?: number | null
   /** 成人题材玩法喜好(theme=玩法,view=喜欢/厌恶/接受,role=承受/施予/双方;按原文行为与对话推断) */
@@ -299,6 +334,8 @@ export interface ChapterExtraction {
 export interface MergedCharacter extends ExtractedCharacter {
   sources: EntitySource[]
   mentionCount: number
+  /** 章节变体(传入 chapters 合并时生成;成卡阶段挂到卡上) */
+  chapterVariants?: CharacterChapterVariant[]
 }
 export interface MergedLocation extends ExtractedLocation {
   sources: EntitySource[]
@@ -453,7 +490,8 @@ export interface LocalGame {
   messages: { id: string, idx: number, role: string, speaker: string | null, content: string }[]
   /** 每条旁白消息挂载的选项(回合结束后生成,回滚时一并恢复) */
   optionsByMessage?: Record<string, { idx: number, text: string }[]>
-  currentChapter?: string | null
+  /** 剧情当前推进到的细纲段下标(0-based;由收尾器按回回报,用于阶段变体与回注;旧存档无此字段) */
+  currentBeat?: number | null
   summary?: { idx: number, text: string } | null
   /** 云端同步进度:上次成功同步的最后一条消息 idx(-1=从未同步;回滚后失效,下次同步自动转全量重建) */
   lastSyncedIdx?: number
@@ -508,6 +546,8 @@ export interface GameState {
   relationships?: Record<string, number>
   /** 角色名 -> 性欲值(0-100,动态状态:随心情/情景/挑逗变化,戳中嗜好大幅加速,低强度角色波动小、高值后上涨加速) */
   desires?: Record<string, number>
+  /** 角色名 -> 运行时动态状态(处境/位置/情绪/生死及人物卡字段补丁;随互动演进) */
+  characterStates?: Record<string, CharacterDynamicState>
   quests?: string[]
   flags?: Record<string, boolean | string | number>
   /** AI 内部状态(不展示给玩家,仅进 prompt) */
@@ -572,8 +612,11 @@ export interface TurnStructured {
     relationships?: Record<string, number>
     /** 角色名 -> 性欲值增量(0-100 区间内);可附触发玩法名与场景,引擎按人物卡嗜好放大 */
     desires?: Record<string, number | { delta: number, kink?: string, scene?: 'reward' | 'punish' }>
+    /** 角色名 -> 动态状态变化(status/location/mood/dead + 任意人物卡字段补丁;无变化的角色省略) */
+    character_states?: Record<string, CharacterDynamicState>
   }
-  current_chapter?: string | null
+  /** 剧情当前推进到的细纲段序号(1-based,每回合报告;仍在同段保持同值;不确定可省略) */
+  current_beat?: number | null
   /** 整局剧情摘要(覆盖式更新:基于旧摘要+近期剧情压缩,保留关键关系/伏笔/进展) */
   summary?: string
 }

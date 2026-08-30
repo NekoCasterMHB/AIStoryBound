@@ -14,37 +14,38 @@ export interface TokenQuotaInfo {
   insufficient: boolean
 }
 
-// ---- 流水线估算参数(与 shared/world-build 的真实请求结构对应) ----
-/** 每提取单元:系统 schema + 指令的输入开销(tokens) */
-const EXTRACT_INPUT_OVERHEAD_TOKENS = 2500
-/** 每提取单元:典型提取 JSON 输出(tokens;输出上限之外的常见量级) */
-const EXTRACT_OUTPUT_TOKENS = 3300
+// ---- 流水线估算参数(与 shared/world-build 的真实请求结构对应;按实测消耗校准,宁高勿低) ----
+/** 每提取单元:系统 schema + 指令的输入开销(tokens;实测 schema+规则 ≈ 900 汉字当量 ≈ 700 token,取整留余) */
+const EXTRACT_INPUT_OVERHEAD_TOKENS = 1000
+/** 每提取单元:典型提取 JSON 输出(tokens;10K 字单元通常产出 3~8 角色 + 各类实体,≈ 1500~2500) */
+const EXTRACT_OUTPUT_TOKENS = 2200
 /** 节约模式每提取单元输出:5 类实体 + 情节细纲、引用从简 */
-const ECO_EXTRACT_OUTPUT_TOKENS = 1500
-/** 一致性检查输入:紧凑实体库 ≈ 全书 token 数的该比例(压缩后远小于正文) */
-const CHECK_INPUT_TOKEN_RATIO = 0.12
-/** 一致性检查:指令输入开销 + 输出(tokens) */
-const CHECK_INPUT_OVERHEAD_TOKENS = 1500
-const CHECK_OUTPUT_TOKENS = 2500
-/** 成书输入:头部角色卡 + 统计 + 冲突 ≈ 全书 token 数的该比例 */
-const SYNTH_INPUT_TOKEN_RATIO = 0.18
+const ECO_EXTRACT_OUTPUT_TOKENS = 900
+/** 一致性检查输入:紧凑实体库 ≈ 全书 token 数的该比例(去 quote、值截断,实体量随书长亚线性) */
+const CHECK_INPUT_TOKEN_RATIO = 0.10
+/** 一致性检查:指令输入开销 + 输出(tokens;输出为逐条批注 JSON,通常数百) */
+const CHECK_INPUT_OVERHEAD_TOKENS = 1000
+const CHECK_OUTPUT_TOKENS = 1500
+/** 成书输入:头部角色卡 + 世界节选 + 故事骨干 ≈ 全书 token 数的该比例(输入有界,不随书长线性涨) */
+const SYNTH_INPUT_TOKEN_RATIO = 0.10
 /** 成书:指令输入开销(tokens) */
-const SYNTH_INPUT_OVERHEAD_TOKENS = 1500
+const SYNTH_INPUT_OVERHEAD_TOKENS = 1000
 /** 完整模式成书输出:TOP_CHARACTERS 张详细人物卡 + 标题/简介 */
 const SYNTH_OUTPUT_TOKENS = 5000
 /** 节约模式成书输入更轻(只带头部角色轻量素材) */
-const ECO_SYNTH_INPUT_TOKEN_RATIO = 0.10
+const ECO_SYNTH_INPUT_TOKEN_RATIO = 0.06
 /** 节约模式成书输出:标题/简介/角色定位 + 标签/性向/设定 */
-const ECO_SYNTH_OUTPUT_TOKENS = 1000
+const ECO_SYNTH_OUTPUT_TOKENS = 800
 /** 作者识别(正文抽样输入 + 未命中时联网检索,输出极少) */
-const AUTHOR_TOKENS = 1500
-/** 综合余量:覆盖 tokenizer 差异、失败重试、切段重叠等不可预知项(预检宁高勿低) */
-const SAFETY_FACTOR = 1.2
+const AUTHOR_TOKENS = 1200
+/** 综合余量:失败重试 + 切段重叠(默认重叠 1000 字/单元 ≈ 10% 输入)等(预检宁高勿低) */
+const SAFETY_FACTOR = 1.1
 
 /**
  * 预估一次世界生成的 token 消耗:按真实流水线分阶段建模
  * (提取全量正文 → 一致性检查压缩实体 → 成书头部卡片 + 作者识别),随生成参数收敛。
- * 全书正文按中文主体折算为输入 token(prompt 是大头,老版"字数 × 1.5"明显低估)。
+ * 正文按 CJK_TOKEN_PER_CHAR(0.7 token/汉字,实测主流 tokenizer 校准)折算;
+ * 典型结果 ≈ 全书字数的 1.0~1.4 倍(节约模式更低),与真实入账同量级。
  */
 export function estimateWorldGenTokens(totalChars: number, eco = false, limits: GenLimits = loadGenLimits()): number {
   if (!Number.isFinite(totalChars) || totalChars <= 0) return 1

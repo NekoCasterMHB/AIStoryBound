@@ -17,6 +17,8 @@ const router = useRouter()
 const src = route.params.src as string
 const id = String(route.params.id)
 const key = readingKey(src === 'work' ? 'work' : 'preset', id)
+/** 本地作品已生成世界(有人物卡):顶栏显示「进入世界」直达选角页 */
+const hasWorld = ref(false)
 
 // ---- 加载 ----
 const chapters = ref<ChapterSegment[]>([])
@@ -65,6 +67,7 @@ async function loadBook() {
       if (!work || work.chapters.length === 0) throw new Error('本地未找到该作品或无可读章节')
       chapters.value = work.chapters
       bookTitle.value = work.title
+      hasWorld.value = !!work.overlay?.characters?.length
       void touchWork(id)
     } else {
       const loaded = await loadPresetChapters(id)
@@ -653,6 +656,15 @@ useSeoMeta({ title: pageTitle })
             {{ chapLabel(chapterIndex) }} · {{ chapterIndex + 1 }}/{{ chapters.length }}
           </p>
         </div>
+        <button
+          v-if="hasWorld"
+          type="button"
+          class="reader-icon-btn"
+          aria-label="进入世界"
+          @click="router.push(`/play/${id}`)"
+        >
+          <UIcon name="i-lucide-play" />
+        </button>
         <button
           type="button"
           class="reader-icon-btn"

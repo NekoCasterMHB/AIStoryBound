@@ -14,7 +14,7 @@ export default defineEventHandler(async (event) => {
   if (!game) {
     throw createError({ statusCode: 404, statusMessage: 'Game not found' })
   }
-  await assertGameOwned(event, game)
+  const userId = await assertGameOwned(event, game)
 
   let world: WorldOverlay | null = null
   let entities: WorldEntities | null = null
@@ -22,7 +22,8 @@ export default defineEventHandler(async (event) => {
   let storyline: StoryBeat[] = []
   if (game.novel_id) {
     const novel = await getNovel(event, game.novel_id)
-    if (novel?.world_state) {
+    // 双保险:即使 game 挂载了他人作品,也不返回其世界观
+    if (novel?.user_id === userId && novel.world_state) {
       try {
         const raw = JSON.parse(novel.world_state) as Record<string, unknown>
         world = {

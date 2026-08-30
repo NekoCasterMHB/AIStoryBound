@@ -498,14 +498,14 @@ const tabs = ref<TabsItem[]>([
             收邮件有 3 分钟左右延迟,请耐心等待
           </p>
           <div class="flex gap-2">
-              <UInput
-                v-model="regForm.otp"
-                placeholder="6 位验证码"
-                class="flex-1"
-                :disabled="regBusy || sendingRegOtp"
-                inputmode="numeric"
-                maxlength="6"
-              />
+            <UInput
+              v-model="regForm.otp"
+              placeholder="6 位验证码"
+              class="flex-1"
+              :disabled="regBusy || sendingRegOtp"
+              inputmode="numeric"
+              maxlength="6"
+            />
             <UButton
               color="neutral"
               variant="outline"

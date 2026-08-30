@@ -16,7 +16,7 @@ import { parseNovelBytes } from '../server/utils/novel-parser'
 import { buildUpstreamRequest } from '../server/utils/ai-relay'
 import type { RelayTarget } from '../server/utils/ai-relay'
 import { extractJson } from '../shared/json'
-import type { ChapterExtraction, CharacterCard, ChapterSegment, EntityConflict, StoryBeat, WorldEntities, WorldOverlay } from '../shared/novel'
+import type { ChapterExtraction, ChapterSegment, EntityConflict, StoryBeat, WorldEntities, WorldOverlay } from '../shared/novel'
 import {
   assembleStoryline, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
   buildSynthesizeMessages, emptyExtraction, finalizeCards, mergeExtractions, mergeOverlayMeta,
@@ -239,9 +239,9 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
     throw new Error(`提取失败率过高(${units.length - okCount}/${units.length}),已中止`)
   }
 
-  // 2) 合并 + 引用校验
+  // 2) 合并 + 引用校验(按段快照为角色生成阶段变体)
   const { entities, conflicts } = mergeExtractions(
-    extracts.map((ex, i) => ({ chapter: units[i]?.chapter ?? 0, extract: ex ?? emptyExtraction() }))
+    extracts.map((ex, i) => ({ chapter: units[i]?.chapter ?? 0, extract: ex ?? emptyExtraction(), startChar: units[i]?.startChar }))
   )
   const { unverified } = verifyQuotes(entities, units.map(u => ({ title: u.label, content: u.content })))
   if (unverified > 0) {

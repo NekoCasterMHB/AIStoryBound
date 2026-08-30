@@ -4,7 +4,7 @@
 // 进度由本地状态驱动;中间产物仅内存(单章失败=跳过+告警,>1/3 失败中止)。
 import { detectEncoding, extractFrontMatter, segmentChapters, uuid } from '#shared/novel'
 import type {
-  ChapterExtraction, ChapterSegment, CharacterCard, EntityConflict, LocalWork, WorldOverlay
+  ChapterExtraction, ChapterSegment, EntityConflict, LocalWork, WorldOverlay
 } from '#shared/novel'
 import {
   assembleStoryline, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
@@ -219,7 +219,7 @@ export async function generateWorld(
 
   let completedUnits = 0
   /** 实时进度:单元完成时立即刷新;流式期间按节流刷新(实时 token 消耗,覆盖 author/extract/check/synthesize 全程) */
-  const emitLive = (stage: GenerateProgress['stage'] = 'extract', live?: { tokens: number, speed: number }) => {
+  const emitLive = (stage: GenerateProgress['stage'] = 'extract', live?: LiveTokenInfo) => {
     const now = Date.now()
     if (live && now - lastLiveEmit < 200) return
     lastLiveEmit = now
@@ -296,16 +296,15 @@ export async function generateWorld(
   let okCount = reused.size
 
   if (todoIndexes.length > 0) {
-    warnings.push(`开始并发提取 ${todoIndexes.length} 个单元(并发 ${EXTRACT_CONCURRENCY})`)
+    // 过程日志只走 trace 打点,不写入 warnings(warnings 会持久化到作品,只留真实告警)
     progress('extract', completedUnits, `待提取 ${todoIndexes.length} 个单元`)
-    trace(`开始并发提取 ${todoIndexes.length} 个单元`)
+    trace(`开始并发提取 ${todoIndexes.length} 个单元(并发 ${EXTRACT_CONCURRENCY})`)
     const results = await pool(todoIndexes, EXTRACT_CONCURRENCY, async (unitIndex) => {
       const unit = units[unitIndex]!
       const attempt = async (): Promise<ChapterExtraction> => {
         const cap = outputCap(genLimits.extractMaxTokens, eco ? ECO_EXTRACT_MAX_TOKENS : undefined)
-        warnings.push(`开始提取「${unit.label}」(${unit.content.length} 字${cap ? `,maxTokens=${cap}` : ',不传 max_tokens'})`)
         emitLive('extract')
-        trace(`请求发出: 单元「${unit.label}」(${unit.content.length} 字)`)
+        trace(`请求发出: 单元「${unit.label}」(${unit.content.length} 字${cap ? `,maxTokens=${cap}` : ',不传 max_tokens'})`)
         const res = await aiChatJson<unknown>(buildExtractMessages(title, unit, eco), {
           maxTokens: cap,
           temperature: 0.2,
@@ -375,9 +374,9 @@ export async function generateWorld(
   }
   progress('merge')
 
-  // ---- 2) Reduce:本地合并 + 3) 引用校验 ----
+  // ---- 2) Reduce:本地合并 + 3) 引用校验(按段快照为角色生成阶段变体) ----
   const { entities, conflicts } = mergeExtractions(
-    extracts.map((ex, i) => ({ chapter: units[i]?.chapter ?? 0, extract: ex ?? emptyExtraction() }))
+    extracts.map((ex, i) => ({ chapter: units[i]?.chapter ?? 0, extract: ex ?? emptyExtraction(), startChar: units[i]?.startChar }))
   )
   const { unverified } = verifyQuotes(entities, units.map(u => ({ title: u.label, content: u.content })))
   if (unverified > 0) {

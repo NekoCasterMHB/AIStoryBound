@@ -53,6 +53,16 @@ const { requireLogin } = useAuthModal()
 
 const resultWork = ref<LocalWork | null>(null)
 
+// ---- 世界详情弹窗(完成页查看生成产物/编辑概览元数据) ----
+const worldDetailOpen = ref(false)
+const worldDetailWorkId = ref('')
+
+function openWorldDetail(id: string) {
+  if (!id) return
+  worldDetailWorkId.value = id
+  worldDetailOpen.value = true
+}
+
 /** 平台 token 额度预检结果(不足时提示,不阻断生成) */
 const quotaWarn = ref<TokenQuotaInfo | null>(null)
 
@@ -399,13 +409,15 @@ async function runGeneration(title: string, chapters: Parameters<typeof generate
     // 其余失败(如提取失败率过高/成书失败)必须落到错误态,否则界面会一直停在"生成中";
     // 快照参数供"继续生成"续跑(断点续跑缓存会复用已提取单元,不重复消耗 token)
     lastFailedGen.value = { title, chapters, frontMatter }
+    const lastProgress = genState.value.progress
     genState.value = {
       phase: 'error',
       title,
       progress: null,
       error: err instanceof Error ? err.message : String(err),
       resultId: null,
-      tokensUsed: 0
+      // 保留最后估算的已消耗 token(失败不代表没扣费;断点续跑可复用已提取单元)
+      tokensUsed: lastProgress?.liveTokens ?? genState.value.tokensUsed
     }
   }
 }
@@ -474,8 +486,8 @@ async function cancelGeneration() {
   // 取消后清空提取缓存,防止多次取消残留累计
   await clearExtractCache().catch(() => { /* 清缓存失败不影响状态复位 */ })
   toast.add({
-    title: '已取消生成',
-    description: '未产生任何扣费,可重新上传开始。',
+    title: '已停止生成',
+    description: '在途请求可能已产生少量扣费,可重新上传开始。',
     color: 'neutral',
     icon: 'i-lucide-circle-stop'
   })
@@ -661,7 +673,7 @@ const features = [
             variant="soft"
             icon="i-lucide-triangle-alert"
             title="Token 额度不足,可能生成失败"
-            :description="`当前余额 ${quotaWarn.balance.toLocaleString()} tokens,预计至少需要 ${quotaWarn.needed.toLocaleString()} tokens(按全书字数与生成流水线估算)。建议切换节约模式,或到个人中心购买加油包、配置自己的 API Key。`"
+            :description="`当前余额 ${quotaWarn.balance.toLocaleString()} tokens,预计至少需要 ${quotaWarn.needed.toLocaleString()} tokens(按全书字数估算)。建议切换节约模式,或到个人中心购买加油包、配置自己的 API Key。`"
           />
 
           <div class="flex items-center gap-3.5">
@@ -800,7 +812,7 @@ const features = [
             variant="soft"
             icon="i-lucide-triangle-alert"
             title="Token 额度不足,可能生成失败"
-            :description="`当前余额 ${quotaWarn.balance.toLocaleString()} tokens,预计至少需要 ${quotaWarn.needed.toLocaleString()} tokens(按全书字数与生成流水线估算)。建议先到个人中心购买加油包,或配置自己的 API Key。`"
+            :description="`当前余额 ${quotaWarn.balance.toLocaleString()} tokens,预计至少需要 ${quotaWarn.needed.toLocaleString()} tokens(按全书字数估算)。建议先到个人中心购买加油包,或配置自己的 API Key。`"
           />
 
           <!-- 书名 + 实时消耗 -->
@@ -901,10 +913,10 @@ const features = [
             </UButton>
           </div>
 
-          <!-- 调试:阶段/单元/错误即时可见,避免卡在 15% 时只能看进度条 -->
+          <!-- 高级详情:阶段/单元/告警即时可见,避免卡在 15% 时只能看进度条 -->
           <div class="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900/50 dark:text-neutral-400">
             <p class="font-medium text-neutral-700 dark:text-neutral-300">
-              调试
+              高级详情
               <span class="ms-1 font-normal text-neutral-500">
                 {{ genState.progress?.stage ?? 'parse' }}
                 · {{ genState.progress?.doneUnits ?? 0 }}/{{ genState.progress?.totalUnits ?? 0 }} 单元
@@ -987,6 +999,12 @@ const features = [
             </span>
           </div>
           <p
+            v-if="resultWork?.overlay?.summary"
+            class="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-400"
+          >
+            {{ resultWork.overlay.summary }}
+          </p>
+          <p
             v-if="resultWork?.overlay?.setting || resultWork?.overlay?.orientation"
             class="mx-auto mt-3 max-w-lg text-sm text-neutral-600 dark:text-neutral-400"
           >
@@ -1008,6 +1026,14 @@ const features = [
             >
               {{ tag }}
             </UBadge>
+            <UBadge
+              v-if="resultWork.overlay.tags.length > 12"
+              color="neutral"
+              variant="subtle"
+              size="sm"
+            >
+              +{{ resultWork.overlay.tags.length - 12 }}
+            </UBadge>
           </div>
           <details
             v-if="resultWork?.storyline?.length"
@@ -1026,7 +1052,7 @@ const features = [
               </li>
             </ol>
           </details>
-          <div class="mt-8 flex justify-center">
+          <div class="mt-8 flex flex-wrap justify-center gap-3">
             <UButton
               color="primary"
               size="lg"
@@ -1034,6 +1060,24 @@ const features = [
               @click="navigateTo(`/play/${genState.resultId}`)"
             >
               选择角色进入故事
+            </UButton>
+            <UButton
+              color="neutral"
+              size="lg"
+              variant="outline"
+              icon="i-lucide-globe"
+              @click="openWorldDetail(genState.resultId!)"
+            >
+              查看世界详情
+            </UButton>
+            <UButton
+              color="neutral"
+              size="lg"
+              variant="outline"
+              icon="i-lucide-library"
+              to="/works"
+            >
+              返回书架
             </UButton>
           </div>
         </div>
@@ -1054,6 +1098,12 @@ const features = [
           </p>
           <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
             {{ genState.error }}
+          </p>
+          <p
+            v-if="genState.tokensUsed"
+            class="mx-auto mt-3 max-w-md text-xs text-neutral-500"
+          >
+            本次已消耗约 {{ genState.tokensUsed.toLocaleString() }} tokens(估算);已提取的单元已缓存,「继续生成」可复用,不重复扣费。
           </p>
           <div class="mt-7 flex justify-center gap-3">
             <UButton
@@ -1147,5 +1197,11 @@ const features = [
         </div>
       </section>
     </div>
+
+    <!-- 世界详情弹窗(完成页入口) -->
+    <WorldDetailModal
+      v-model:open="worldDetailOpen"
+      :work-id="worldDetailWorkId"
+    />
   </div>
 </template>

@@ -5,7 +5,7 @@
 import type { TabsItem } from '@nuxt/ui'
 import { TOKEN_PACKAGES } from '#shared/quota-packages'
 import type { TokenPackage } from '#shared/quota-packages'
-import { AI_API_FORMATS, aiFormatMeta } from '#shared/ai-config'
+import { AI_API_FORMATS, aiFormatMeta, AI_USER_CONFIG_LIMIT } from '#shared/ai-config'
 import type { AiApiFormat } from '#shared/ai-config'
 import { useAuthSession } from '../utils/auth-client'
 import { isCloudSaveEnabled, setCloudSaveEnabled } from '../utils/cloudSave'
@@ -538,6 +538,33 @@ function isConfigActive(c: AiConfigItem) {
   return aiMode.value === 'custom' && c.active === true
 }
 
+/** 配置数量上限:前端 UI 与服务端验证记录(每用户滚动保留)共用同一常量 */
+const aiAtLimit = computed(() => aiState.value.configs.length >= AI_USER_CONFIG_LIMIT)
+
+/**
+ * 已通过服务端测试的配置签名集(format|baseUrl|apiKey|model)。
+ * 保存前强制测试、启用前检查签名(缺失则补测一次);服务端 ai/ai/chat 指纹准入以此为准。
+ */
+const aiVerifiedSigs = ref(new Set<string>())
+
+function aiConfigSig(format: AiApiFormat, baseUrl: string, apiKey: string, model: string) {
+  return [format, baseUrl.trim(), apiKey.trim(), model.trim()].join('|')
+}
+
+/** 调服务端测试连接;成功时把签名记入已验证集合 */
+async function testAiConfig(format: AiApiFormat, baseUrl: string, apiKey: string, model: string): Promise<{ ok: boolean, message: string }> {
+  try {
+    const res = await $fetch<{ ok: boolean, message: string }>('/api/profile/ai-config/test', {
+      method: 'POST',
+      body: { format, baseUrl, apiKey, model }
+    })
+    if (res.ok) aiVerifiedSigs.value.add(aiConfigSig(format, baseUrl, apiKey, model))
+    return res
+  } catch (e) {
+    return { ok: false, message: errText(e) }
+  }
+}
+
 /** 切回默认配置(平台配额),返回是否成功 */
 async function onUseDefault(): Promise<boolean> {
   if (aiBusy.value || aiMode.value === 'default') return false
@@ -591,6 +618,10 @@ const aiTestResult = ref<string | null>(null)
 const aiTestBusy = ref(false)
 
 function openAiModal() {
+  if (aiAtLimit.value) {
+    aiMsg.value = { kind: 'error', text: `最多可保存 ${AI_USER_CONFIG_LIMIT} 套配置,请先删除不再使用的配置` }
+    return
+  }
   aiModal.id = null
   aiModal.name = ''
   aiModal.format = 'chat'
@@ -626,16 +657,17 @@ async function onAiTest() {
   aiTestBusy.value = true
   aiTestResult.value = null
   try {
-    const res = await $fetch<{ ok: boolean, message: string }>('/api/profile/ai-config/test', {
-      method: 'POST',
-      body: { format: aiModal.format, baseUrl: aiModal.baseUrl, apiKey: aiModal.apiKey, model: aiModal.model }
-    })
+    const res = await testAiConfig(aiModal.format, aiModal.baseUrl, effectiveModalKey(), aiModal.model)
     aiTestResult.value = res.message
-  } catch (e) {
-    aiTestResult.value = errText(e)
   } finally {
     aiTestBusy.value = false
   }
+}
+
+/** 模态框内生效的 apiKey:留空表示沿用原配置的 key(编辑场景) */
+function effectiveModalKey(): string {
+  const existing = aiModal.id ? aiState.value.configs.find(c => c.id === aiModal.id) : undefined
+  return aiModal.apiKey.trim() || existing?.apiKey || ''
 }
 
 async function onAiSave() {
@@ -654,6 +686,13 @@ async function onAiSave() {
       thinking: false,
       // 编辑时保留原启用状态;新建/编辑都不自动切换为当前配置
       active: existing?.active
+    }
+    // 保存前强制测试连接:不通过的配置不允许保存(服务端指纹只对测试通过的配置留痕)
+    const test = await testAiConfig(cfg.format, cfg.baseUrl, cfg.apiKey, cfg.model)
+    if (!test.ok) {
+      aiTestResult.value = test.message
+      aiModalError.value = `连接测试未通过,已取消保存:${test.message}`
+      return
     }
     if (existing) {
       aiState.value.configs = aiState.value.configs.map(c => (c.id === cfg.id ? cfg : c))
@@ -724,6 +763,14 @@ async function onAiEnable() {
   if (!target || aiEnableBusy.value) return
   aiEnableBusy.value = true
   try {
+    // 启用自建配置前确保其已通过服务端测试(签名缺失则补测一次,失败中止)
+    if (target !== 'default' && !aiVerifiedSigs.value.has(aiConfigSig(target.format, target.baseUrl, target.apiKey, target.model))) {
+      const test = await testAiConfig(target.format, target.baseUrl, target.apiKey, target.model)
+      if (!test.ok) {
+        aiMsg.value = { kind: 'error', text: `「${target.name}」连接测试未通过,无法启用:${test.message}` }
+        return
+      }
+    }
     const ok = target === 'default' ? await onUseDefault() : await onAiActivate(target)
     if (ok) {
       const label = target === 'default' ? '默认配置(平台配额)' : target.name
@@ -1078,14 +1125,14 @@ watch(narrLength, v => saveNarrLength(v))
                   模型配置
                 </p>
                 <p class="text-xs text-neutral-500">
-                  默认配置用平台密钥、按量扣 token;自建配置用你的 Key 不扣平台配额,可保存多套随时切换
+                  默认配置用平台密钥、按量扣 token;自建配置用你的 Key 不扣平台配额,最多保存 {{ AI_USER_CONFIG_LIMIT }} 套随时切换
                 </p>
               </div>
               <UButton
                 color="primary"
                 variant="outline"
                 icon="i-lucide-plus"
-                :disabled="aiBusy"
+                :disabled="aiBusy || aiAtLimit"
                 @click="openAiModal"
               >
                 新建配置
