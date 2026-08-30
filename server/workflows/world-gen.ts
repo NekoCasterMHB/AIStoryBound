@@ -52,10 +52,10 @@ export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowPa
         ))
       }
 
-      // 5) 合并 + 引用校验 + 故事线(纯代码;失败率过高在此抛出)
+      // 5) 合并 + 引用校验 + 故事线(纯代码;失败率过高在此抛出;传入切段计划防 stage_detail 被进度更新覆盖)
       await step.do('merge', {
         retries: { limit: 3, delay: '10 second', backoff: 'exponential' }
-      }, () => stepMerge(ctx))
+      }, () => stepMerge(ctx, plan))
 
       // 6) 一致性检查(完整模式;失败降级为告警,不中止)
       if (task.mode !== 'eco') {

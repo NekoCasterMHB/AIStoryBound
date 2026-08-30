@@ -424,10 +424,12 @@ export async function stepPlanUnits(ctx: WorldGenCtx): Promise<UnitPlan> {
   return plan
 }
 
-/** 提取完成数(stage_detail.doneUnits 刷新) */
-async function bumpExtractProgress(ctx: WorldGenCtx, totalUnits: number): Promise<void> {
+/** 提取完成数刷新(stage_detail.doneUnits;必须保留 plan 等既有字段,进度更新会穿插在提取期间) */
+async function bumpExtractProgress(ctx: TaskRef, totalUnits: number): Promise<void> {
+  const task = await requireTask(ctx)
+  const detail = parseStageDetail(task.stageDetail)
   const c = await ctx.db.select({ n: count() }).from(worldGenUnits).where(eq(worldGenUnits.taskId, ctx.taskId)).get()
-  await markTask(ctx, { stageDetail: JSON.stringify({ doneUnits: c?.n ?? 0, totalUnits }) })
+  await markTask(ctx, { stageDetail: JSON.stringify({ doneUnits: c?.n ?? 0, totalUnits, plan: detail.plan }) })
 }
 
 /**
@@ -522,12 +524,16 @@ export async function cleanupScratch(ctx: WorldGenCtx): Promise<void> {
 }
 
 /** 步骤 4:合并全部单元提取(代码 Reduce)+ 引用校验 + 故事线 + 本地聚合草稿 → scratch/merged.json */
-export async function stepMerge(ctx: WorldGenCtx): Promise<{ okUnits: number, totalUnits: number, characters: number, storyline: number, warnings: string[] }> {
+export async function stepMerge(ctx: WorldGenCtx, planOverride?: UnitPlan): Promise<{ okUnits: number, totalUnits: number, characters: number, storyline: number, warnings: string[] }> {
   const task = await requireTask(ctx)
   await assertNotCancelled(task)
-  const detail = parseStageDetail(task.stageDetail)
-  const plan = detail.plan
-  if (!plan || plan.length === 0) throw new Error('切段计划缺失,无法合并')
+  // 切段计划:优先调用方传入(Workflow step 输出/inline 内存),否则读 stage_detail,
+  // 都没有时从 R2 原文重新推导(历史任务的进度更新曾覆盖 stage_detail 里的 plan)
+  let plan: UnitPlanEntry[] = planOverride?.units ?? parseStageDetail(task.stageDetail).plan ?? []
+  if (plan.length === 0) {
+    const { units } = await deriveUnits(ctx, task)
+    plan = units.map(u => ({ chapter: u.chapter, label: u.label, startChar: u.startChar, chars: u.content.length }))
+  }
 
   const rows = await ctx.db.select({ unitIndex: worldGenUnits.unitIndex, result: worldGenUnits.result })
     .from(worldGenUnits)
@@ -813,7 +819,7 @@ export async function runWorldGenPipelineInline(ctx: WorldGenCtx): Promise<void>
     await pool(plan.units.map((_, i) => i), EXTRACT_CONCURRENCY, async (i) => {
       await extractUnitAt(ctx, plan, i)
     })
-    await stepMerge(ctx)
+    await stepMerge(ctx, plan)
     if (task.mode !== 'eco') await stepCheck(ctx)
     await stepSynthesize(ctx)
     await stepFinalize(ctx)
