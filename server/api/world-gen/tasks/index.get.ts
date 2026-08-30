@@ -19,9 +19,9 @@ export default defineEventHandler(async (event) => {
     .orderBy(desc(worldGenTasks.createdAt))
     .limit(50)
     .all()
-  // 自愈:停在 uploaded 超时的任务重新触发启动(启动丢失/Workflow binding 曾缺失等场景)
+  // 自愈与失败判定:停在 uploaded 的任务按停留时长重启或判失败(分发异常/实例 errored 时转成可见错误)
   for (const row of rows) {
-    await ensureWorldGenTaskStarted(event, row)
+    await ensureWorldGenTaskStarted(event, row, db)
   }
   return { tasks: rows.map(worldGenTaskToDTO) }
 })

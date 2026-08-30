@@ -38,8 +38,9 @@ import { parseNovelBytes } from './novel-parser'
 const MAX_FAIL_RATIO = 1 / 3
 /** 提取并发(与浏览器端 EXTRACT_CONCURRENCY 一致) */
 export const EXTRACT_CONCURRENCY = 4
-/** running 状态超过该时长视为孤儿(Workflow 被强杀),由状态接口兜底判失败并退款 */
-const STALE_RUNNING_MS = 2 * 60 * 60 * 1000
+/** running 状态超过该时长视为孤儿(Workflow 被强杀/执行环境异常),由状态接口兜底判失败并退款;
+ *  正常运行时提取单元会持续更新任务行,最长的静默段是检查/成书的单次 AI 调用(约 10 分钟),30 分钟足够安全 */
+const STALE_RUNNING_MS = 30 * 60 * 1000
 
 // ---- R2 key 约定 ----
 
@@ -201,8 +202,8 @@ export async function clearTaskKey(ctx: TaskRef): Promise<void> {
     .run()
 }
 
-/** 失败终态:置状态 + 结算 + 清 key(Workflow run 顶层 catch 与孤儿清扫共用) */
-export async function markTaskFailed(ctx: WorldGenCtx, message: string): Promise<void> {
+/** 失败终态:置状态 + 结算 + 清 key(Workflow run 顶层 catch 与孤儿清扫共用;仅需 db + taskId) */
+export async function markTaskFailed(ctx: TaskRef, message: string): Promise<void> {
   await markTask(ctx, { status: 'failed', error: message.slice(0, 800) })
   await settleTaskBilling(ctx)
   await clearTaskKey(ctx)
