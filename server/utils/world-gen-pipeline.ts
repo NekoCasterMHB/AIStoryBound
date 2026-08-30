@@ -123,10 +123,10 @@ export class WorldGenCancelledError extends Error {
   }
 }
 
-/** 平台模式逐笔扣费时余额不足:致命错误,终止整个任务(消息直接展示给用户) */
+/** 平台模式逐笔扣费余额不足:任务转入 paused(充值后可续跑),消息直接展示给用户 */
 export class InsufficientTokensError extends Error {
   constructor() {
-    super('token 余额不足,任务已中止(已完成部分的消耗已扣费);请充值后重新上传')
+    super('token 余额不足,任务已暂停;充值后可在书架「云端生成任务」中继续')
   }
 }
 
@@ -154,13 +154,22 @@ export function parseStageDetail(raw: string | null): ExtendedStageDetail {
 // ---- 计费与账目 ----
 
 /**
- * 累计实耗:tokens_used 增量 + ai_usage 落账 + 平台模式逐笔实扣余额。
- * 平台新计费(reserveTaken=0):每次调用完成后原子扣除该笔真实消耗,余额不足抛 InsufficientTokensError;
- * 旧任务(reserveTaken=1,创建时已预扣估算额)不逐笔扣,仅记账,终态结算退差额。
+ * 累计实耗:平台新计费(reserveTaken=0)先逐笔原子扣余额(不足抛 InsufficientTokensError),
+ * 再落 ai_usage 账 + tokens_used 增量;旧任务(reserveTaken=1,创建时已预扣)仅记账。
+ * 扣费必须先于调用方的结果落库:余额不足时该次调用结果不计入,续跑会重跑该单元并重新扣费。
  */
 export async function recordTaskUsage(ctx: TaskRef, task: WorldGenTaskRow, usage: TokenUsage): Promise<void> {
   const tokens = Math.max(0, Math.round(usage.totalTokens ?? 0))
   if (tokens <= 0) return
+  if (task.keySource === 'platform' && task.reserveTaken === 0) {
+    const claimed = await ctx.db.update(usersTable)
+      .set({ aiTokenBalance: sql`${usersTable.aiTokenBalance} - ${tokens}` })
+      .where(and(eq(usersTable.id, task.userId), sql`${usersTable.aiTokenBalance} >= ${tokens}`))
+      .run()
+    if (claimed.meta.changes === 0) {
+      throw new InsufficientTokensError()
+    }
+  }
   try {
     await ctx.db.insert(aiUsage).values({
       id: uuid(),
@@ -177,16 +186,6 @@ export async function recordTaskUsage(ctx: TaskRef, task: WorldGenTaskRow, usage
       .run()
   } catch (e) {
     console.error('[world-gen] 用量记账失败', { taskId: ctx.taskId, tokens }, e)
-  }
-  // 平台新计费:逐笔实扣(原子条件扣费,余额不足即中止任务)
-  if (task.keySource === 'platform' && task.reserveTaken === 0 && tokens > 0) {
-    const claimed = await ctx.db.update(usersTable)
-      .set({ aiTokenBalance: sql`${usersTable.aiTokenBalance} - ${tokens}` })
-      .where(and(eq(usersTable.id, task.userId), sql`${usersTable.aiTokenBalance} >= ${tokens}`))
-      .run()
-    if (claimed.meta.changes === 0) {
-      throw new InsufficientTokensError()
-    }
   }
 }
 
@@ -228,6 +227,12 @@ export async function clearTaskKey(ctx: TaskRef): Promise<void> {
 export async function markTaskFailed(ctx: TaskRef, message: string): Promise<void> {
   await markTask(ctx, { status: 'failed', error: message.slice(0, 800) })
   await settleTaskBilling(ctx)
+  await clearTaskKey(ctx)
+}
+
+/** 余额不足终态:任务转 paused(进度/单元明细保留,充值后可续跑);已消耗部分照常扣费,无预扣可退 */
+export async function markTaskPaused(ctx: TaskRef, message: string): Promise<void> {
+  await markTask(ctx, { status: 'paused', error: message.slice(0, 800) })
   await clearTaskKey(ctx)
 }
 
@@ -492,11 +497,12 @@ export async function extractUnitAt(ctx: WorldGenCtx, plan: UnitPlan, index: num
         temperature: 0.2
       })
       const extraction = normalizeExtraction(data)
+      // 先扣费再落单元结果:余额不足抛出时本单元不落库,续跑会重跑该单元并重新扣费,不漏账
+      await recordTaskUsage(ctx, task, usage)
       await ctx.db.insert(worldGenUnits)
         .values({ taskId: ctx.taskId, unitIndex: index, result: JSON.stringify(extraction), tokens: Math.max(0, Math.round(usage.totalTokens ?? 0)) })
         .onConflictDoNothing()
         .run()
-      await recordTaskUsage(ctx, task, usage)
       await bumpExtractProgress(ctx, plan.units.length)
       return { ok: true, tokens: Math.max(0, Math.round(usage.totalTokens ?? 0)) }
     } catch (e) {
@@ -852,6 +858,10 @@ export async function runWorldGenPipelineInline(ctx: WorldGenCtx): Promise<void>
     await stepFinalize(ctx)
   } catch (e) {
     if (e instanceof WorldGenCancelledError) return
+    if (e instanceof InsufficientTokensError) {
+      await markTaskPaused(ctx, e.message).catch(() => {})
+      return
+    }
     console.error('[world-gen] inline 管线失败', { taskId: ctx.taskId }, e)
     await markTaskFailed(ctx, e instanceof Error ? e.message : String(e)).catch(() => {})
   }

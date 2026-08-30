@@ -96,7 +96,14 @@ export async function cancelWorldGenTask(id: string): Promise<void> {
   await $fetch(`${WORLD_GEN_TASKS_URL}/${id}`, { method: 'DELETE' })
 }
 
-/** 轮询任务直至终态(completed/failed/cancelled);onUpdate 每次快照回调,signal 可中断 */
+/** 恢复暂停中的任务(充值后继续;已完成单元自动复用) */
+export async function resumeWorldGenTask(id: string): Promise<WorldGenTaskDTO> {
+  const res = await $fetch<{ task: WorldGenTaskDTO | null }>(`${WORLD_GEN_TASKS_URL}/${id}/resume`, { method: 'POST' })
+  if (!res.task) throw new Error('继续失败:服务端未返回任务')
+  return res.task
+}
+
+/** 轮询任务直至终态(completed/failed/cancelled/paused);onUpdate 每次快照回调,signal 可中断 */
 export async function pollWorldGenTask(
   id: string,
   onUpdate: (task: WorldGenTaskDTO) => void,
@@ -107,7 +114,7 @@ export async function pollWorldGenTask(
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
     const task = await fetchWorldGenTask(id)
     onUpdate(task)
-    if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
+    if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled' || task.status === 'paused') {
       return task
     }
     await new Promise<void>((resolve, reject) => {
@@ -140,6 +147,7 @@ export function worldGenTaskPercent(task: WorldGenTaskDTO): number {
     case 'uploaded':
       return 2
     case 'running':
+    case 'paused': // 暂停:按当前阶段显示已推进到的位置
       break
   }
   const { doneUnits, totalUnits } = task.stageDetail
@@ -169,6 +177,7 @@ export function worldGenStageLabel(task: WorldGenTaskDTO): string {
   if (task.status === 'uploaded') return '排队中'
   if (task.status === 'failed') return '失败'
   if (task.status === 'cancelled') return '已取消'
+  if (task.status === 'paused') return '已暂停(余额不足)'
   if (task.status === 'completed') return '已完成'
   switch (task.stage) {
     case 'parse': return '解析原文'

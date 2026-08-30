@@ -6,9 +6,9 @@
 //  - 失败:run 顶层 catch 统一 markTaskFailed(置状态 + 按实耗结算 + 清 key 暂存)。
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers'
 import {
-  createWorldGenCtx, extractUnitAt, markTask, markTaskFailed, stepAuthorAi, stepCheck,
+  createWorldGenCtx, extractUnitAt, markTask, markTaskFailed, markTaskPaused, stepAuthorAi, stepCheck,
   stepFinalize, stepMerge, stepParseSource, stepPlanUnits, stepSynthesize, requireTask,
-  WorldGenCancelledError, EXTRACT_CONCURRENCY
+  WorldGenCancelledError, InsufficientTokensError, EXTRACT_CONCURRENCY
 } from '../utils/world-gen-pipeline'
 import type { WorldGenEnv } from '../utils/world-gen-pipeline'
 
@@ -73,6 +73,11 @@ export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowPa
       }, () => stepFinalize(ctx))
     } catch (e) {
       if (e instanceof WorldGenCancelledError) return
+      if (e instanceof InsufficientTokensError) {
+        // 余额不足:任务转 paused(进度/单元明细保留),充值后在书架手动续跑,这里正常结束实例
+        await markTaskPaused(ctx, e.message).catch(() => {})
+        return
+      }
       console.error('[world-gen workflow] 任务失败', { taskId: event.payload.taskId }, e)
       await markTaskFailed(ctx, e instanceof Error ? e.message : String(e)).catch(() => {})
     }

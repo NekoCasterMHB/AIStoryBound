@@ -284,6 +284,17 @@ async function startCloudGeneration() {
       genState.value.progress = taskToProgress(t)
     }, ctrl.signal)
     if (seq !== runSeq) return
+    if (final.status === 'paused') {
+      // 余额不足自动暂停:提示充值后到书架继续(已完成部分不重复扣费),回到上传态
+      toast.add({
+        title: '任务已暂停(余额不足)',
+        description: '充值后可在书架「云端生成任务」中继续;已完成部分不会重复扣费',
+        color: 'warning',
+        icon: 'i-lucide-pause-circle'
+      })
+      genState.value = { phase: 'idle', title: '', progress: null, error: null, resultId: null, tokensUsed: 0 }
+      return
+    }
     if (final.status !== 'completed') {
       throw new Error(final.error || (final.status === 'cancelled' ? '任务已取消' : '云端生成任务失败'))
     }

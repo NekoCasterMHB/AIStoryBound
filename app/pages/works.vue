@@ -11,7 +11,7 @@ import type { PrebuiltWorld } from '../utils/prebuiltWorld'
 import { setAdultModeEnabled } from '../utils/adultMode'
 import {
   fetchWorldGenTasks, cancelWorldGenTask, downloadAndInstallWorldTask,
-  worldGenTaskPercent, worldGenStageLabel
+  resumeWorldGenTask, worldGenTaskPercent, worldGenStageLabel
 } from '../utils/worldGenCloud'
 import type { WorldGenTaskDTO } from '../utils/worldGenCloud'
 import { type LocalWork, type LocalGame, type GameState, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
@@ -420,12 +420,30 @@ async function cancelCloudTask(t: WorldGenTaskDTO) {
   }
 }
 
+/** 继续暂停中的任务(充值后手动恢复;已完成单元自动复用,不重复扣费) */
+const resumingTaskId = ref<string | null>(null)
+
+async function resumeCloudTask(t: WorldGenTaskDTO) {
+  if (resumingTaskId.value) return
+  resumingTaskId.value = t.id
+  try {
+    await resumeWorldGenTask(t.id)
+    toast.add({ title: '任务已继续', description: '充值已到账,任务从暂停处继续执行', color: 'success' })
+    await loadCloudTasks()
+  } catch (e) {
+    toast.add({ title: '继续失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    resumingTaskId.value = null
+  }
+}
+
 /** 活动任务存在时每 3s 轮询;全部终态后停止 */
 watch(hasActiveCloudTasks, (active) => {
   if (active && !cloudPollTimer) {
-    cloudPollTimer = setInterval(() => { void loadCloudTasks() }, 3000)
-  }
-  else if (!active && cloudPollTimer) {
+    cloudPollTimer = setInterval(() => {
+      void loadCloudTasks()
+    }, 3000)
+  } else if (!active && cloudPollTimer) {
     clearInterval(cloudPollTimer)
     cloudPollTimer = null
   }
@@ -752,7 +770,9 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                         ? 'i-lucide-circle-x'
                         : t.status === 'cancelled'
                           ? 'i-lucide-circle-slash'
-                          : 'i-lucide-loader-circle'"
+                          : t.status === 'paused'
+                            ? 'i-lucide-pause-circle'
+                            : 'i-lucide-loader-circle'"
                     class="size-4 shrink-0"
                     :class="t.status === 'completed'
                       ? 'text-green-500'
@@ -760,13 +780,15 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                         ? 'text-red-500'
                         : t.status === 'cancelled'
                           ? 'text-neutral-400'
-                          : 'animate-spin text-primary-500'"
+                          : t.status === 'paused'
+                            ? 'text-amber-500'
+                            : 'animate-spin text-primary-500'"
                   />
                   <p class="min-w-0 flex-1 truncate text-sm font-semibold">
                     {{ t.title || '未命名' }}
                   </p>
                   <UBadge
-                    :color="t.status === 'completed' ? 'success' : t.status === 'failed' ? 'error' : t.status === 'cancelled' ? 'neutral' : 'info'"
+                    :color="t.status === 'completed' ? 'success' : t.status === 'failed' ? 'error' : t.status === 'cancelled' ? 'neutral' : t.status === 'paused' ? 'warning' : 'info'"
                     variant="soft"
                     size="sm"
                   >
@@ -799,7 +821,17 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     @click="installCloudTask(t)"
                   />
                   <UButton
-                    v-if="t.status === 'uploaded' || t.status === 'running'"
+                    v-if="t.status === 'paused'"
+                    label="继续任务"
+                    icon="i-lucide-play"
+                    color="primary"
+                    variant="soft"
+                    size="sm"
+                    :loading="resumingTaskId === t.id"
+                    @click="resumeCloudTask(t)"
+                  />
+                  <UButton
+                    v-if="t.status === 'uploaded' || t.status === 'running' || t.status === 'paused'"
                     label="取消"
                     icon="i-lucide-circle-stop"
                     color="error"
@@ -808,7 +840,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     @click="cancelCloudTask(t)"
                   />
                   <UButton
-                    v-if="t.status === 'failed' || t.status === 'cancelled' || t.status === 'completed'"
+                    v-if="t.status !== 'running' && t.status !== 'uploaded'"
                     label="删除记录"
                     icon="i-lucide-trash-2"
                     color="neutral"
@@ -824,7 +856,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                   {{ t.error }}
                 </p>
                 <UProgress
-                  v-if="t.status === 'running' || t.status === 'uploaded'"
+                  v-if="t.status === 'running' || t.status === 'uploaded' || t.status === 'paused'"
                   :model-value="worldGenTaskPercent(t)"
                   size="xs"
                   class="mt-2"
@@ -834,6 +866,12 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                   class="mt-1 text-xs text-neutral-500"
                 >
                   {{ worldGenStageLabel(t) }} · {{ worldGenTaskPercent(t) }}% · 生成期间可离开页面,完成后自动安装进书架
+                </p>
+                <p
+                  v-else-if="t.status === 'paused'"
+                  class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+                >
+                  已在 {{ worldGenTaskPercent(t) }}% 处暂停(余额不足);充值后点击「继续任务」从断点恢复,已完成部分不重复扣费
                 </p>
               </UCard>
             </div>

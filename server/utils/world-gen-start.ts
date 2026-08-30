@@ -33,14 +33,14 @@ function getEnv(event: H3Event): StartEnv | undefined {
 }
 
 /**
- * 启动(或重启)一次任务执行。幂等:Workflow 实例 id = 任务 id,重复 create 无副作用。
- * 返回实际启动方式,便于日志与接口回显。
+ * 启动(或重启)一次任务执行。幂等:实例 id 默认 = 任务 id,重复 create 报 exist 视为已在跑;
+ * 续跑(pause→resume)传新 instanceId(如 `${taskId}-r<时间戳>`)另起实例,单元明细按 taskId 复用断点。
  */
-export async function startWorldGenTask(event: H3Event, taskId: string): Promise<'workflow' | 'inline'> {
+export async function startWorldGenTask(event: H3Event, taskId: string, instanceId = taskId): Promise<'workflow' | 'inline'> {
   const env = getEnv(event)
   if (env?.WORLD_GEN) {
     try {
-      await env.WORLD_GEN.create({ id: taskId, params: { taskId } })
+      await env.WORLD_GEN.create({ id: instanceId, params: { taskId } })
       return 'workflow'
     } catch (e) {
       const msg = (e as Error)?.message ?? ''

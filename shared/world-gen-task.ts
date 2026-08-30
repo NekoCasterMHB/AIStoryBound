@@ -10,7 +10,7 @@ import type { GenLimits } from './gen-limits'
 /** full=完整(提取+检查+AI成书)| eco=节约(无检查,人物卡本地直拼) */
 export type WorldGenMode = 'full' | 'eco'
 
-export type WorldGenTaskStatus = 'uploaded' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type WorldGenTaskStatus = 'uploaded' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
 
 /** 管线阶段(与 app/utils/worldGen.ts 的 GenerateProgress.stage 对齐,复用生成页 stepper) */
 export type WorldGenStage = 'parse' | 'author' | 'extract' | 'merge' | 'check' | 'synthesize' | 'done'

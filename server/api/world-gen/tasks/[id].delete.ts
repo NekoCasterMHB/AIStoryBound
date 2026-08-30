@@ -1,6 +1,6 @@
 // server/api/world-gen/tasks/[id].delete.ts
 // 取消或删除云端生成任务:
-//  - uploaded/running:置 cancelled + 按实耗结算 + 清 key 暂存 + terminate Workflow 实例;
+//  - uploaded/running/paused:置 cancelled + 结算(旧预扣任务退差额)+ 清 key 暂存 + terminate Workflow 实例;
 //  - completed/failed/cancelled:删除任务行(提取单元明细级联删除;R2 缓存为共享资源不删)。
 import { and, eq } from 'drizzle-orm'
 import { useD1 } from '../../../utils/d1'
@@ -19,7 +19,7 @@ export default defineEventHandler(async (event) => {
     .get()
   if (!row) throw createError({ statusCode: 404, statusMessage: '任务不存在' })
 
-  if (row.status === 'uploaded' || row.status === 'running') {
+  if (row.status === 'uploaded' || row.status === 'running' || row.status === 'paused') {
     await db.update(worldGenTasks)
       .set({ status: 'cancelled', error: null, updatedAt: new Date() })
       .where(eq(worldGenTasks.id, id))
