@@ -15,7 +15,8 @@ import { isAiApiFormat } from '../../../shared/ai-config'
 import { getSkillBucket } from '../../utils/r2'
 import { encryptJson } from '../../utils/crypto'
 import { aiConfigFingerprint } from '../../utils/ai-fingerprint'
-import { worldSourceKey, createWorldGenCtx, runWorldGenPipelineInline } from '../../utils/world-gen-pipeline'
+import { worldSourceKey } from '../../utils/world-gen-pipeline'
+import { startWorldGenTask } from '../../utils/world-gen-start'
 import { worldGenTaskToDTO } from '../../utils/world-gen-dto'
 
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024
@@ -140,24 +141,10 @@ export default defineEventHandler(async (event) => {
     updatedAt: now
   }).run()
 
-  // ---- 启动执行:Workflow binding 优先;本地 dev 无 binding 时内联兜底 ----
-  const env = (event.context as unknown as { cloudflare?: { env?: Env } }).cloudflare?.env
-  if (env?.WORLD_GEN) {
-    try {
-      await env.WORLD_GEN.create({ id: taskId, params: { taskId } })
-    } catch (e) {
-      // 实例已存在(创建重试)= 幂等,其余错误视为启动失败
-      const msg = (e as Error)?.message ?? ''
-      if (!/exist|duplicate/i.test(msg)) {
-        console.error('[world-gen] Workflow 启动失败,回退内联执行', { taskId }, e)
-        event.waitUntil(runWorldGenPipelineInline(createWorldGenCtx(env, taskId)))
-      }
-    }
-  } else {
-    console.warn('[world-gen] 无 WORLD_GEN binding(本地 dev),内联执行兜底', { taskId })
-    event.waitUntil(runWorldGenPipelineInline(createWorldGenCtx(env!, taskId)))
-  }
+  // ---- 启动执行:Workflow binding 优先;无 binding(本地 dev/生产缺失)时内联兜底 ----
+  const started = await startWorldGenTask(event, taskId)
+  console.info('[world-gen] 任务已启动', { taskId, started })
 
   const row = await db.select().from(worldGenTasks).where(eq(worldGenTasks.id, taskId)).get()
-  return { task: row ? worldGenTaskToDTO(row) : null }
+  return { task: row ? worldGenTaskToDTO(row) : null, started }
 })

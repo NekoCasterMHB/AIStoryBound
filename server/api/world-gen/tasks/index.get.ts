@@ -6,6 +6,7 @@ import { useD1 } from '../../../utils/d1'
 import { requireUser } from '../../../utils/authz'
 import { worldGenTasks } from '../../../db/schema'
 import { sweepStaleWorldGenTasks } from '../../../utils/world-gen-pipeline'
+import { ensureWorldGenTaskStarted } from '../../../utils/world-gen-start'
 import { worldGenTaskToDTO } from '../../../utils/world-gen-dto'
 
 export default defineEventHandler(async (event) => {
@@ -18,5 +19,9 @@ export default defineEventHandler(async (event) => {
     .orderBy(desc(worldGenTasks.createdAt))
     .limit(50)
     .all()
+  // 自愈:停在 uploaded 超时的任务重新触发启动(启动丢失/Workflow binding 曾缺失等场景)
+  for (const row of rows) {
+    await ensureWorldGenTaskStarted(event, row)
+  }
   return { tasks: rows.map(worldGenTaskToDTO) }
 })
