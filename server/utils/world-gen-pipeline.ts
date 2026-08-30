@@ -123,6 +123,13 @@ export class WorldGenCancelledError extends Error {
   }
 }
 
+/** 平台模式逐笔扣费时余额不足:致命错误,终止整个任务(消息直接展示给用户) */
+export class InsufficientTokensError extends Error {
+  constructor() {
+    super('token 余额不足,任务已中止(已完成部分的消耗已扣费);请充值后重新上传')
+  }
+}
+
 export async function markTask(ctx: TaskRef, patch: Partial<typeof worldGenTasks.$inferInsert>): Promise<void> {
   await ctx.db.update(worldGenTasks)
     .set({ ...patch, updatedAt: new Date() })
@@ -146,7 +153,11 @@ export function parseStageDetail(raw: string | null): ExtendedStageDetail {
 
 // ---- 计费与账目 ----
 
-/** 累计实耗:tokens_used 增量 + ai_usage 落账(平台/用户 key 两种模式都记,展示与统计用) */
+/**
+ * 累计实耗:tokens_used 增量 + ai_usage 落账 + 平台模式逐笔实扣余额。
+ * 平台新计费(reserveTaken=0):每次调用完成后原子扣除该笔真实消耗,余额不足抛 InsufficientTokensError;
+ * 旧任务(reserveTaken=1,创建时已预扣估算额)不逐笔扣,仅记账,终态结算退差额。
+ */
 export async function recordTaskUsage(ctx: TaskRef, task: WorldGenTaskRow, usage: TokenUsage): Promise<void> {
   const tokens = Math.max(0, Math.round(usage.totalTokens ?? 0))
   if (tokens <= 0) return
@@ -167,15 +178,26 @@ export async function recordTaskUsage(ctx: TaskRef, task: WorldGenTaskRow, usage
   } catch (e) {
     console.error('[world-gen] 用量记账失败', { taskId: ctx.taskId, tokens }, e)
   }
+  // 平台新计费:逐笔实扣(原子条件扣费,余额不足即中止任务)
+  if (task.keySource === 'platform' && task.reserveTaken === 0 && tokens > 0) {
+    const claimed = await ctx.db.update(usersTable)
+      .set({ aiTokenBalance: sql`${usersTable.aiTokenBalance} - ${tokens}` })
+      .where(and(eq(usersTable.id, task.userId), sql`${usersTable.aiTokenBalance} >= ${tokens}`))
+      .run()
+    if (claimed.meta.changes === 0) {
+      throw new InsufficientTokensError()
+    }
+  }
 }
 
 /**
- * 平台模式终态结算:按 estimated - used 多退少补(封底 0,不追缴)。
- * 幂等:退款后把 estimated_tokens 清零作为标记,重复调用不再退。
+ * 平台旧计费(创建时预扣估算额)终态结算:按 estimated - used 多退少补(封底 0,不追缴)。
+ * 幂等:退款后把 estimated_tokens 清零作为标记,重复调用不再退。新计费任务(逐笔实扣)无预扣、直接跳过。
  */
 export async function settleTaskBilling(ctx: TaskRef): Promise<void> {
   const task = await requireTask(ctx)
   if (task.keySource !== 'platform') return
+  if (task.reserveTaken !== 1) return
   if (task.estimatedTokens <= 0) return
   const refund = Math.max(0, task.estimatedTokens - Math.max(0, task.tokensUsed))
   try {
@@ -389,8 +411,9 @@ export async function stepAuthorAi(ctx: WorldGenCtx): Promise<string | null> {
       await markTask(ctx, { author })
       return author
     }
-  } catch {
-    // 作者识别失败不中止管线
+  } catch (e) {
+    // 余额不足为致命错误:终止任务;其余作者识别失败不中止管线
+    if (e instanceof InsufficientTokensError) throw e
   }
   return null
 }
@@ -477,6 +500,8 @@ export async function extractUnitAt(ctx: WorldGenCtx, plan: UnitPlan, index: num
       await bumpExtractProgress(ctx, plan.units.length)
       return { ok: true, tokens: Math.max(0, Math.round(usage.totalTokens ?? 0)) }
     } catch (e) {
+      // 余额不足为致命错误:直接终止任务(带明确消息),不做单元级重试
+      if (e instanceof InsufficientTokensError) throw e
       lastErr = e
       await assertNotCancelled(await requireTask(ctx))
       if (!isRetryableError(e)) break
@@ -636,6 +661,8 @@ export async function stepCheck(ctx: WorldGenCtx): Promise<{ warnings: string[] 
       })
     }
   } catch (e) {
+    // 余额不足为致命错误:终止任务,不降级为告警
+    if (e instanceof InsufficientTokensError) throw e
     warnings.push(`一致性检查失败: ${(e as Error).message}(仅保留代码检测冲突)`)
   }
   await putScratch(ctx, 'merged', merged)

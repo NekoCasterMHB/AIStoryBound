@@ -451,6 +451,7 @@ CREATE TABLE IF NOT EXISTS `world_gen_tasks` (
 	`key_ciphertext` text,
 	`key_iv` text,
 	`estimated_tokens` integer DEFAULT 0 NOT NULL,
+	`reserve_taken` integer DEFAULT 1 NOT NULL,
 	`tokens_used` integer DEFAULT 0 NOT NULL,
 	`result_key` text,
 	`error` text,

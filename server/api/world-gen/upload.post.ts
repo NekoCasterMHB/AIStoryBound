@@ -5,7 +5,7 @@
 // 自建 key:格式校验 + 指纹准入(与 /api/ai/chat 同门槛)→ AES-GCM 加密暂存到任务行,
 // 任务终态即清空(clearTaskKey / 孤儿清扫兜底);用户 key 模式不扣平台额度、只记账。
 // 本地 dev(env.WORLD_GEN 缺失)回退 waitUntil 内联执行同一套管线,保证可调试。
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { useD1 } from '../../utils/d1'
 import { requireUser } from '../../utils/authz'
 import { user as usersTable, aiConfigVerifications, worldGenTasks } from '../../db/schema'
@@ -98,21 +98,21 @@ export default defineEventHandler(async (event) => {
     await bucket.put(sourceKey, bytes)
   }
 
-  // ---- 平台模式预授权(自建 key 模式零扣费) ----
+  // ---- 平台模式:余额充足性预检(不预扣;真实消耗在管线中逐笔原子扣费,余额不足任务中止) ----
   const db = useD1(event)
   const chars = Number.isFinite(charCountRaw) && charCountRaw > 0
-    ? Math.min(Math.round(charCountRaw), bytes.length) // 字符数不可能超过字节数,防客户端虚报放大预扣
+    ? Math.min(Math.round(charCountRaw), bytes.length) // 字符数不可能超过字节数,防客户端虚报
     : bytes.length
-  const estimatedTokens = escrow ? 0 : estimateWorldGenTokens(chars, mode === 'eco')
+  const estimatedTokens = estimateWorldGenTokens(chars, mode === 'eco')
   if (!escrow && estimatedTokens > 0) {
-    const claimed = await db.update(usersTable)
-      .set({ aiTokenBalance: sql`${usersTable.aiTokenBalance} - ${estimatedTokens}` })
-      .where(and(eq(usersTable.id, sessUser.id), sql`${usersTable.aiTokenBalance} >= ${estimatedTokens}`))
-      .run()
-    if (claimed.meta.changes === 0) {
+    const me = await db.select({ aiTokenBalance: usersTable.aiTokenBalance })
+      .from(usersTable)
+      .where(eq(usersTable.id, sessUser.id))
+      .get()
+    if (!me || (me.aiTokenBalance ?? 0) < estimatedTokens) {
       throw createError({
         statusCode: 402,
-        statusMessage: 'token 余额不足以预扣本次生成的预估消耗,请到个人中心购买加油包或使用自己的 API Key'
+        statusMessage: `token 余额不足以支撑本次生成的预估消耗(约 ${estimatedTokens.toLocaleString()}),请到个人中心购买加油包或使用自己的 API Key`
       })
     }
   }
@@ -135,6 +135,7 @@ export default defineEventHandler(async (event) => {
     keyCiphertext: escrow?.ciphertext ?? null,
     keyIv: escrow?.iv ?? null,
     estimatedTokens,
+    reserveTaken: 0,
     tokensUsed: 0,
     warnings: '[]',
     createdAt: now,

@@ -561,8 +561,10 @@ export const worldGenTasks = sqliteTable('world_gen_tasks', {
   keySource: text('key_source').notNull().default('platform'),
   keyCiphertext: text('key_ciphertext'),
   keyIv: text('key_iv'),
-  /** 平台模式预授权额(结算按实耗多退少补);user 模式恒 0 */
+  /** 平台模式预估额(展示/预检参考;新计费为真实消耗逐笔扣费,创建时不预扣) */
   estimatedTokens: integer('estimated_tokens').notNull().default(0),
+  /** 创建时是否预扣了估算额(旧任务=1,结束退差额;逐笔实扣模式=0,无退款) */
+  reserveTaken: integer('reserve_taken').notNull().default(1),
   /** 实耗累计(两种模式都记,展示用) */
   tokensUsed: integer('tokens_used').notNull().default(0),
   /** 成书 world json 的 R2 key:world-cache/<hash>-<mode>.json */
