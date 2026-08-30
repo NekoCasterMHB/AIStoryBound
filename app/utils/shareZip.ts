@@ -4,11 +4,11 @@
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import { uuid } from '#shared/novel'
 import type { ChapterSegment, HeatLevel, KinkProfileEntry, LocalGame, LocalWork, WorldOverlay } from '#shared/novel'
+import { SHARE_FORMAT, SHARE_VERSION } from '#shared/share-format'
 import { buildGameTxt, sanitizeFilename } from './exportStory'
 
-/** 分享包格式标识:manifest.json 中的 format 字段,与本应用导出的包互相匹配 */
-export const SHARE_FORMAT = 'aisb-share'
-export const SHARE_VERSION = 1
+/** 分享包格式标识:manifest.json 中的 format 字段,与本应用导出的包互相匹配(常量定义在 shared/share-format) */
+export { SHARE_FORMAT, SHARE_VERSION }
 /** 单文件上限:超过视为异常(防异常大包拖垮浏览器) */
 const MAX_ZIP_BYTES = 64 * 1024 * 1024
 
@@ -192,13 +192,12 @@ function normalizeWork(raw: unknown): LocalWork {
 }
 
 /**
- * 校验 ZIP 分享包并重建为个人作品(不落库,由调用方保存)。
+ * 校验 ZIP 分享包字节并重建为个人作品(不落库,由调用方保存)。
  * 失败时抛出带中文说明的 Error,调用方按错误提示用户。
  */
-export async function importWorkFromZip(file: File): Promise<LocalWork> {
-  if (file.size > MAX_ZIP_BYTES) throw new Error('分享包过大(超过 64MB),无法导入')
+export async function importWorkFromBytes(bytes: Uint8Array): Promise<LocalWork> {
+  if (bytes.length > MAX_ZIP_BYTES) throw new Error('分享包过大(超过 64MB),无法导入')
 
-  const bytes = new Uint8Array(await file.arrayBuffer())
   // ZIP 魔数 PK(空包为 PK\x05\x06)
   if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
     throw new Error('不是有效的 ZIP 文件(文件头不正确)')
@@ -222,4 +221,9 @@ export async function importWorkFromZip(file: File): Promise<LocalWork> {
     throw new Error('work.json 解析失败,文件已损坏')
   }
   return normalizeWork(parsed)
+}
+
+/** File 入口(书架「导入 ZIP 分享包」):读出字节后走 importWorkFromBytes */
+export async function importWorkFromZip(file: File): Promise<LocalWork> {
+  return importWorkFromBytes(new Uint8Array(await file.arrayBuffer()))
 }

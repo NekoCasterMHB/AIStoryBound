@@ -4,10 +4,10 @@
 // 用户在预置入口直接使用预生成世界,0 token、秒进选角;自定义生成(扣 token)保留为可选。
 //
 // 用法:
-//   AI_API_KEY=xxx [AI_BASE_URL=xxx] [AI_MODEL=xxx] pnpm prebuild:presets [--eco] [--only=巴掌印,撩愈] [--force]
+//   pnpm prebuild:presets [--eco] [--only=巴掌印,撩愈] [--force]
 //  - 默认跳过已有结果(可断点续跑);--force 覆盖重跑
 //  - 完整模式默认;--eco 走节约模式(无一致性检查、人物卡本地直拼,约省一半 token)
-//  - AI 配置也可放仓库根 .env(脚本自动加载,不入库)
+//  - AI 配置直接写在下方 SCRIPT_AI_CONFIG(脚本专用,独立于控制台/网页中继配置)
 // 跑完后检查 public/worlds/*.json,提交 git 部署即对全用户生效;重新生成重跑 --force 再提交。
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -26,15 +26,29 @@ import {
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-// 尝试加载本地密钥文件(Node 20.12+ 内置;不存在则忽略):仓库根 .env,其次是 wrangler 的 .dev.vars
-for (const f of ['.env', '.dev.vars']) {
-  try {
-    process.loadEnvFile(join(root, f))
-    break
-  } catch {
-    // 继续下一个来源,最后读进程环境变量
-  }
+// ---- 脚本专用 AI 配置(NewAPI 渠道连接信息;独立于控制台/网页中继配置,只供本脚本使用) ----
+// 注意:key 直接写在脚本里,本文件会随 git 提交——仅适用于私有仓库,公开仓库请改回环境变量注入
+
+const SCRIPT_AI_CONFIG = {
+  _type: 'newapi_channel_conn' as const,
+  url: 'https://api.yhlxj.ai',
+  key: 'sk-e7KAh6AbT09ctoNSH9jQW3jNVKIPsB9VaeJWmh9IPuNNmW3f',
+  /** 渠道可用模型(grok-4.3 上游故障 502,4.6 已实测可用;JSON 模式/中文指令均正常) */
+  model: 'grok-4.6'
 }
+
+/** 规范化 base url:去尾部斜杠;不带路径时补 /v1(NewAPI/OpenAI 兼容约定,与 .dev.vars 旧配置同型) */
+function normalizeBaseUrl(raw: string): string {
+  const trimmed = raw.replace(/\/+$/, '')
+  try {
+    const u = new URL(trimmed)
+    if (u.pathname === '/' || u.pathname === '') return `${trimmed}/v1`
+  } catch {
+    // 非法 URL 交由后续请求报错
+  }
+  return trimmed
+}
+
 const eco = process.argv.includes('--eco')
 const force = process.argv.includes('--force')
 const onlyArg = process.argv.find(a => a.startsWith('--only='))
@@ -47,14 +61,14 @@ const EXTRACT_CONCURRENCY = 4
 const MAX_FAIL_RATIO = 1 / 3
 const RELAY_TIMEOUT_MS = 600_000
 
-// ---- AI 配置(与 server/utils/ai.ts 的 getAiConfig 同源默认) ----
+// ---- AI 配置:来自 SCRIPT_AI_CONFIG(不再读环境变量) ----
 
-const baseUrl = (process.env.AI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '')
-const apiKey = process.env.AI_API_KEY || ''
-const model = process.env.AI_MODEL || 'gpt-4o-mini'
+const baseUrl = normalizeBaseUrl(SCRIPT_AI_CONFIG.url)
+const apiKey = SCRIPT_AI_CONFIG.key
+const model = SCRIPT_AI_CONFIG.model
 
-if (!apiKey) {
-  console.error('[prebuild-presets] 缺少 AI_API_KEY:请设置环境变量 AI_API_KEY/AI_BASE_URL/AI_MODEL,或写入仓库根 .env(不入库)')
+if (!apiKey || !baseUrl) {
+  console.error('[prebuild-presets] SCRIPT_AI_CONFIG 缺少 key/url,请检查脚本内的配置')
   process.exit(1)
 }
 
@@ -75,7 +89,9 @@ interface AiCallResult {
   totalTokens: number
 }
 
-/** 单次非流式直连上游(免登录免扣费,只消耗你配置的 key) */
+/** 单次流式直连上游(免登录免扣费,只消耗你配置的 key)。
+ *  必须走流式:上游网关(Cloudflare)对非流式请求有 ~100s 超时(524),
+ *  长输出经常被掐断;流式下响应头即回、字节持续到达,不受该限制。 */
 async function callAI(
   messages: { role: 'system' | 'user' | 'assistant', content: string }[],
   opts: { maxTokens?: number, temperature: number }
@@ -86,7 +102,7 @@ async function callAI(
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
     thinking: false,
-    stream: false
+    stream: true
   })
   let res: Response
   try {
@@ -105,16 +121,43 @@ async function callAI(
     err.status = res.status
     throw err
   }
-  const body = await res.json().catch(() => null) as {
-    choices?: { message?: { content?: string } }[]
-    usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
-  } | null
-  const content = body?.choices?.[0]?.message?.content ?? ''
-  const usage = body?.usage
-  const totalTokens = usage?.total_tokens ?? (usage?.prompt_tokens ?? 0) + (usage?.completion_tokens ?? 0)
+  if (!res.body) throw new Error('上游未返回流式响应体')
+
+  // 解析 OpenAI 兼容 SSE:累计 delta.content,取流尾 usage 分片
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let content = ''
+  let totalTokens = 0
+  let done = false
+  while (!done) {
+    const read = await reader.read()
+    if (read.done) break
+    buf += decoder.decode(read.value, { stream: true })
+    let nl: number
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim()
+      buf = buf.slice(nl + 1)
+      if (!line.startsWith('data:')) continue
+      const payload = line.slice(5).trim()
+      if (payload === '[DONE]') { done = true; break }
+      try {
+        const chunk = JSON.parse(payload) as {
+          choices?: { delta?: { content?: string } }[]
+          usage?: { total_tokens?: number, prompt_tokens?: number, completion_tokens?: number }
+        }
+        const delta = chunk.choices?.[0]?.delta?.content
+        if (typeof delta === 'string' && delta) content += delta
+        const u = chunk.usage
+        if (u) totalTokens = u.total_tokens ?? (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0)
+      } catch {
+        // 跳过无法解析的分片(心跳/注释行等)
+      }
+    }
+  }
   const data = extractJson(content)
   if (data === null) {
-    // 偶发非 JSON 输出:按瞬时错误处理(重试一次)
+    // 偶发非 JSON 输出:按瞬时错误处理(交由调用方重试)
     throw new Error('AI 返回非 JSON,已按失败处理')
   }
   return { data, totalTokens }
@@ -168,7 +211,7 @@ try {
   // 无覆盖文件则全部自动解析
 }
 
-/** 单本书:切章 + 元数据(标题/作者/题材) */
+/** 单本书:单段全文 + 元数据(标题/作者/题材);提取按字数分块,不依赖章节结构 */
 function loadBook(file: string): { id: string, title: string, author: string | null, genre: string | null, chapters: ChapterSegment[] } {
   const bytes = new Uint8Array(readFileSync(join(srcDir, file)))
   const parsed = parseNovelBytes(bytes, file)
@@ -186,7 +229,7 @@ function loadBook(file: string): { id: string, title: string, author: string | n
     title: title.slice(0, 200),
     author: author ? String(author).slice(0, 100) : null,
     genre: ov.genre ?? null,
-    chapters: parsed.chapters
+    chapters: [{ title: '', content: parsed.text }]
   }
 }
 
@@ -209,6 +252,7 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
   const units = splitUnits(chapters)
   const extracts: (ChapterExtraction | null)[] = new Array(units.length)
   const results = await pool(units, EXTRACT_CONCURRENCY, async (unit) => {
+    const t0 = Date.now()
     const attempt = async (): Promise<ChapterExtraction> => {
       const { data, totalTokens } = await callAI(buildExtractMessages(title, unit, eco), {
         maxTokens: eco ? ECO_EXTRACT_MAX_TOKENS : undefined,
@@ -217,13 +261,27 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
       tokensUsed += totalTokens
       return normalizeExtraction(data)
     }
-    try {
-      return await attempt()
-    } catch (e) {
-      if (!isRetryable(e)) throw e
-      await sleep(1500)
-      return await attempt().catch(e2 => e2 as Error)
+    // 上游偶发把请求卡到网关 524(约 100s 超时,同尺寸请求时快时慢):5 轮指数退避重试
+    let out: ChapterExtraction | null = null
+    let lastErr: unknown
+    for (let round = 0; round < 5; round++) {
+      try {
+        out = await attempt()
+        break
+      } catch (e) {
+        lastErr = e
+        if (!isRetryable(e)) break
+        await sleep(3000 * 2 ** round)
+      }
     }
+    const secs = ((Date.now() - t0) / 1000).toFixed(0)
+    if (out) {
+      console.log(`    · 单元 ${unit.label} ✓ ${secs}s`)
+      return out
+    }
+    const msg = lastErr instanceof Error ? lastErr.message : String(lastErr)
+    console.warn(`    · 单元 ${unit.label} ✗ ${secs}s: ${msg}`)
+    return lastErr instanceof Error ? lastErr : new Error(msg)
   })
   let okCount = 0
   results.forEach((r, i) => {

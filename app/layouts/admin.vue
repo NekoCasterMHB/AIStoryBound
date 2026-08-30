@@ -3,12 +3,14 @@ import type { NavigationMenuItem } from '@nuxt/ui'
 
 // /admin 管理后台专用布局:左侧可折叠侧边栏(仪表盘 / 兑换码 / 充值记录 / Skill 审核)+ 内容区。
 // 不套 default.vue 的全站导航与页脚;页面级鉴权由各页 definePageMeta middleware: 'admin' 负责。
-// 小屏默认收起:open=true 会立刻弹出抽屉,顶栏切换按钮被挡住且没有关闭钮,展开后收不回去。
+// 电脑端默认展开(图标栏收起态靠顶栏按钮或侧栏右上角关闭钮切换);移动端默认关闭(抽屉)。
+// 切换路由不自动收起,由用户通过右上角关闭钮 / 顶栏切换按钮自行控制。
 const open = ref(false)
 const route = useRoute()
 
-watch(() => route.fullPath, () => {
-  open.value = false
+onMounted(() => {
+  // SSR 初始渲染为关闭(避免水合不一致),挂载后按视口恢复:桌面端展开,移动端维持关闭
+  open.value = window.matchMedia('(min-width: 1024px)').matches
 })
 
 const items = computed<NavigationMenuItem[]>(() => [
@@ -35,19 +37,30 @@ const items = computed<NavigationMenuItem[]>(() => [
         body: 'py-2'
       }"
     >
-      <template #header>
-        <NuxtLink
-          to="/"
-          class="flex min-w-0 items-center gap-1.5 px-2 font-bold tracking-tight text-highlighted"
-        >
-          <img
-            src="/pwa/pwa-192x192.png"
-            alt="AI Word2World"
-            class="size-5 shrink-0"
-            draggable="false"
+      <template #header="{ close }">
+        <div class="flex w-full items-center justify-between gap-1">
+          <NuxtLink
+            to="/"
+            class="flex min-w-0 items-center gap-1.5 px-2 font-bold tracking-tight text-highlighted"
           >
-          <span class="truncate">管理后台</span>
-        </NuxtLink>
+            <img
+              src="/pwa/pwa-192x192.png"
+              alt="AI Word2World"
+              class="size-5 shrink-0"
+              draggable="false"
+            >
+            <span class="truncate">管理后台</span>
+          </NuxtLink>
+          <UButton
+            icon="i-lucide-x"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            aria-label="关闭侧边栏"
+            class="shrink-0 lg:hidden"
+            @click="close"
+          />
+        </div>
       </template>
 
       <UNavigationMenu
@@ -56,16 +69,21 @@ const items = computed<NavigationMenuItem[]>(() => [
         :ui="{ link: 'p-1.5 overflow-hidden' }"
       />
 
-      <template #footer>
+      <template #footer="{ state }">
         <NuxtLink
           to="/"
-          class="flex items-center gap-1.5 px-2 py-1.5 text-sm text-neutral-500 hover:text-primary"
+          class="flex items-center gap-1.5 px-2 py-1.5 text-sm text-neutral-500 transition-colors hover:text-primary"
+          :class="state === 'collapsed' ? 'justify-center px-0' : ''"
+          :title="state === 'collapsed' ? '返回主站' : undefined"
         >
           <UIcon
-            name="i-lucide-arrow-left"
-            class="size-4"
+            name="i-lucide-house"
+            class="size-4 shrink-0"
           />
-          <span>返回主站</span>
+          <span
+            v-if="state !== 'collapsed'"
+            class="truncate"
+          >返回主站</span>
         </NuxtLink>
       </template>
     </USidebar>

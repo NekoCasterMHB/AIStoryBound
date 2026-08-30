@@ -37,6 +37,9 @@ export interface AiChatOptions {
   timeoutMs?: number
   /** 思考开关:不提供 UI,调用方也不得开启;服务端 chat 格式收到 false 会显式发送 thinking:{type:'disabled'} 强制关闭 */
   thinking?: boolean
+  /** 用途路由(仅平台模式生效):'worldGen'=生成世界流水线,'chat'=对话类(缺省)。
+   *  服务端按管理员配置的用途路由选择对应配置行;自建 key 模式忽略此字段 */
+  purpose?: 'worldGen' | 'chat'
 }
 
 /** 解析上游 SSE 的 data: 行(可能跨块,按行缓冲);onData 拿到原始 JSON,由调用方决定取哪些字段 */

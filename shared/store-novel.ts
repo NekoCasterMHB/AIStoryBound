@@ -2,6 +2,7 @@
 // 小说商城(创意工坊「书架」):常量、类型与 TXT 校验工具(浏览器 / 服务器共用)。
 // 交易规则与 Skill 商城一致:买家按售价扣 token,卖家实得 售价*80%,20% 平台手续费。
 // 正文 TXT 存 R2(每个版本独立文件,见 wrangler.toml SKILL_FILES 绑定),D1 仅存元数据与版本快照。
+import { detectNovelEncoding } from './novel-encoding'
 
 /** 单本小说 TXT 大小上限(字节,10MB) */
 export const MAX_NOVEL_TXT_BYTES = 10 * 1024 * 1024
@@ -119,21 +120,11 @@ export function splitNovelPrice(price: number): { sellerShare: number, platformF
 }
 
 /**
- * 解码小说 TXT:优先按 UTF-8 严格解码(BOM 剥离),失败回退 GBK(国内 TXT 常见编码)。
- * 两种编码都不支持时按 UTF-8 宽松解码(乱码但可预览)。字节数校验在解码前完成。
+ * 解码小说 TXT:按乱码特征评分自动择优(UTF-8 / GB18030 / GBK / Big5 / UTF-16 / 二重乱码修复,
+ * 详见 novel-encoding.ts),任何输入都返回可预览文本。字节数校验在解码前完成。
  */
 export function decodeNovelText(bytes: Uint8Array): string {
-  let text: string
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-  } catch {
-    try {
-      text = new TextDecoder('gbk').decode(bytes)
-    } catch {
-      text = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
-    }
-  }
-  return text.replace(/^\uFEFF/, '')
+  return detectNovelEncoding(bytes).text
 }
 
 /** 统计字数(按 Unicode 码点数,中文一字计 1) */

@@ -19,12 +19,30 @@ const loadError = ref<string | null>(null)
 const creating = ref(false)
 
 onMounted(async () => {
+  // 兼容提示的关闭记录(localStorage,读不到视为未关闭)
+  try {
+    legacyHintDismissed.value = localStorage.getItem(`legacy-world-hint:${workId}`) === '1'
+  } catch {
+    legacyHintDismissed.value = false
+  }
   work.value = await getWork(workId)
   if (!work.value) loadError.value = '本地未找到该作品'
   else void touchWork(workId)
 })
 
 const cards = computed(() => work.value?.overlay?.characters ?? [])
+
+/** 残缺作品拦截:角色卡过少或多数卡缺少基本人设信息时禁止开局。
+ *  覆盖两类来源:本修复前生成的旧作品(成书输出被截断只留下主角)、用户手动删卡后的极端状态。 */
+const brokenReason = computed(() => {
+  const list = cards.value
+  if (!work.value) return null
+  if (list.length === 0) return '该作品没有识别到任何角色卡'
+  if (list.length < 2) return `该作品只识别到 ${list.length} 张角色卡`
+  const shell = list.filter(c => !c.background?.trim() && !(c.personality ?? []).length && !c.appearance?.trim()).length
+  if (shell * 2 >= list.length) return `该作品 ${list.length} 张角色卡中有 ${shell} 张缺少基本人设信息(背景/性格/外貌全空)`
+  return null
+})
 /** 作品章节(细纲段 startChar 定位与正文窗口取用) */
 const chapters = computed(() => work.value?.chapters ?? [])
 
@@ -119,6 +137,31 @@ function roleColor(role: string | undefined) {
 
 // ---- 世界详情弹窗(查看生成产物/编辑概览元数据) ----
 const worldDetailOpen = ref(false)
+
+// ---- 旧版世界兼容提示:缺细纲/实体库/元数据时告知降级影响与补齐入口(每作品只提醒一次) ----
+const legacyHintDismissed = ref(true)
+
+/** 旧版世界缺失的能力清单(空数组 = 新版完整世界,不提示) */
+const missingParts = computed(() => {
+  const w = work.value
+  if (!w) return []
+  const parts: string[] = []
+  if (!w.storyline?.length) parts.push('细纲故事线(按细纲段开局与防剧情漂移依赖它)')
+  if (!w.entities) parts.push('实体库(世界规则/势力/伏笔的剧情联动依赖它)')
+  if (!w.overlay?.tags?.length && !w.overlay?.orientation && !w.overlay?.setting) parts.push('世界观元数据(性向/尺度/设定)')
+  return parts
+})
+
+const legacyWork = computed(() => missingParts.value.length > 0)
+
+function dismissLegacyHint() {
+  legacyHintDismissed.value = true
+  try {
+    localStorage.setItem(`legacy-world-hint:${workId}`, '1')
+  } catch {
+    /* localStorage 不可用时仅本次会话内不再提示 */
+  }
+}
 </script>
 
 <template>
@@ -183,15 +226,49 @@ const worldDetailOpen = ref(false)
     />
 
     <UAlert
-      v-if="cards.length === 0 && !loadError"
-      color="warning"
+      v-if="brokenReason"
+      color="error"
       variant="soft"
-      title="该作品还没有人物卡"
-      description="回到书架重新生成世界,或先补全正文后再生成。"
+      title="无法开局:角色识别不完整"
+      :description="`${brokenReason}。残缺状态下开局无法正确扮演角色,请重新生成世界后再选角。`"
     >
       <template #actions>
         <UButton
-          label="去生成世界"
+          label="去重新生成世界"
+          icon="i-lucide-sparkles"
+          size="sm"
+          color="error"
+          variant="soft"
+          :to="`/generate?from=work&id=${workId}`"
+        />
+        <UButton
+          label="返回书架"
+          icon="i-lucide-library"
+          size="sm"
+          color="neutral"
+          variant="soft"
+          to="/works"
+        />
+      </template>
+    </UAlert>
+
+    <!-- 旧版世界兼容提示:能玩但剧情联动不完整;严重残缺(brokenReason)时由上方硬提示接管,不再重复提醒 -->
+    <UAlert
+      v-if="legacyWork && !brokenReason && !legacyHintDismissed"
+      class="mb-4"
+      color="warning"
+      variant="soft"
+      icon="i-lucide-triangle-alert"
+      title="该作品是旧版世界,部分剧情功能不完整"
+      :close="true"
+      @update:open="dismissLegacyHint"
+    >
+      <template #description>
+        缺少:{{ missingParts.join(';') }}。不影响现在直接游玩;可在书架「更多 → 重新生成世界」用新管线补齐(同一来源已提取的部分 0 token 复用)。
+      </template>
+      <template #actions>
+        <UButton
+          label="重新生成世界"
           icon="i-lucide-sparkles"
           size="sm"
           color="warning"
@@ -312,7 +389,7 @@ const worldDetailOpen = ref(false)
     </UCard>
 
     <div
-      v-if="cards.length"
+      v-if="cards.length && !brokenReason"
       class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
     >
       <UCard

@@ -2,7 +2,7 @@
 import { desc } from 'drizzle-orm'
 import { useD1 } from '../../../utils/d1'
 import { requireAdmin } from '../../../utils/authz'
-import { getAiConfig } from '../../../utils/ai'
+import { getAiConfig, getEnvConfig, getAiPurposeRouting } from '../../../utils/ai'
 import { aiProviderConfigs } from '../../../db/schema'
 
 export default defineEventHandler(async (event) => {
@@ -13,6 +13,10 @@ export default defineEventHandler(async (event) => {
     .all()
 
   const ai = await getAiConfig(event)
+  // 环境变量兜底配置作为列表里的一个可选行展示(不含 key 本体,只带是否已配置)
+  const env = getEnvConfig(event)
+  // 用途模型路由:各用途(生成世界/对话)当前指向的配置行 id(null=跟随当前生效配置)
+  const routing = await getAiPurposeRouting(event)
 
   return {
     configs: rows.map(r => ({
@@ -32,6 +36,16 @@ export default defineEventHandler(async (event) => {
       name: ai.name ?? null,
       model: ai.model,
       baseUrl: ai.baseUrl
+    },
+    routing: {
+      worldGen: routing.worldGen ?? null,
+      chat: routing.chat ?? null
+    },
+    env: {
+      model: env.model,
+      baseUrl: env.baseUrl,
+      /** 环境变量是否配置了 key(未配置时切换过去会导致 AI 调用失败,前端禁用该开关) */
+      hasKey: !!env.apiKey
     }
   }
 })

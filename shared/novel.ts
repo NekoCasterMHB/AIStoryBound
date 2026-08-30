@@ -1,5 +1,7 @@
 // shared/novel.ts
 // AI Word2World 共享类型与工具(不依赖运行时,前后端/服务端均可引用)
+import { detectNovelEncoding } from './novel-encoding'
+import type { NovelEncoding } from './novel-encoding'
 
 /** 小说解析状态 */
 export type NovelStatus = 'uploaded' | 'parsing' | 'ready' | 'failed'
@@ -336,6 +338,12 @@ export interface MergedCharacter extends ExtractedCharacter {
   mentionCount: number
   /** 章节变体(传入 chapters 合并时生成;成卡阶段挂到卡上) */
   chapterVariants?: CharacterChapterVariant[]
+  /** 身份在各章节的全部不同表述(可并存,如 留学生/作家;成书 AI 据此合并出完整人设) */
+  identityVariants?: string[]
+  /** 外貌在各章节的全部不同表述(不同侧面/阶段描述) */
+  appearanceVariants?: string[]
+  /** 背景在各章节的全部不同表述(同一件事的不同说法或不同侧面) */
+  backgroundVariants?: string[]
 }
 export interface MergedLocation extends ExtractedLocation {
   sources: EntitySource[]
@@ -772,19 +780,7 @@ export function segmentChapters(raw: string): ChapterSegment[] {
   return segments
 }
 
-/** 编码检测辅助(UTF-8 vs GBK/GB18030) */
-export function detectEncoding(bytes: Uint8Array): 'utf-8' | 'gbk' | 'gb18030' {
-  // 有 UTF-8 BOM 直接判定
-  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
-    return 'utf-8'
-  }
-  // 尝试严格 UTF-8 解码,失败则为 GB 系
-  try {
-    // TextDecoder fatal 模式下,非法 UTF-8 会抛错
-    new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-    return 'utf-8'
-  } catch {
-    // 有 GB18030 的四个字节扩展则判 gb18030,否则 gbk
-    return 'gb18030'
-  }
+/** 编码检测辅助:按乱码特征评分择优(UTF-8/UTF-16/GB18030/GBK/Big5/二重乱码修复),详见 novel-encoding.ts */
+export function detectEncoding(bytes: Uint8Array): NovelEncoding {
+  return detectNovelEncoding(bytes).encoding
 }

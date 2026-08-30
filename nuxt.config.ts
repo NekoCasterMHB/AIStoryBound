@@ -1,7 +1,7 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
-export default defineNuxtConfig({
-  // 开发端口(生产部署与端口无关)
+import { fileURLToPath } from 'node:url'
 
+export default defineNuxtConfig({
   modules: [
     '@nuxt/eslint',
     '@nuxt/ui',
@@ -13,6 +13,7 @@ export default defineNuxtConfig({
     // PWA:可安装 + Workbox 预缓存离线壳。dev 下不注册 SW(devOptions.enabled: false),build 产物里生成 sw.js
     '@vite-pwa/nuxt'
   ],
+  // 开发端口(生产部署与端口无关)
 
   devtools: {
     enabled: true
@@ -63,6 +64,16 @@ export default defineNuxtConfig({
   typescript: {
     tsConfig: {
       include: ['../worker-configuration.d.ts']
+    }
+  },
+
+  hooks: {
+    'nitro:config'(nitroConfig) {
+      // cloudflare_module 构建:改用自定义入口(额外导出 WorldGenWorkflow 类,
+      // wrangler [[workflows]] 绑定要求类从主模块导出;见 entry.cloudflare.mjs)
+      if (nitroConfig.preset === 'cloudflare_module') {
+        nitroConfig.entry = fileURLToPath(new URL('./entry.cloudflare.mjs', import.meta.url))
+      }
     }
   },
 

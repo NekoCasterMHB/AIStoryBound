@@ -248,11 +248,26 @@ export function effectiveCards(cards: CharacterCard[], stageIndex?: number | nul
   return cards.map(c => effectiveCard(c, stageIndex, dyn[c.name]))
 }
 
+/** 支配/服从定位提取:关系类型与背景中的主/贝、攻/受、主奴等措辞单独前置成「定位:」,
+ *  提示词注意力强化,防止演绎时把定位翻转(设为贝/受的角色被演成主/攻) */
+const POS_TYPE_RE = /主|贝|攻|受|奴|仆|支配|服从/
+const POS_BG_RE = /主人|主仆|主从|主奴|主贝|奴隶|奴仆|支配|服从|调教/g
+
+function positionPrefix(c: CharacterCard): string {
+  const hits = [
+    ...(c.relationships ?? []).map(r => (r.type ?? '').trim()).filter(t => t && POS_TYPE_RE.test(t)),
+    ...(c.background?.match(POS_BG_RE) ?? [])
+  ]
+  const all = [...new Set(hits)]
+  return all.length ? `定位:${all.join('/')}` : ''
+}
+
 /** 人物卡完整摘要:全部字段原样注入(不截断;空值省略),供系统提示词/人设提醒/性欲播种共用。
  *  dyn(运行时动态状态)存在时,末尾追加当前处境/情绪/位置,提示词以此为准。 */
 export function cardBrief(c: CharacterCard, dyn?: CharacterDynamicState): string {
   const base = `${c.name}(${c.role}${c.gender ? `,${c.gender}` : ''},${c.identity ?? '未知身份'})`
-  const bits: string[] = [base]
+  const pos = positionPrefix(c)
+  const bits: string[] = pos ? [pos, base] : [base]
   if (c.alias?.trim()) bits.push(`别名:${c.alias}`)
   // age 旧数据可能被模型写成数字,统一转字符串再判断
   if (c.age != null && String(c.age).trim()) bits.push(`年龄:${String(c.age)}`)
@@ -343,8 +358,10 @@ export interface TurnPromptArgs {
   overlayMeta?: Pick<WorldOverlay, 'orientation' | 'setting' | 'heat' | 'tags'>
 }
 
-function clampText(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n)}…` : s
+/** null/undefined 安全截断:旧作品的实体字段(如伏笔 hint)可能缺省,直接读 length 会崩 */
+function clampText(s: string | null | undefined, n: number): string {
+  const t = s ?? ''
+  return t.length > n ? `${t.slice(0, n)}…` : t
 }
 
 function storylineWindow(
@@ -411,7 +428,8 @@ function plotTrackBlock(args: {
   if (foreshadows.length) {
     lines.push(`伏笔/悬念:\n${foreshadows.map((f, i) => `${i + 1}. ${clampText(f.hint, 60)}`).join('\n')}`)
   }
-  const confs = (args.conflicts ?? []).slice(0, 5)
+  // 已被 AI 检查判为"非冲突"的条目不再占用游戏内裁决位
+  const confs = (args.conflicts ?? []).filter(c => c.verdict !== 'not_conflict').slice(0, 5)
   if (confs.length) {
     const verdictText: Record<string, string> = {
       later_wins: '以后文为准', first_wins: '以先文为准', uncertain: '存疑,按情节合理取舍', not_conflict: '非冲突'
@@ -422,7 +440,7 @@ function plotTrackBlock(args: {
   }
   if (!lines.length) return ''
   const body = lines.join('\n\n')
-  return `【剧情轨道(设定内可选分支,按需触发)】\n${body}\n\n以上为本作品的故事线/世界设定/伏笔/设定裁决,情节推进时可择机触发或呼应,但不要每回合都抛出;与当前情节或玩家行动冲突时,以当前情节与玩家行动为准。`
+  return `【剧情轨道(设定内可选分支,按需触发)】\n${body}\n\n以上为本作品的故事线/世界设定/伏笔/设定裁决,情节推进时可择机触发或呼应,但不要每回合都抛出;与当前情节或玩家行动冲突时,以当前情节与玩家行动为准。世界设定(世界类型、舞台、体系)与人物定位是不可违背的硬设定;「以当前情节与玩家行动为准」仅指情节走向,不包括改变世界类型或人物定位。`
 }
 
 /** 组装叙事 prompt(系统规则 + 世界 + 人物卡 + 状态 + 摘要 + 历史 + 玩家本轮输入) */
@@ -453,7 +471,8 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
   const rules = [
     `以「${playerName}」的第一视角展开场景,用旁白叙事推进;对话行以「角色名:」开头,非玩家角色可自由说话/行动。`,
     '忠于各人物卡的性格与说话风格,不要 OOC。',
-    '呼应原著设定,但允许合理分支;避免机械复述原文。',
+    '角色间的支配/服从定位(如 主/贝、攻/受、主奴、人物卡嗜好中的承受/施予)严格按人物卡与关系设定执行,不得因玩家行动、剧情需要或性欲强度而翻转、互换或重新分配。',
+    '呼应原著设定:世界类型、舞台与体系(如虚拟游戏世界中人物身处游戏内)是不可改变的硬设定;在此前提下允许情节合理分支,避免机械复述原文。',
     narrLength
       ? `每次回答输出约 ${narrLength} 字(分 2~5 段),自然停顿,不要一次写完,结尾留悬念。`
       : '每次回答输出 2~4 段,每段 80~200 字,自然停顿;不要一次写完.结尾留悬念。',
@@ -547,6 +566,10 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
   ].filter((x): x is string => !!x)
   if (anchors.length > 0) {
     parts.push(`【人设提醒】再次强调,以下核心角色严格忠于设定,勿 OOC:\n${anchors.map((a, i) => `${i + 1}. ${a}`).join('\n')}`)
+  }
+  // 开场设定防稀释:非首回合时压缩复述开场背景(首回合已全量注入),世界前提不随对话推移丢失
+  if (hasStoryContext && opening?.scene?.trim()) {
+    parts.push(`【开场设定提醒】本局开场背景:${clampText(opening.scene.trim(), 160)}\n(剧情须在此设定的世界与前提下展开,不得偏离)`)
   }
   if (choice) {
     // 自由输入的行动不像选项按钮那样贴合剧情走向,需显式声明其最高优先级,

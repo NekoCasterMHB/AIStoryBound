@@ -2,14 +2,15 @@
 // 浏览器端"上传 → 生成世界"编排(服务器只提供 /api/ai/chat 中继):
 //   本地解析 → 作者识别 → 分块并发提取 → 本地合并 → 引用校验 → 一致性检查 → 成书 → 落 IndexedDB(works)
 // 进度由本地状态驱动;中间产物仅内存(单章失败=跳过+告警,>1/3 失败中止)。
-import { detectEncoding, extractFrontMatter, segmentChapters, uuid } from '#shared/novel'
+import { extractFrontMatter, uuid } from '#shared/novel'
+import { detectNovelEncoding } from '#shared/novel-encoding'
 import type {
   ChapterExtraction, ChapterSegment, EntityConflict, LocalWork, WorldOverlay
 } from '#shared/novel'
 import {
   assembleStoryline, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
   buildSynthesizeMessages, mergeExtractions, mergeOverlayMeta, splitUnits, summarizeWorldLocal, verifyQuotes,
-  emptyExtraction, finalizeCards, normalizeExtraction, quoteByChapter,
+  emptyExtraction, finalizeCards, normalizeExtraction, normKey, quoteByChapter,
   ADULT_GENRE, ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS
 } from '#shared/world-build'
 import { aiChatJson, CancelledError } from './aiRelay'
@@ -111,28 +112,27 @@ async function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T
   }
 }
 
-/** 本地解析 TXT 文件:编码检测 + 清洗 + 章节切分(与预置预览同一套 shared 纯函数) */
+/** 本地解析 TXT 文件:编码检测 + 清洗 + 单段全文(不再按章节切分) */
 export async function parseLocalNovel(file: File): Promise<{ title: string, encoding: string, chapters: ChapterSegment[], frontMatter: string }> {
   const bytes = new Uint8Array(await file.arrayBuffer())
-  const encoding = detectEncoding(bytes)
-  const text = new TextDecoder(encoding).decode(bytes)
+  // 检测编码并直接取解码结果(返回值可能来自二重乱码修复通道,不是合法的 TextDecoder 标签)
+  const detected = detectNovelEncoding(bytes)
   return {
     title: file.name.replace(/\.(txt|text)$/i, '') || '未命名小说',
-    encoding,
-    // 书名页/前言原文(作者识别用;stripFrontHeader 会把其中的书名/作者行从正文剥除)
-    frontMatter: extractFrontMatter(text),
-    chapters: parseChaptersFromText(text)
+    encoding: detected.encoding,
+    // 书名页/前言原文(作者识别用)
+    frontMatter: extractFrontMatter(detected.text),
+    chapters: toContentSegments(detected.text)
   }
 }
 
-/** 从整本文本切分出章节(预置页等已有文本的场景用) */
-export function parseChaptersFromText(text: string): ChapterSegment[] {
-  const cleaned = text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n')
-  const chapters = segmentChapters(cleaned)
-  if (chapters.length === 0) {
-    throw new Error('文本为空或无法解析为章节')
+/** 整本文本规范化为单个正文段(本地作品/预置书统一存单段全文,提取按字数分块,不依赖章节结构) */
+export function toContentSegments(text: string): ChapterSegment[] {
+  const cleaned = text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim()
+  if (!cleaned) {
+    throw new Error('文本为空或无法解析')
   }
-  return chapters
+  return [{ title: '', content: cleaned }]
 }
 
 /** 并发池:fn 抛错则该项失败(由调用方决定跳过或中止);onDone 每项完成后回调(实时进度用)。
@@ -308,7 +308,8 @@ export async function generateWorld(
         const res = await aiChatJson<unknown>(buildExtractMessages(title, unit, eco), {
           maxTokens: cap,
           temperature: 0.2,
-          timeoutMs: relayTimeoutMs
+          timeoutMs: relayTimeoutMs,
+          purpose: 'worldGen'
         }, {
           onLive: liveHandler(`u${unitIndex}`, 'extract'),
           signal
@@ -396,7 +397,8 @@ export async function generateWorld(
       const res = await aiChatJson<CheckReview>(buildCheckMessages(title, entities, conflicts), {
         maxTokens: outputCap(genLimits.checkMaxTokens),
         temperature: 0.2,
-        timeoutMs: relayTimeoutMs
+        timeoutMs: relayTimeoutMs,
+        purpose: 'worldGen'
       }, {
         onLive: liveHandler('check', 'check'),
         signal
@@ -462,7 +464,8 @@ export async function generateWorld(
       const res = await aiChatJson<WorldOverlay & { roles?: { name?: string, role?: string }[] }>(buildEcoSynthMessages(title, entities, localSummary), {
         maxTokens: ECO_SYNTH_MAX_TOKENS,
         temperature: 0.3,
-        timeoutMs: relayTimeoutMs
+        timeoutMs: relayTimeoutMs,
+        purpose: 'worldGen'
       }, {
         onLive: liveHandler('synth', 'synthesize'),
         signal
@@ -508,7 +511,8 @@ export async function generateWorld(
       const res = await aiChatJson<WorldOverlay>(buildSynthesizeMessages(title, entities, conflicts, warnings, localSummary), {
         maxTokens: outputCap(genLimits.synthMaxTokens),
         temperature: 0.3,
-        timeoutMs: relayTimeoutMs
+        timeoutMs: relayTimeoutMs,
+        purpose: 'worldGen'
       }, {
         onLive: liveHandler('synth', 'synthesize'),
         signal
@@ -518,21 +522,39 @@ export async function generateWorld(
       if (!res.ok) throw toAiError(res)
       return res.data ?? {}
     }
-    let synthData: WorldOverlay
-    try {
-      synthData = await synthAttempt()
-    } catch (e) {
-      if (isAborted()) throw new CancelledError()
-      // 4xx 业务失败(配额/鉴权)重试无意义;其余瞬时错误退避重试一次
-      if (!isRetryable(e)) throw new Error(`成书失败: ${(e as Error).message}`, { cause: e })
-      // 自动重试一次(退避 1.5s,应对上游瞬时限流/偶发非 JSON 输出)
-      await sleep(1500)
+    /** 成书完整性校验:top 名单中模型漏产的角色卡。输出被上游 max_tokens 截断时,
+     *  extractJson 会把截断 JSON 静默修复成"只剩排在前面的几张卡"的合法结果(主角排第一,配角全丢),
+     *  解析层无法感知,只能在这里按数量兜底。名字按 normKey 对齐,容忍空白差异。 */
+    const missingCards = (data: WorldOverlay): string[] => {
+      const returned = new Set((data.characters ?? []).map(c => normKey(c?.name ?? '')))
+      return [...topNames].filter(n => !returned.has(normKey(n)))
+    }
+    let synthData: WorldOverlay | null = null
+    let synthErr: Error | null = null
+    let lastMissing: string[] = []
+    for (let i = 0; i < 2 && !synthData; i++) {
+      if (i > 0) await sleep(1500)
       try {
-        synthData = await synthAttempt()
-      } catch (e2) {
+        const data = await synthAttempt()
+        const missing = missingCards(data)
+        if (missing.length === 0) {
+          synthData = data
+        } else {
+          lastMissing = missing
+          warnings.push(`成书输出不完整:缺少 ${missing.length} 张角色卡,正在重试`)
+        }
+      } catch (e) {
         if (isAborted()) throw new CancelledError()
-        throw new Error(`成书失败: ${(e2 as Error).message}`, { cause: e2 })
+        // 4xx 业务失败(配额/鉴权)重试无意义,直接中止
+        if (!isRetryable(e)) throw new Error(`成书失败: ${(e as Error).message}`, { cause: e })
+        synthErr = e as Error
       }
+    }
+    if (!synthData) {
+      if (lastMissing.length) {
+        throw new Error(`成书输出不完整:缺少 ${lastMissing.length} 张角色卡(如「${lastMissing.slice(0, 3).join('」「')}」),角色识别残缺。已中止保存,请重新生成世界(已提取部分有缓存,不会重复消耗 token)`)
+      }
+      throw new Error(`成书失败: ${synthErr?.message ?? '未知错误'}`, { cause: synthErr ?? undefined })
     }
     liveCalls.delete('synth')
     const overlayRaw = synthData

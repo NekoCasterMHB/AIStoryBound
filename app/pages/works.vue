@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // /works — 我的书架(登录后):推荐书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
 import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
-import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, parseChaptersFromText } from '../utils/worldGen'
+import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments } from '../utils/worldGen'
 import { listLocalGames, saveLocalGame, deleteLocalGame } from '../utils/gameStore'
 import { deleteGamePoints } from '../utils/gameSaveStore'
 import { importWorkFromZip } from '../utils/shareZip'
@@ -9,6 +9,11 @@ import { listReadingProgress } from '../utils/readingStore'
 import { fetchPrebuiltWorld, installPrebuiltWork } from '../utils/prebuiltWorld'
 import type { PrebuiltWorld } from '../utils/prebuiltWorld'
 import { setAdultModeEnabled } from '../utils/adultMode'
+import {
+  fetchWorldGenTasks, cancelWorldGenTask, downloadAndInstallWorldTask,
+  worldGenTaskPercent, worldGenStageLabel
+} from '../utils/worldGenCloud'
+import type { WorldGenTaskDTO } from '../utils/worldGenCloud'
 import { type LocalWork, type LocalGame, type GameState, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
 
 useHead({ title: 'AI Word2World · 我的书架' })
@@ -39,12 +44,12 @@ function readBtnLabel(p: ReadingProgress | undefined) {
   return p.finished ? '重新阅读' : '继续阅读'
 }
 
-/** 阅读进度徽章:null = 未读过 */
+/** 阅读进度徽章:null = 未读过;单段全文(无章节)只显示"已开始" */
 function readBadge(p: ReadingProgress | undefined): { label: string, color: 'success' | 'info' } | null {
   if (!p) return null
   return p.finished
     ? { label: '已读完', color: 'success' }
-    : { label: `读到第 ${p.chapterIndex + 1} 章`, color: 'info' }
+    : { label: p.chapterIndex > 0 ? `读到第 ${p.chapterIndex + 1} 章` : '已开始', color: 'info' }
 }
 
 /** 徽章数组形态(模板 v-for 用,避免 null 类型窄化问题) */
@@ -94,11 +99,40 @@ async function refreshLocal() {
   games.value = await listLocalGames()
 }
 
+// ---- 旧版分章格式作品:开始新游戏前提示重新生成 ----
+// 旧版按章节标题切分存储(多段);新版统一单段全文。旧的"无章节 txt"旧版也存单段,无差异不提示。
+const legacyStartWork = ref<LocalWork | null>(null)
+const legacyStartOpen = computed({
+  get: () => legacyStartWork.value !== null,
+  set: (v: boolean) => { if (!v) legacyStartWork.value = null }
+})
+
+function selectRole(w: LocalWork) {
+  if (w.chapters.length > 1) {
+    legacyStartWork.value = w
+    return
+  }
+  void navigateTo(`/play/${w.id}`)
+}
+
+function legacyStartRegenerate() {
+  const id = legacyStartWork.value?.id
+  legacyStartWork.value = null
+  if (id) void navigateTo(`/generate?from=work&id=${id}`)
+}
+
+function legacyStartProceed() {
+  const id = legacyStartWork.value?.id
+  legacyStartWork.value = null
+  if (id) void navigateTo(`/play/${id}`)
+}
+
 onMounted(() => {
   void refreshLocal()
   void loadOfficialWorks()
   void loadReadingProgress()
   void loadCloudGames()
+  void loadCloudTasks()
 })
 
 // ---- 云端同步(手动):成功/失败都出 toast,不再静默吞 ----
@@ -332,6 +366,75 @@ async function onCardsSaved() {
   toast.add({ title: '角色卡已更新', color: 'success' })
 }
 
+// ---- 云端生成任务(进度条轮询;完成自动下载安装进本地书架) ----
+const cloudTasks = ref<WorldGenTaskDTO[]>([])
+const cloudTasksLoaded = ref(false)
+/** 已自动安装过的任务 id(防轮询期间重复下载) */
+const installedTaskIds = new Set<string>()
+let cloudPollTimer: ReturnType<typeof setInterval> | null = null
+
+const hasActiveCloudTasks = computed(() =>
+  cloudTasks.value.some(t => t.status === 'uploaded' || t.status === 'running'))
+
+async function loadCloudTasks() {
+  try {
+    const prev = new Map(cloudTasks.value.map(t => [t.id, t.status]))
+    cloudTasks.value = await fetchWorldGenTasks()
+    cloudTasksLoaded.value = true
+    // 轮询期间发现有任务从进行中转为完成:自动下载安装进书架
+    for (const t of cloudTasks.value) {
+      const before = prev.get(t.id)
+      if (t.status === 'completed' && before && before !== 'completed' && !installedTaskIds.has(t.id)) {
+        installedTaskIds.add(t.id)
+        void installCloudTask(t)
+      }
+    }
+  } catch {
+    // 未登录/网络失败:静默(书架本身要求登录,此处仅容错)
+  }
+}
+
+/** 下载成书 zip 并安装进本地书架(完成后自动触发 + 卡片按钮手动触发共用) */
+const installingTaskId = ref<string | null>(null)
+
+async function installCloudTask(t: WorldGenTaskDTO) {
+  if (installingTaskId.value) return
+  installingTaskId.value = t.id
+  try {
+    const work = await downloadAndInstallWorldTask(t)
+    await refreshLocal()
+    toast.add({ title: '云端世界已安装', description: `《${work.title}》已加入本地书架`, color: 'success' })
+  } catch (e) {
+    toast.add({ title: '下载安装失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    installingTaskId.value = null
+  }
+}
+
+async function cancelCloudTask(t: WorldGenTaskDTO) {
+  try {
+    await cancelWorldGenTask(t.id)
+    await loadCloudTasks()
+  } catch (e) {
+    toast.add({ title: '操作失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  }
+}
+
+/** 活动任务存在时每 3s 轮询;全部终态后停止 */
+watch(hasActiveCloudTasks, (active) => {
+  if (active && !cloudPollTimer) {
+    cloudPollTimer = setInterval(() => { void loadCloudTasks() }, 3000)
+  }
+  else if (!active && cloudPollTimer) {
+    clearInterval(cloudPollTimer)
+    cloudPollTimer = null
+  }
+}, { immediate: true })
+
+onUnmounted(() => {
+  if (cloudPollTimer) clearInterval(cloudPollTimer)
+})
+
 function fmtTime(iso: string) {
   return new Date(iso).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
 }
@@ -462,7 +565,7 @@ async function onPasteConfirm() {
   if (!title || !author || !pasteText.value.trim()) return
   importing.value = true
   try {
-    const chapters = parseChaptersFromText(pasteText.value)
+    const chapters = toContentSegments(pasteText.value)
     await saveImported(title, chapters, undefined, author)
     pasteOpen.value = false
   } catch (err) {
@@ -624,9 +727,118 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
         </div>
       </template>
 
-      <!-- 个人书架:本地作品 + 云端作品(换设备恢复) -->
+      <!-- 个人书架:云端生成任务 + 本地作品 + 云端作品(换设备恢复) -->
       <template #personal>
         <div class="mt-4">
+          <!-- 云端生成任务(进行中显示进度条;完成可下载安装) -->
+          <div
+            v-if="cloudTasks.length"
+            class="mb-6"
+          >
+            <h2 class="mb-3 font-semibold">
+              云端生成任务
+            </h2>
+            <div class="space-y-2">
+              <UCard
+                v-for="t in cloudTasks"
+                :key="t.id"
+                class="!py-3"
+              >
+                <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                  <UIcon
+                    :name="t.status === 'completed'
+                      ? 'i-lucide-circle-check'
+                      : t.status === 'failed'
+                        ? 'i-lucide-circle-x'
+                        : t.status === 'cancelled'
+                          ? 'i-lucide-circle-slash'
+                          : 'i-lucide-loader-circle'"
+                    class="size-4 shrink-0"
+                    :class="t.status === 'completed'
+                      ? 'text-green-500'
+                      : t.status === 'failed'
+                        ? 'text-red-500'
+                        : t.status === 'cancelled'
+                          ? 'text-neutral-400'
+                          : 'animate-spin text-primary-500'"
+                  />
+                  <p class="min-w-0 flex-1 truncate text-sm font-semibold">
+                    {{ t.title || '未命名' }}
+                  </p>
+                  <UBadge
+                    :color="t.status === 'completed' ? 'success' : t.status === 'failed' ? 'error' : t.status === 'cancelled' ? 'neutral' : 'info'"
+                    variant="soft"
+                    size="sm"
+                  >
+                    {{ worldGenStageLabel(t) }}
+                  </UBadge>
+                  <UBadge
+                    v-if="t.tokensUsed"
+                    color="neutral"
+                    variant="subtle"
+                    size="sm"
+                    icon="i-lucide-coins"
+                  >
+                    {{ t.tokensUsed.toLocaleString() }} tokens
+                  </UBadge>
+                  <UBadge
+                    v-if="t.keySource === 'user'"
+                    color="neutral"
+                    variant="subtle"
+                    size="sm"
+                    label="自建 Key"
+                  />
+                  <UButton
+                    v-if="t.status === 'completed'"
+                    label="下载安装"
+                    icon="i-lucide-download"
+                    color="primary"
+                    variant="soft"
+                    size="sm"
+                    :loading="installingTaskId === t.id"
+                    @click="installCloudTask(t)"
+                  />
+                  <UButton
+                    v-if="t.status === 'uploaded' || t.status === 'running'"
+                    label="取消"
+                    icon="i-lucide-circle-stop"
+                    color="error"
+                    variant="ghost"
+                    size="sm"
+                    @click="cancelCloudTask(t)"
+                  />
+                  <UButton
+                    v-if="t.status === 'failed' || t.status === 'cancelled' || t.status === 'completed'"
+                    label="删除记录"
+                    icon="i-lucide-trash-2"
+                    color="neutral"
+                    variant="ghost"
+                    size="sm"
+                    @click="cancelCloudTask(t)"
+                  />
+                </div>
+                <p
+                  v-if="t.status === 'failed' && t.error"
+                  class="mt-1.5 break-all text-xs text-red-500"
+                >
+                  {{ t.error }}
+                </p>
+                <UProgress
+                  v-if="t.status === 'running' || t.status === 'uploaded'"
+                  :model-value="worldGenTaskPercent(t)"
+                  size="xs"
+                  class="mt-2"
+                />
+                <p
+                  v-if="t.status === 'running' || t.status === 'uploaded'"
+                  class="mt-1 text-xs text-neutral-500"
+                >
+                  {{ worldGenStageLabel(t) }} · {{ worldGenTaskPercent(t) }}% · 生成期间可离开页面,完成后自动安装进书架
+                </p>
+              </UCard>
+            </div>
+          </div>
+
           <!-- 本地作品 -->
           <div class="mb-6">
             <div class="mb-3 flex items-center justify-between">
@@ -705,7 +917,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                   </UBadge>
                 </div>
                 <p class="mt-1 truncate text-xs text-neutral-500">
-                  作者: {{ w.author || '佚名' }} · {{ w.chapters.length ? `${w.chapters.length} 章` : '无正文' }}
+                  作者: {{ w.author || '佚名' }} · {{ w.chapters.length ? `全书约 ${fmtChars(w.chapters.reduce((n, c) => n + c.content.length, 0))}` : '无正文' }}
                 </p>
                 <p
                   v-if="w.overlay?.setting || w.overlay?.heat"
@@ -829,7 +1041,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     icon="i-lucide-play"
                     color="primary"
                     size="sm"
-                    :to="`/play/${w.id}`"
+                    @click="selectRole(w)"
                   />
                   <UButton
                     v-if="hasGamesFor(w.id)"
@@ -882,7 +1094,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     {{ cw.title }}
                   </p>
                   <p class="text-xs text-neutral-500">
-                    {{ cw.chapter_count }} 章 · {{ fmtTime(cw.created_at) }}
+                    {{ cw.chapter_count > 1 ? `${cw.chapter_count} 章 · ` : '' }}{{ fmtTime(cw.created_at) }}
                   </p>
                 </div>
                 <UButton
@@ -1044,6 +1256,35 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
             icon="i-lucide-trash-2"
             color="error"
             @click="confirmDeleteWork"
+          />
+        </div>
+      </template>
+    </UModal>
+
+    <!-- 旧版分章格式作品:开始新游戏前建议重新生成世界 -->
+    <UModal
+      v-model:open="legacyStartOpen"
+      title="建议重新生成世界"
+      description="该作品为旧版分章格式"
+    >
+      <template #body>
+        <p class="text-sm text-neutral-600 dark:text-neutral-300">
+          《{{ legacyStartWork?.title }}》按旧版章节切分存储,章节识别可能不准,会影响细纲定位与开局体验。建议重新生成世界后再开始;也可以照常游玩。
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="仍然继续"
+            color="neutral"
+            variant="outline"
+            @click="legacyStartProceed"
+          />
+          <UButton
+            label="重新生成世界"
+            icon="i-lucide-refresh-cw"
+            color="primary"
+            @click="legacyStartRegenerate"
           />
         </div>
       </template>

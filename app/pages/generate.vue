@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // /generate — 生成世界页(游客可见,但生成需要登录):未登录显示引导卡 + 弹出登录模态框;
-// 登录后选择 TXT → 本地编排生成(实时 token 消耗)→ 完成 → 跳选角页。
+// 登录后选择 TXT → 云端任务生成(原文上传 R2,Workflows 执行,客户端展示进度)→ 完成自动安装 → 跳选角页。
 // 也支持预置小说详情页跳转(?from=preset&id=xxx&eco=0|1):自动加载该小说为附件,直接进入确认页由用户确认;
 // 支持创意工坊「书架」购买的本地作品跳转(?from=work&id=xxx):从本地书架加载章节进入确认页。
+// 相同 txt 的历史成书按内容哈希命中共享缓存:可拉取(扣记录消耗的一半)或重新生成(正常扣费并刷新缓存)。
 import { parseLocalNovel, generateWorld, getWork } from '../utils/worldGen'
 import { clearExtractCache } from '../utils/extractCache'
 import { CancelledError } from '../utils/aiRelay'
@@ -11,6 +12,12 @@ import { loadPresetChapters } from '../utils/chapters'
 import { fetchPrebuiltWorld, installPrebuiltWork } from '../utils/prebuiltWorld'
 import type { PrebuiltWorld } from '../utils/prebuiltWorld'
 import { setAdultModeEnabled } from '../utils/adultMode'
+import { getActiveRelayConfig } from '../utils/aiConfigStore'
+import {
+  hashFile, checkWorldDuplicate, uploadWorldGenTask, pullCachedWorld,
+  pollWorldGenTask, downloadAndInstallWorldTask, cancelWorldGenTask
+} from '../utils/worldGenCloud'
+import type { WorldCacheHit, WorldGenTaskDTO } from '../utils/worldGenCloud'
 import { useAuthModal } from '~/composables/useAuthModal'
 import { useAuthSession } from '../utils/auth-client'
 import type { LocalWork, ChapterSegment, PresetNovelRow } from '#shared/novel'
@@ -142,8 +149,9 @@ const stageIndex = computed(() => {
   return genState.value.phase === 'parsing' ? 0 : -1
 })
 
-/** 整体进度百分比:按阶段分段映射,全程单调递增(extract 内 15→80,之后逐段进位) */
+/** 整体进度百分比:按阶段分段映射,全程单调递增(extract 内 15→80,之后逐段进位;云端上传期映射到 2→12%) */
 const genPercent = computed(() => {
+  if (cloudUploading.value) return Math.round(2 + cloudUploadPct.value * 0.1)
   const p = genState.value.progress
   if (genState.value.phase === 'done' || p?.stage === 'done') return 100
   if (!p) return 5 // parsing 阶段
@@ -177,6 +185,161 @@ watch(liveTarget, (target) => {
 /** 在途生成的取消控制器与运行序号(取消/新任务竞态保护) */
 const abortCtrl = ref<AbortController | null>(null)
 let runSeq = 0
+
+// ---- 云端任务生成(上传 txt 的默认路径;预置/本地作品入口保留原管线) ----
+
+/** 原始 File(云端任务上传需要;确认页选定后保留,重新选择时清空) */
+const cloudFile = ref<File | null>(null)
+/** 文件内容 sha-256(选文件后异步计算;共享缓存查重键) */
+const cloudHash = ref<string | null>(null)
+/** 相同 txt 的历史成书(缓存命中时确认页提供「拉取已有世界」) */
+const dupHit = ref<WorldCacheHit | null>(null)
+const dupChecking = ref(false)
+/** 云端任务快照(轮询更新)与上传进度 */
+const cloudTask = ref<WorldGenTaskDTO | null>(null)
+const cloudUploadPct = ref(0)
+const pullingCached = ref(false)
+
+/** 是否正在上传原文(已进入生成态但任务尚未创建) */
+const cloudUploading = computed(() => genState.value.phase === 'generating' && !cloudTask.value && !!cloudFile.value)
+
+/** 查重(选文件后与切换模式时触发;失败静默,不影响正常生成) */
+async function refreshDupHit() {
+  const file = cloudFile.value
+  if (!file || fromPreset.value) {
+    dupHit.value = null
+    return
+  }
+  dupChecking.value = true
+  try {
+    const hash = cloudHash.value ?? await hashFile(file)
+    cloudHash.value = hash
+    dupHit.value = await checkWorldDuplicate(hash, ecoMode.value ? 'eco' : 'full')
+  } catch {
+    dupHit.value = null
+  } finally {
+    dupChecking.value = false
+  }
+}
+
+watch(ecoMode, () => {
+  if (genState.value.phase === 'confirm' && cloudFile.value) void refreshDupHit()
+})
+
+/** 云端任务快照 → 复用本地管线的进度对象(生成页 stepper/进度条/告警 UI 全部复用) */
+function taskToProgress(t: WorldGenTaskDTO): GenerateProgress {
+  return {
+    stage: t.stage,
+    doneUnits: t.stageDetail.doneUnits,
+    totalUnits: t.stageDetail.totalUnits,
+    tokensUsed: t.tokensUsed,
+    liveTokens: t.tokensUsed,
+    warnings: t.warnings,
+    inflight: 0
+  }
+}
+
+function resetCloudState() {
+  cloudFile.value = null
+  cloudHash.value = null
+  dupHit.value = null
+  cloudTask.value = null
+  cloudUploadPct.value = 0
+}
+
+/** 确认页「开始生成」(上传 txt):云端任务路径 —— 上传 → 轮询 → 完成自动安装 */
+async function startCloudGeneration() {
+  const file = cloudFile.value
+  if (!file) return
+  const seq = ++runSeq
+  genState.value.phase = 'generating'
+  genState.value.progress = { stage: 'parse', doneUnits: 0, totalUnits: 0, tokensUsed: 0, liveTokens: 0, warnings: [], inflight: 0 }
+  cloudTask.value = null
+  cloudUploadPct.value = 0
+  const ctrl = new AbortController()
+  abortCtrl.value = ctrl
+  try {
+    // 自建 key 配置(本地已验证的激活配置)随任务上送云端加密暂存;平台模式为 null
+    let config: { format: string, baseUrl: string, apiKey: string, model: string } | null = null
+    try {
+      config = await getActiveRelayConfig()
+    } catch {
+      config = null
+    }
+    const task = await uploadWorldGenTask({
+      file,
+      mode: ecoMode.value ? 'eco' : 'full',
+      charCount: totalChars.value,
+      config,
+      onUploadProgress: (loaded, total) => {
+        if (seq === runSeq) cloudUploadPct.value = Math.min(100, Math.round((loaded / total) * 100))
+      }
+    })
+    if (seq !== runSeq) return
+    cloudTask.value = task
+    genState.value.progress = taskToProgress(task)
+    const final = await pollWorldGenTask(task.id, (t) => {
+      if (seq !== runSeq) return
+      cloudTask.value = t
+      genState.value.progress = taskToProgress(t)
+    }, ctrl.signal)
+    if (seq !== runSeq) return
+    if (final.status !== 'completed') {
+      throw new Error(final.error || (final.status === 'cancelled' ? '任务已取消' : '云端生成任务失败'))
+    }
+    // 完成即自动下载安装进本地书架
+    const work = await downloadAndInstallWorldTask(final)
+    if (seq !== runSeq) return
+    genState.value.phase = 'done'
+    genState.value.progress = null
+    genState.value.resultId = work.id
+    genState.value.tokensUsed = work.tokensUsed ?? final.tokensUsed
+    resultWork.value = work
+    abortCtrl.value = null
+    lastFailedGen.value = null
+    await clearExtractCache().catch(() => { /* 清缓存失败不影响结果展示 */ })
+  } catch (err) {
+    if (seq !== runSeq) return
+    abortCtrl.value = null
+    if (err instanceof DOMException && err.name === 'AbortError') return
+    genState.value = {
+      phase: 'error',
+      title: genState.value.title,
+      progress: null,
+      error: err instanceof Error ? err.message : String(err),
+      resultId: null,
+      tokensUsed: cloudTask.value?.tokensUsed ?? 0
+    }
+  }
+}
+
+/** 确认页「拉取已有世界」:扣记录消耗的一半,直接下载安装进书架 */
+async function startPullCached(hit: WorldCacheHit) {
+  const seq = ++runSeq
+  pullingCached.value = true
+  try {
+    const task = await pullCachedWorld(hit.cacheId)
+    const work = await downloadAndInstallWorldTask(task)
+    if (seq !== runSeq) return
+    genState.value.phase = 'done'
+    genState.value.progress = null
+    genState.value.resultId = work.id
+    genState.value.tokensUsed = task.tokensUsed
+    genState.value.title = work.title
+    resultWork.value = work
+    lastFailedGen.value = null
+  } catch (e) {
+    if (seq !== runSeq) return
+    toast.add({
+      color: 'error',
+      icon: 'i-lucide-triangle-alert',
+      title: '拉取失败',
+      description: e instanceof Error ? e.message : String(e)
+    })
+  } finally {
+    pullingCached.value = false
+  }
+}
 
 // 未登录访问:引导登录(不强制跳页)
 const askingLogin = ref(false)
@@ -244,6 +407,7 @@ async function handleFile(file: File) {
   pendingGen.value = null
   fromPreset.value = false
   presetAuthor.value = null
+  resetCloudState()
   const seq = ++runSeq
   // 重置平滑计数,开始新一轮展示
   cancelAnimationFrame(shownRaf)
@@ -259,6 +423,11 @@ async function handleFile(file: File) {
     pendingGen.value = { title: parsed.title, chapters: parsed.chapters, frontMatter: parsed.frontMatter }
     // 生成前预检平台 token 额度(不足时提示,不阻断)
     quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco: ecoMode.value })
+    // 云端任务:保留原始文件,异步计算哈希并查重(相同 txt 的历史成书可拉取)
+    cloudFile.value = file
+    cloudHash.value = null
+    dupHit.value = null
+    void refreshDupHit()
     // 先展示字数与预估消耗,用户确认后才进入生成管线
     genState.value.phase = 'confirm'
   } catch (err) {
@@ -287,6 +456,7 @@ async function loadPresetIntoConfirm(presetId: string) {
   fromPreset.value = false
   prebuiltWorld.value = null
   presetMeta.value = null
+  resetCloudState()
   // 重置平滑计数,开始新一轮展示
   cancelAnimationFrame(shownRaf)
   shownCur = 0
@@ -340,6 +510,7 @@ async function loadWorkIntoConfirm(workId: string) {
   fromPreset.value = false
   prebuiltWorld.value = null
   presetMeta.value = null
+  resetCloudState()
   // 重置平滑计数,开始新一轮展示
   cancelAnimationFrame(shownRaf)
   shownCur = 0
@@ -430,8 +601,12 @@ function retryGeneration() {
   void runGeneration(pending.title, pending.chapters, pending.frontMatter, seq, presetAuthor.value ?? undefined)
 }
 
-/** 确认页"开始生成":确认字数与预估消耗后进入 AI 管线 */
+/** 确认页"开始生成":上传 txt 走云端任务;预置/本地作品入口保留浏览器端管线 */
 function startGenerationFromConfirm() {
+  if (cloudFile.value) {
+    void startCloudGeneration()
+    return
+  }
   const pending = pendingGen.value
   if (!pending) return
   pendingGen.value = null
@@ -466,15 +641,21 @@ function repickFile() {
   prebuiltWorld.value = null
   presetMeta.value = null
   lastFailedGen.value = null
+  resetCloudState()
   genState.value = { phase: 'idle', title: '', progress: null, error: null, resultId: null, tokensUsed: 0 }
   onPickFile()
 }
 
-/** 取消生成:中止在途 AI 调用、作废当前管线并回到上传态 */
+/** 取消生成:中止在途调用、取消云端任务、作废当前管线并回到上传态 */
 async function cancelGeneration() {
   runSeq++
   abortCtrl.value?.abort()
   abortCtrl.value = null
+  // 云端任务:通知服务端取消(Workflow 终止 + 按实耗结算)
+  const taskId = cloudTask.value?.id
+  if (taskId) {
+    void cancelWorldGenTask(taskId).catch(() => { /* 取消失败不影响界面复位 */ })
+  }
   pendingGen.value = null
   quotaWarn.value = null
   fromPreset.value = false
@@ -482,6 +663,7 @@ async function cancelGeneration() {
   prebuiltWorld.value = null
   presetMeta.value = null
   lastFailedGen.value = null
+  resetCloudState()
   genState.value = { phase: 'idle', title: '', progress: null, error: null, resultId: null, tokensUsed: 0 }
   // 取消后清空提取缓存,防止多次取消残留累计
   await clearExtractCache().catch(() => { /* 清缓存失败不影响状态复位 */ })
@@ -495,8 +677,8 @@ async function cancelGeneration() {
 
 /** 底部"四步流程"卡片数据 */
 const steps = [
-  { icon: 'i-lucide-file-up', title: '上传小说', desc: '拖入或选择整本 TXT,本地解析编码、清洗并自动切分章节' },
-  { icon: 'i-lucide-boxes', title: '提取世界观', desc: 'AI 分章并发提取人物、地点、势力、规则与伏笔' },
+  { icon: 'i-lucide-file-up', title: '上传小说', desc: '拖入或选择整本 TXT,本地解析编码、清洗正文' },
+  { icon: 'i-lucide-boxes', title: '提取世界观', desc: 'AI 分块并发提取人物、地点、势力、规则与伏笔' },
   { icon: 'i-lucide-git-merge', title: '合并与校验', desc: '实体合并去重、原文引用比对、一致性检查,异常标警告' },
   { icon: 'i-lucide-compass', title: '选择角色进入', desc: '生成人物卡与故事简介,选角后即可开始游玩' }
 ]
@@ -539,7 +721,7 @@ const features = [
           把一本小说,变成<br class="hidden sm:block"><span class="text-gradient">可走进的世界</span>
         </h1>
         <p class="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-neutral-600 dark:text-neutral-400 sm:text-lg">
-          上传整本 TXT,AI 分章提取人物、地点、势力、规则与伏笔,自动合并校验后生成完整世界观——选择一个角色,真正走进故事。
+          上传整本 TXT,AI 分块提取人物、地点、势力、规则与伏笔,自动合并校验后生成完整世界观——选择一个角色,真正走进故事。
         </p>
         <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
           <UButton
@@ -572,6 +754,7 @@ const features = [
           accept=".txt,.text"
           class="hidden"
           @change="onFileChosen"
+          @cancel="picking = false"
         >
 
         <!-- 未登录引导 -->
@@ -624,7 +807,7 @@ const features = [
             拖入整本 TXT,或点击选择文件
           </p>
           <p class="mx-auto mt-1.5 max-w-sm text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
-            AI 分章提取人物、地点、势力、规则与伏笔,自动合并校验后生成可玩的世界观
+            AI 分块提取人物、地点、势力、规则与伏笔,自动合并校验后生成可玩的世界观
           </p>
           <div class="mt-7 flex justify-center">
             <UButton
@@ -650,14 +833,14 @@ const features = [
                 name="i-lucide-list-checks"
                 class="size-3.5"
               />
-              自动分章与编码识别
+              自动编码识别与清洗
             </span>
             <span class="inline-flex items-center gap-1.5">
               <UIcon
-                name="i-lucide-shield-check"
+                name="i-lucide-cloud-cog"
                 class="size-3.5"
               />
-              正文不出设备
+              云端执行,可离开页面
             </span>
           </div>
         </div>
@@ -697,7 +880,7 @@ const features = [
                 />
               </div>
               <p class="mt-0.5 text-xs text-neutral-500">
-                {{ fromPreset ? '来自预置小说库 · ' : '' }}{{ pendingGen?.chapters.length }} 章 · 全书约 {{ formatChars(totalChars) }}
+                {{ fromPreset ? '来自预置小说库 · ' : '' }}全书约 {{ formatChars(totalChars) }}
               </p>
             </div>
           </div>
@@ -726,6 +909,36 @@ const features = [
             </UButton>
           </div>
 
+          <!-- 相同 txt 的历史成书:可拉取(扣记录消耗的一半)或重新生成 -->
+          <div
+            v-if="dupHit && cloudFile"
+            class="flex flex-col gap-3 rounded-xl border border-teal-300/60 bg-teal-500/5 px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between dark:border-teal-700/60"
+          >
+            <div class="flex items-start gap-2 text-sm text-neutral-700 dark:text-neutral-200">
+              <UIcon
+                name="i-lucide-database-zap"
+                class="mt-0.5 size-4 shrink-0 text-teal-500"
+              />
+              <div>
+                <p>
+                  已有人生成过这本相同内容的世界<span v-if="dupHit.title">《{{ dupHit.title }}》</span>(记录消耗 {{ dupHit.tokensUsed.toLocaleString() }} tokens)
+                </p>
+                <p class="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
+                  直接拉取成书仅需 {{ dupHit.halfCost.toLocaleString() }} tokens(记录消耗的一半);选择下方「开始生成」则重新生成并刷新缓存。
+                </p>
+              </div>
+            </div>
+            <UButton
+              color="success"
+              icon="i-lucide-cloud-download"
+              :loading="pullingCached"
+              class="shrink-0"
+              @click="startPullCached(dupHit)"
+            >
+              拉取已有世界
+            </UButton>
+          </div>
+
           <!-- 预估消耗小字提示:按全书字数估算本次生成 token -->
           <div class="flex items-start gap-2 rounded-xl border border-neutral-200/70 bg-neutral-50/80 px-3.5 py-2.5 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900/40 dark:text-neutral-400">
             <UIcon
@@ -738,6 +951,21 @@ const features = [
               tokens
             </span>
           </div>
+
+          <!-- 云端生成说明(仅上传 txt 的确认页) -->
+          <p
+            v-if="cloudFile"
+            class="flex items-start gap-2 text-xs leading-relaxed text-neutral-400 dark:text-neutral-500"
+          >
+            <UIcon
+              name="i-lucide-cloud"
+              class="mt-0.5 size-3.5 shrink-0"
+            />
+            <span>
+              云端生成:原文将上传至服务器执行(自建 Key 会加密暂存、任务结束即删除),生成期间可离开页面,进度也会显示在书架;
+              相同文本的成书结果进入共享缓存,完成结果可打包下载。
+            </span>
+          </p>
 
           <!-- 生成模式:完整(默认)/ 节约 -->
           <div class="flex flex-col items-center gap-2">
@@ -824,13 +1052,27 @@ const features = [
               />
             </div>
             <div class="min-w-0 flex-1">
-              <p class="truncate text-sm font-semibold text-highlighted">
-                {{ genState.title }}
-              </p>
+              <div class="flex items-center gap-2">
+                <p class="truncate text-sm font-semibold text-highlighted">
+                  {{ genState.title }}
+                </p>
+                <UBadge
+                  v-if="cloudFile"
+                  color="info"
+                  variant="soft"
+                  size="sm"
+                  label="云端任务"
+                />
+              </div>
               <p class="mt-0.5 text-xs text-neutral-500">
-                {{ stageLabel[genState.progress?.stage ?? 'parse'] }}
-                <template v-if="genState.progress?.stage === 'extract'">
-                  {{ genState.progress.doneUnits }}/{{ genState.progress.totalUnits }} 单元
+                <template v-if="cloudUploading">
+                  上传原文 {{ cloudUploadPct }}%…
+                </template>
+                <template v-else>
+                  {{ stageLabel[genState.progress?.stage ?? 'parse'] }}
+                  <template v-if="genState.progress?.stage === 'extract'">
+                    {{ genState.progress.doneUnits }}/{{ genState.progress.totalUnits }} 单元
+                  </template>
                 </template>
               </p>
             </div>
@@ -985,7 +1227,7 @@ const features = [
                 name="i-lucide-book-open"
                 class="size-3.5"
               />
-              {{ resultWork.chapters.length }} 章
+              全书约 {{ formatChars(resultWork.chapters.reduce((n, c) => n + c.content.length, 0)) }}
             </span>
             <span
               v-if="genState.tokensUsed"

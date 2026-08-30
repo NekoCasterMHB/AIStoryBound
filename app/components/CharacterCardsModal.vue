@@ -2,6 +2,7 @@
 // 编辑角色卡弹窗:修改/新增/删除本地作品 overlay.characters,保存回 IndexedDB works
 // 入口:书架「本地作品」卡片上的「角色卡」按钮;保存后由父组件刷新列表
 import { getWork, saveWork } from '../utils/worldGen'
+import { listLocalGames, saveLocalGame } from '../utils/gameStore'
 import { desireTierName, DESIRE_TIERS, SEX_TEXT_KEYS } from '#shared/novel'
 import type { CharacterCard, SexAttrs, SexTextField } from '#shared/novel'
 
@@ -247,12 +248,69 @@ async function onSave() {
       syncStatus: work.syncStatus === 'synced' ? 'dirty' : work.syncStatus,
       updatedAt: new Date().toISOString()
     })
+    await clearOverlappingPatches(work.overlay?.characters ?? [], cards)
     emit('saved')
     open.value = false
   } catch (e) {
     toast.add({ title: '保存失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
   } finally {
     saving.value = false
+  }
+}
+
+/** 卡片可被局内 AI 补丁覆盖的人物卡字段(与 CharacterDynamicState.patch 允许的键对应) */
+const PATCHABLE_KEYS = [
+  'alias', 'gender', 'age', 'identity', 'appearance', 'background', 'first_appearance',
+  'personality', 'speech_style', 'abilities', 'goals', 'fears', 'secrets', 'relationships',
+  'dead', 'patience', 'softness', 'desire', 'kinks', 'sex'
+] as const
+
+/** 编辑保存后,清除进行中游戏里该角色动态补丁中与本次被编辑字段重叠的键:
+ *  有效卡=基础卡+局内补丁,不清理的话用户改的卡字段会被 AI 玩出来的旧补丁一直覆盖 */
+async function clearOverlappingPatches(prevCards: CharacterCard[], cards: CharacterCard[]) {
+  const editedFields = new Map<string, Set<string>>()
+  for (const c of cards) {
+    const prev = prevCards.find(p => p.name === c.name)
+    if (!prev) continue
+    const fields = new Set<string>()
+    for (const k of PATCHABLE_KEYS) {
+      if (JSON.stringify(prev[k] ?? null) !== JSON.stringify(c[k] ?? null)) fields.add(k)
+    }
+    if (fields.size) editedFields.set(c.name, fields)
+  }
+  if (!editedFields.size) return
+  const games = await listLocalGames()
+  let touched = 0
+  for (const g of games) {
+    if (g.workId !== props.workId) continue
+    const states = g.state?.characterStates
+    if (!states) continue
+    let dirty = false
+    for (const [name, fields] of editedFields) {
+      const patch = states[name]?.patch
+      if (!patch || !Object.keys(patch).length) continue
+      // 重建补丁对象只保留未重叠键(避免动态 delete)
+      const kept: Partial<NonNullable<typeof patch>> = {}
+      let removed = false
+      for (const [k, v] of Object.entries(patch)) {
+        if (fields.has(k)) {
+          removed = true
+          continue
+        }
+        ;(kept as Record<string, unknown>)[k] = v
+      }
+      if (removed) {
+        states[name]!.patch = kept
+        dirty = true
+      }
+    }
+    if (dirty) {
+      await saveLocalGame(g)
+      touched++
+    }
+  }
+  if (touched) {
+    toast.add({ title: '已同步清理游戏状态', description: `${touched} 局游戏中该角色的相关动态变化已按新卡重置`, color: 'neutral' })
   }
 }
 

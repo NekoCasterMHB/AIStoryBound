@@ -52,7 +52,7 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 400, statusMessage: 'apiKey / model 必填' })
     }
   } else {
-    const v = validateAiConfigInput(raw)
+    const v = validateAiConfigInput(raw, { skipName: true })
     if (!v.ok) {
       throw createError({ statusCode: 400, statusMessage: v.message })
     }

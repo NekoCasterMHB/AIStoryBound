@@ -57,3 +57,6 @@ export function aiFormatMeta(format: AiApiFormat): AiApiFormatMeta {
 export function isAiApiFormat(v: unknown): v is AiApiFormat {
   return v === 'chat' || v === 'anthropic' || v === 'responses'
 }
+
+/** 用途模型路由中「环境变量(部署默认)」的哨兵值:与配置行 id 一样可作为某用途的指向 */
+export const AI_ROUTE_ENV = '__env__'

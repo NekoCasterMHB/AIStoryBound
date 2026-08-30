@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { AI_API_FORMATS, aiFormatMeta, type AiApiFormat } from '#shared/ai-config'
+import { AI_API_FORMATS, aiFormatMeta, type AiApiFormat, AI_ROUTE_ENV } from '#shared/ai-config'
 
-// /admin/ai-config — 平台 AI 模型配置(管理后台):维护多套配置、一键动态切换当前生效项。
-// 配置存 D1(ai_provider_configs),apiKey AES-GCM 加密落库;无启用配置时系统回退环境变量。
+// /admin/ai-config — 平台 AI 模型配置(管理后台):维护多套配置,启用开关决定进入用途路由候选(可多条同时启用)。
+// 配置存 D1(ai_provider_configs),apiKey AES-GCM 加密落库;按用途路由取配置,无启用配置时回退环境变量。
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
 useHead({ title: 'AI Word2World · AI 配置' })
@@ -26,17 +26,86 @@ interface EffectiveConfig {
   model: string
   baseUrl: string
 }
+interface EnvConfigInfo {
+  model: string
+  baseUrl: string
+  hasKey: boolean
+}
 
 const rows = ref<AiConfigRow[]>([])
 const effective = ref<EffectiveConfig | null>(null)
+const envInfo = ref<EnvConfigInfo | null>(null)
 const loading = ref(true)
+
+// ---- 用途模型路由:各用途(生成世界/对话)当前指向的配置行 id,null=跟随当前生效配置 ----
+type AiPurpose = 'worldGen' | 'chat'
+const routing = ref<Record<AiPurpose, string | null>>({ worldGen: null, chat: null })
+const routingBusy = ref<AiPurpose | null>(null)
+
+const PURPOSE_META: { key: AiPurpose, label: string, desc: string }[] = [
+  { key: 'worldGen', label: '生成世界', desc: '世界观提取 / 一致性检查 / 成书 / 作者识别等生成流水线调用' },
+  { key: 'chat', label: '对话', desc: '游玩回合叙事 / 选项 / 开场设计 / 欲望推演等对话调用' }
+]
+
+/** 路由下拉选项:启用中的配置 + 常驻的「环境变量(部署默认)」(未选择的用途跟随默认链:最早的启用配置 → env) */
+const purposeItems = computed(() => [
+  ...rows.value.filter(c => c.active).map(c => ({ label: `${c.name} · ${c.model}`, value: c.id })),
+  { label: '环境变量(部署默认)', value: AI_ROUTE_ENV }
+])
+
+/** 当前启用中的配置(可多条;display 兜底取创建最早的一条,与服务端生效链一致) */
+const activeRows = computed(() => rows.value.filter(c => c.active))
+const activeRow = computed(() => activeRows.value[activeRows.value.length - 1] ?? null)
+
+/** 路由显示值:未显式指定时显示默认链指向(最早的启用配置;无则环境变量) */
+function routingDisplay(p: AiPurpose): string | undefined {
+  return routing.value[p] ?? activeRow.value?.id ?? AI_ROUTE_ENV
+}
+
+/** 环境变量行被哪些用途路由指向(列表"使用中"徽标) */
+const envBadges = computed(() => {
+  const out: string[] = []
+  if (routing.value.worldGen === AI_ROUTE_ENV) out.push('生成世界使用中')
+  if (routing.value.chat === AI_ROUTE_ENV) out.push('对话使用中')
+  return out
+})
+
+/** 该配置行被哪些用途路由指向(列表"使用中"徽标) */
+function purposeBadges(c: AiConfigRow): string[] {
+  const out: string[] = []
+  if (routing.value.worldGen === c.id) out.push('生成世界使用中')
+  if (routing.value.chat === c.id) out.push('对话使用中')
+  return out
+}
+
+/** 切换用途指向的配置(切换即保存;服务端合并式保存,只传变更的用途) */
+async function onRoutingChange(purpose: AiPurpose, value: unknown) {
+  const id = typeof value === 'string' && value ? value : null
+  if ((routing.value[purpose] ?? null) === id || routingBusy.value) return
+  if ((routing.value[purpose] ?? null) === id || routingBusy.value) return
+  routingBusy.value = purpose
+  try {
+    const res = await $fetch<{ routing: Record<AiPurpose, string | null> }>('/api/admin/ai-config/purpose-routing', {
+      method: 'PUT',
+      body: { [purpose]: id }
+    })
+    routing.value = res.routing
+    toast.add({ title: '用途模型已切换', description: '后续该用途的平台 AI 请求将使用新指向的配置', color: 'success' })
+  } catch (e) {
+    toast.add({ title: '切换失败', description: errText(e), color: 'error' })
+  } finally {
+    routingBusy.value = null
+  }
+}
 
 async function load() {
   loading.value = true
   try {
-    const res = await $fetch<{ configs: AiConfigRow[], effective: EffectiveConfig }>('/api/admin/ai-config')
+    const res = await $fetch<{ configs: AiConfigRow[], effective: EffectiveConfig, env: EnvConfigInfo, routing: Record<AiPurpose, string | null> }>('/api/admin/ai-config')
     rows.value = res.configs
     effective.value = res.effective
+    envInfo.value = res.env
+    routing.value = { worldGen: res.routing?.worldGen ?? null, chat: res.routing?.chat ?? null }
   } catch (e) {
     toast.add({ title: '加载配置失败', description: errText(e), color: 'error' })
   } finally {
@@ -162,18 +231,22 @@ async function onSave() {
   }
 }
 
-// ---- 动态切换启用 ----
+// ---- 启用/停用开关(可多行同时启用;启用 = 进入用途路由候选,不影响其他配置) ----
 const switchBusy = ref<string | null>(null)
 
-async function onActivate(c: AiConfigRow) {
-  if (c.active || switchBusy.value) return
+async function onToggle(c: AiConfigRow, enabled: boolean) {
+  if (switchBusy.value) return
   switchBusy.value = c.id
   try {
-    await $fetch(`/api/admin/ai-config/${c.id}/activate`, { method: 'PUT' })
-    toast.add({ title: `已切换到「${c.name}」`, description: '新配置即时生效,后续平台 AI 请求将使用该配置', color: 'success' })
+    await $fetch(`/api/admin/ai-config/${c.id}/activate`, { method: 'PUT', body: { enabled } })
+    toast.add({
+      title: enabled ? `已启用「${c.name}」` : `已停用「${c.name}」`,
+      description: enabled ? '该配置已进入用途模型路由的下拉候选' : undefined,
+      color: 'success'
+    })
     void load()
   } catch (e) {
-    toast.add({ title: '切换失败', description: errText(e), color: 'error' })
+    toast.add({ title: enabled ? '启用失败' : '停用失败', description: errText(e), color: 'error' })
   } finally {
     switchBusy.value = null
   }
@@ -197,7 +270,7 @@ async function onDelete() {
     await $fetch(`/api/admin/ai-config/${t.id}`, { method: 'DELETE' })
     toast.add({
       title: `已删除「${t.name}」`,
-      description: t.active ? '原启用配置已删除,系统已自动切换到剩余配置(无则回退环境变量)' : undefined,
+      description: t.active ? '该配置已从路由候选中移除' : undefined,
       color: 'success'
     })
     deleteOpen.value = false
@@ -218,7 +291,7 @@ async function onDelete() {
           AI 模型配置
         </h1>
         <p class="text-sm text-neutral-500">
-          维护平台 AI 模型配置,多套并存、一键切换当前生效项,即时生效无需重新部署
+          维护平台 AI 模型配置,可启用多套作为用途路由候选,按用途分别指定,即时生效无需重新部署
         </p>
       </div>
       <UButton
@@ -272,6 +345,44 @@ async function onDelete() {
       />
     </UCard>
 
+    <!-- 用途模型路由 -->
+    <UCard class="mb-4">
+      <div class="space-y-3">
+        <div>
+          <p class="flex items-center gap-2 font-semibold">
+            <UIcon
+              name="i-lucide-route"
+              class="size-4 text-primary-500"
+            />
+            用途模型路由
+          </p>
+          <p class="text-xs text-neutral-500">
+            为不同用途指定使用的配置;下拉列表仅展示启用中的配置,未选择的用途跟随当前生效配置。被路由使用的配置在下方禁用/删除时会被阻止。
+          </p>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <UFormField
+            v-for="p in PURPOSE_META"
+            :key="p.key"
+            :label="p.label"
+            :description="p.desc"
+          >
+            <USelect
+              :model-value="routingDisplay(p.key)"
+              :items="purposeItems"
+              value-key="value"
+              :loading="routingBusy === p.key"
+              :disabled="!activeRow"
+              :placeholder="activeRow ? '请选择配置' : '未启用任何库内配置'"
+              :aria-label="`选择${p.label}使用的配置`"
+              class="w-full"
+              @update:model-value="v => onRoutingChange(p.key, v)"
+            />
+          </UFormField>
+        </div>
+      </div>
+    </UCard>
+
     <UCard>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
@@ -279,6 +390,9 @@ async function onDelete() {
             <tr class="border-b border-neutral-200 text-left text-xs text-neutral-500 dark:border-neutral-800">
               <th class="py-2 pr-3 font-medium">
                 名称
+              </th>
+              <th class="py-2 pr-3 font-medium">
+                启用
               </th>
               <th class="py-2 pr-3 font-medium">
                 格式
@@ -300,7 +414,7 @@ async function onDelete() {
           <tbody>
             <tr v-if="loading">
               <td
-                colspan="6"
+                colspan="7"
                 class="py-6 text-center text-neutral-500"
               >
                 加载中…
@@ -308,7 +422,7 @@ async function onDelete() {
             </tr>
             <tr v-else-if="!rows.length">
               <td
-                colspan="6"
+                colspan="7"
                 class="py-6 text-center text-neutral-500"
               >
                 暂无配置,点击右上角「新建配置」添加第一条(将自动启用)
@@ -328,9 +442,27 @@ async function onDelete() {
                     color="success"
                     variant="soft"
                   >
-                    启用中
+                    已启用
+                  </UBadge>
+                  <UBadge
+                    v-for="b in purposeBadges(c)"
+                    :key="b"
+                    size="sm"
+                    color="primary"
+                    variant="soft"
+                  >
+                    {{ b }}
                   </UBadge>
                 </div>
+              </td>
+              <td class="py-2.5 pr-3">
+                <!-- 启用开关:启用 = 进入用途模型路由的下拉候选(可多条同时启用);被路由使用时服务端阻止停用 -->
+                <USwitch
+                  :model-value="c.active"
+                  :loading="switchBusy === c.id"
+                  :aria-label="c.active ? `停用「${c.name}」` : `启用「${c.name}」`"
+                  @update:model-value="v => onToggle(c, v === true)"
+                />
               </td>
               <td class="py-2.5 pr-3 text-neutral-600 dark:text-neutral-300">
                 {{ fmtLabel(c.format) }}
@@ -346,17 +478,6 @@ async function onDelete() {
               </td>
               <td class="py-2.5">
                 <div class="flex flex-wrap items-center gap-1.5">
-                  <UButton
-                    v-if="!c.active"
-                    size="xs"
-                    color="success"
-                    variant="soft"
-                    icon="i-lucide-power"
-                    :loading="switchBusy === c.id"
-                    @click="onActivate(c)"
-                  >
-                    启用
-                  </UButton>
                   <UButton
                     size="xs"
                     color="neutral"
@@ -376,6 +497,44 @@ async function onDelete() {
                     删除
                   </UButton>
                 </div>
+              </td>
+            </tr>
+            <!-- 环境变量(部署默认):常驻路由候选行,在上方「用途模型路由」中按用途单独指定 -->
+            <tr
+              v-if="!loading"
+              class="border-b border-neutral-100 bg-neutral-50/60 last:border-0 dark:border-neutral-900 dark:bg-neutral-900/40"
+            >
+              <td class="py-2.5 pr-3">
+                <div class="flex items-center gap-2">
+                  <span class="font-medium">环境变量(部署默认)</span>
+                  <UBadge
+                    v-for="b in envBadges"
+                    :key="b"
+                    size="sm"
+                    color="primary"
+                    variant="soft"
+                  >
+                    {{ b }}
+                  </UBadge>
+                </div>
+              </td>
+              <td class="py-2.5 pr-3 text-xs text-neutral-400">
+                常驻可用
+              </td>
+              <td class="py-2.5 pr-3 text-neutral-600 dark:text-neutral-300">
+                Chat
+              </td>
+              <td class="max-w-64 truncate py-2.5 pr-3 font-mono text-xs text-neutral-500">
+                {{ envInfo?.baseUrl || '—' }}
+              </td>
+              <td class="py-2.5 pr-3 font-mono text-xs">
+                {{ envInfo?.model || '—' }}
+              </td>
+              <td class="py-2.5 pr-3 font-mono text-xs text-neutral-500">
+                {{ envInfo?.hasKey ? '••••(部署注入,不可见)' : '未配置' }}
+              </td>
+              <td class="py-2.5 text-xs text-neutral-400">
+                由 wrangler 部署配置管理
               </td>
             </tr>
           </tbody>
@@ -516,7 +675,7 @@ async function onDelete() {
       <template #body>
         <p class="text-sm text-neutral-600 dark:text-neutral-300">
           {{ deleteTarget?.active
-            ? `「${deleteTarget?.name}」是当前启用配置,删除后将自动切换到剩余配置(无则回退环境变量)。`
+            ? `「${deleteTarget?.name}」当前已启用,删除后将从路由候选中移除。`
             : `确定删除配置「${deleteTarget?.name}」吗?删除后不可恢复。` }}
         </p>
       </template>

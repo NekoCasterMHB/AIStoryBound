@@ -335,6 +335,7 @@ CREATE TABLE IF NOT EXISTS `novel_products` (
 	`file_key` text NOT NULL,
 	`file_name` text NOT NULL,
 	`file_size` integer NOT NULL,
+	`source_encoding` text,
 	`status` text DEFAULT 'pending' NOT NULL,
 	`reject_reason` text,
 	`main_version` integer,
@@ -363,6 +364,7 @@ CREATE TABLE IF NOT EXISTS `novel_product_versions` (
 	`file_key` text NOT NULL,
 	`file_name` text NOT NULL,
 	`file_size` integer NOT NULL,
+	`source_encoding` text,
 	`status` text DEFAULT 'pending' NOT NULL,
 	`reject_reason` text,
 	`enabled` integer DEFAULT 1 NOT NULL,
@@ -418,14 +420,70 @@ CREATE TABLE IF NOT EXISTS `app_config` (
 );
 
 -- ---- AI 用量记录(平台模式每次扣费写一条;管理仪表盘统计近 24h 消耗) ----
+-- task_id 为云端世界生成任务关联列(运行中库需一次性 ALTER 补列,见文件头约定)
 CREATE TABLE IF NOT EXISTS `ai_usage` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
+	`task_id` text,
 	`tokens` integer NOT NULL,
 	`prompt_tokens` integer NOT NULL DEFAULT 0,
 	`completion_tokens` integer NOT NULL DEFAULT 0,
 	`created_at` integer NOT NULL,
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+
+-- ---- 云端世界生成任务(txt 上传 R2,Workflows 执行管线) ----
+-- key_ciphertext/key_iv 为用户自建 key 的 AES-GCM 暂存:任务终态即置 NULL,防静态泄露。
+CREATE TABLE IF NOT EXISTS `world_gen_tasks` (
+	`id` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`status` text DEFAULT 'uploaded' NOT NULL,
+	`stage` text DEFAULT 'parse' NOT NULL,
+	`stage_detail` text,
+	`source_hash` text NOT NULL,
+	`source_key` text NOT NULL,
+	`file_size` integer NOT NULL,
+	`title` text,
+	`author` text,
+	`encoding` text,
+	`mode` text DEFAULT 'full' NOT NULL,
+	`key_source` text DEFAULT 'platform' NOT NULL,
+	`key_ciphertext` text,
+	`key_iv` text,
+	`estimated_tokens` integer DEFAULT 0 NOT NULL,
+	`tokens_used` integer DEFAULT 0 NOT NULL,
+	`result_key` text,
+	`error` text,
+	`warnings` text,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL,
+	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+
+-- 提取单元明细(断点续跑与幂等:重跑时已完成单元直接读取跳过)
+CREATE TABLE IF NOT EXISTS `world_gen_units` (
+	`task_id` text NOT NULL,
+	`unit_index` integer NOT NULL,
+	`result` text NOT NULL,
+	`tokens` integer DEFAULT 0 NOT NULL,
+	PRIMARY KEY (`task_id`, `unit_index`),
+	FOREIGN KEY (`task_id`) REFERENCES `world_gen_tasks`(`id`) ON UPDATE no action ON DELETE cascade
+);
+
+-- 跨用户世界缓存(相同 txt + 相同模式共享一份成书;拉取扣记录消耗的一半)
+CREATE TABLE IF NOT EXISTS `world_cache` (
+	`id` text PRIMARY KEY NOT NULL,
+	`source_hash` text NOT NULL,
+	`mode` text NOT NULL,
+	`file_size` integer NOT NULL,
+	`title` text,
+	`author` text,
+	`world_key` text NOT NULL,
+	`tokens_used` integer DEFAULT 0 NOT NULL,
+	`downloads` integer DEFAULT 0 NOT NULL,
+	`created_by` text,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL
 );
 
 -- ---- 平台 AI 模型配置(管理员后台维护,多套并存、至多一条启用;替代环境变量 AI_BASE_URL/AI_API_KEY/AI_MODEL) ----
@@ -506,4 +564,7 @@ CREATE INDEX IF NOT EXISTS `idx_ai_usage_user` ON `ai_usage` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_aipc_active` ON `ai_provider_configs` (`active`);
 CREATE INDEX IF NOT EXISTS `idx_acv_user` ON `ai_config_verifications` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_ann_published_created` ON `announcements` (`published`,`created_at`);
-CREATE INDEX IF NOT EXISTS `idx_skill_purchase_buyer` ON `skill_purchases` (`buyer_id`);
+CREATE INDEX IF NOT EXISTS `idx_skill_purchase_buyer` ON `skill_purchases` (`buyer_id`);CREATE INDEX IF NOT EXISTS `idx_wgt_user` ON `world_gen_tasks` (`user_id`);
+CREATE INDEX IF NOT EXISTS `idx_wgt_status` ON `world_gen_tasks` (`status`);
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_wgu_unique` ON `world_gen_units` (`task_id`,`unit_index`);
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_world_cache_hash_mode` ON `world_cache` (`source_hash`,`mode`);

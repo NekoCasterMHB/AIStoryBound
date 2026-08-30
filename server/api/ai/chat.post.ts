@@ -13,6 +13,7 @@
 // 自建配置支持三种 API 格式(chat/anthropic/responses),上游流统一翻译成 OpenAI 兼容 SSE
 // 透传给前端(含流尾 usage 分片);前端自行解析 delta 与 usage。
 // 模型选择不信任请求体:平台模式用后台配置(ai_provider_configs,未配置回退 env AI_MODEL);用户模式模型取自请求 config(用用户自己的 key,选什么模型都由用户自己付费)。
+// 用途路由:请求体 purpose('worldGen'|'chat',缺省 chat)只决定使用管理员配置的哪一条配置行(getAiConfig 第二参),不能指定任意模型。
 import { and, eq, sql } from 'drizzle-orm'
 import { useD1 } from '../../utils/d1'
 import { requireUser } from '../../utils/authz'
@@ -52,6 +53,8 @@ interface ChatRelayBody {
   timeoutMs?: number
   /** 用户浏览器本地保存的自建配置,仅本次请求使用、不落库;必须与最近一次测试连接通过的配置一致(指纹准入) */
   config?: { format?: string, baseUrl?: string, apiKey?: string, model?: string }
+  /** 用途路由:'worldGen'=生成世界流水线,'chat'=对话类(缺省);仅平台模式生效,决定用管理员配置的哪条配置行 */
+  purpose?: string
 }
 
 export default defineEventHandler(async (event) => {
@@ -95,7 +98,9 @@ export default defineEventHandler(async (event) => {
     }
     relay = { ...normalized, userKey: true }
   } else {
-    const ai = await getAiConfig(event)
+    // 用途路由:白名单校验,非 'worldGen' 一律按 'chat',决定使用管理员配置的哪条配置行
+    const purpose = body.purpose === 'worldGen' ? 'worldGen' as const : 'chat' as const
+    const ai = await getAiConfig(event, purpose)
     if (!ai.apiKey) {
       throw createError({ statusCode: 500, statusMessage: '平台 AI 未配置,请联系管理员在后台配置' })
     }

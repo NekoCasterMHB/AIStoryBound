@@ -37,9 +37,9 @@ async function deriveKey(secret: string): Promise<CryptoKey> {
   )
 }
 
-/** 加密任意 JSON 对象;返回 base64 的密文与 IV */
-export async function encryptJson(event: H3Event, obj: unknown): Promise<{ ciphertext: string, iv: string }> {
-  const key = await deriveKey(getAuthConfig(event).secret)
+/** 加密任意 JSON 对象;返回 base64 的密文与 IV(secret 直传版,供无 H3Event 的 Workflow 上下文使用) */
+export async function encryptJsonWithSecret(secret: string, obj: unknown): Promise<{ ciphertext: string, iv: string }> {
+  const key = await deriveKey(secret)
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const ct = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
@@ -49,10 +49,10 @@ export async function encryptJson(event: H3Event, obj: unknown): Promise<{ ciphe
   return { ciphertext: toBase64(new Uint8Array(ct)), iv: toBase64(iv) }
 }
 
-/** 解密 encryptJson 的产物;失败返回 null(密钥变更/数据损坏) */
-export async function decryptJson<T = unknown>(event: H3Event, ciphertext: string, iv: string): Promise<T | null> {
+/** 解密 encryptJsonWithSecret 的产物;失败返回 null(密钥变更/数据损坏) */
+export async function decryptJsonWithSecret<T = unknown>(secret: string, ciphertext: string, iv: string): Promise<T | null> {
   try {
-    const key = await deriveKey(getAuthConfig(event).secret)
+    const key = await deriveKey(secret)
     const pt = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: fromBase64(iv) },
       key,
@@ -62,4 +62,14 @@ export async function decryptJson<T = unknown>(event: H3Event, ciphertext: strin
   } catch {
     return null
   }
+}
+
+/** 加密任意 JSON 对象;返回 base64 的密文与 IV */
+export async function encryptJson(event: H3Event, obj: unknown): Promise<{ ciphertext: string, iv: string }> {
+  return encryptJsonWithSecret(getAuthConfig(event).secret, obj)
+}
+
+/** 解密 encryptJson 的产物;失败返回 null(密钥变更/数据损坏) */
+export async function decryptJson<T = unknown>(event: H3Event, ciphertext: string, iv: string): Promise<T | null> {
+  return decryptJsonWithSecret<T>(getAuthConfig(event).secret, ciphertext, iv)
 }

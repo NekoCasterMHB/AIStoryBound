@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { NOVEL_STATUS_LABELS, fmtNovelChars } from '#shared/store-novel'
+import { NOVEL_ENCODING_LABELS, normalizeNovelToUtf8 } from '#shared/novel-encoding'
 import type { NovelStatus } from '#shared/store-novel'
 
 // /admin/novels — 小说审核(管理后台):商品列表 + 试读/下载审核 + 通过/拒绝 + 推荐标记。
@@ -25,6 +26,8 @@ interface NovelRow {
   downloadCount: number
   purchaseCount: number
   fileSize: number
+  /** 来源编码(utf-8/gbk/big5/utf-8-recovered…;null=历史数据未记录) */
+  sourceEncoding: string | null
   sellerName: string
   sellerEmail: string
   createdAt: number
@@ -156,6 +159,15 @@ interface NovelPreviewData {
   fileSize: number
   status: NovelStatus
   rejectReason: string | null
+  /** DB 记录的来源编码(null=历史数据未记录) */
+  sourceEncoding: string | null
+  /** 服务端对预览字节的自适应编码检测结果 */
+  detected: {
+    encoding: string
+    label: string
+    garbledRatio: number
+    confidence: 'high' | 'low'
+  }
   /** 正文前 50KB 解码后的文本(超长截断) */
   content: string
   truncated: boolean
@@ -164,9 +176,12 @@ const previewOpen = ref(false)
 const previewLoading = ref(false)
 const previewError = ref('')
 const previewData = ref<NovelPreviewData | null>(null)
+/** 当前预览对应的列表行(取商品 id 供转换/下载用) */
+const previewRow = ref<NovelRow | null>(null)
 
 async function openPreview(row: NovelRow | null) {
   if (!row) return
+  previewRow.value = row
   previewOpen.value = true
   previewLoading.value = true
   previewError.value = ''
@@ -177,6 +192,45 @@ async function openPreview(row: NovelRow | null) {
     previewError.value = e instanceof Error ? e.message : String(e)
   } finally {
     previewLoading.value = false
+  }
+}
+
+/** 是否需要转 UTF-8:检测结果非 UTF-8,或置信度低(疑似乱码) */
+const needsConvert = computed(() => {
+  const d = previewData.value?.detected
+  if (!d) return false
+  return d.encoding !== 'utf-8' || d.confidence === 'low'
+})
+
+// ---- 一键转 UTF-8:浏览器端完成解码转换(支持 Big5 等全部编码),服务端只负责校验落盘 ----
+const converting = ref(false)
+
+async function convertUtf8() {
+  const row = previewRow.value
+  const data = previewData.value
+  if (!row || !data) return
+  converting.value = true
+  try {
+    // 下载整本原始文件(同源 fetch 自带管理员会话),在浏览器内完成编码识别与转换
+    const res = await fetch(`/api/store/novels/${row.id}/download`)
+    if (!res.ok) throw new Error(`下载源文件失败(HTTP ${res.status})`)
+    const normalized = normalizeNovelToUtf8(new Uint8Array(await res.arrayBuffer()))
+    await $fetch(`/api/admin/novels/${row.id}/convert-utf8?version=${data.version}`, {
+      method: 'POST',
+      body: normalized.bytes,
+      headers: { 'content-type': 'application/octet-stream' }
+    })
+    toast.add({
+      title: `v${data.version} 已转换为 UTF-8`,
+      description: `来源编码 ${NOVEL_ENCODING_LABELS[normalized.sourceEncoding as keyof typeof NOVEL_ENCODING_LABELS] ?? normalized.sourceEncoding},已更新存储文件与来源指向`,
+      color: 'success'
+    })
+    void load()
+    await openPreview(row)
+  } catch (e) {
+    toast.add({ title: '转换失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    converting.value = false
   }
 }
 </script>
@@ -275,6 +329,15 @@ async function openPreview(row: NovelRow | null) {
                     variant="subtle"
                   >
                     v{{ r.version }}
+                  </UBadge>
+                  <UBadge
+                    v-if="r.sourceEncoding && r.sourceEncoding !== 'utf-8'"
+                    color="warning"
+                    size="sm"
+                    variant="subtle"
+                    :title="`来源编码 ${r.sourceEncoding},可在试读中一键转 UTF-8`"
+                  >
+                    {{ NOVEL_ENCODING_LABELS[r.sourceEncoding as keyof typeof NOVEL_ENCODING_LABELS] ?? r.sourceEncoding }} 源
                   </UBadge>
                   <UBadge
                     v-if="r.featured === 1"
@@ -460,7 +523,47 @@ async function openPreview(row: NovelRow | null) {
             <span v-else>免费</span>
             <span>·</span>
             <span>发布者开放试读 {{ previewData.previewChars > 0 ? `${previewData.previewChars.toLocaleString()} 字` : '不可试读' }}</span>
+            <span>·</span>
+            <span>
+              编码:
+              <UBadge
+                :color="needsConvert ? 'warning' : 'success'"
+                size="sm"
+                variant="subtle"
+              >
+                {{ previewData.detected.label }}
+              </UBadge>
+              <span
+                v-if="previewData.sourceEncoding && previewData.sourceEncoding !== previewData.detected.encoding"
+                class="ml-1 text-neutral-400"
+              >
+                (库内记录:{{ NOVEL_ENCODING_LABELS[previewData.sourceEncoding as keyof typeof NOVEL_ENCODING_LABELS] ?? previewData.sourceEncoding }})
+              </span>
+            </span>
           </div>
+          <UAlert
+            v-if="needsConvert"
+            class="mb-3"
+            color="warning"
+            variant="subtle"
+            icon="i-lucide-triangle-alert"
+            :title="previewData.detected.confidence === 'low' ? '疑似乱码(置信度低)' : '非 UTF-8 来源'"
+            :description="previewData.detected.confidence === 'low'
+              ? `编码未能可靠识别(乱码特征占比 ${(previewData.detected.garbledRatio * 100).toFixed(1)}%),可尝试一键转 UTF-8;若转换后仍乱码,建议拒绝并说明原因`
+              : '来源文件不是 UTF-8 编码,可一键转换为 UTF-8 并更新存储文件'"
+          >
+            <template #actions>
+              <UButton
+                size="xs"
+                color="warning"
+                icon="i-lucide-file-symlink"
+                :loading="converting"
+                @click="convertUtf8"
+              >
+                一键转 UTF-8
+              </UButton>
+            </template>
+          </UAlert>
           <div class="max-h-[60vh] overflow-y-auto rounded-lg border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-900/40">
             <p class="whitespace-pre-wrap text-sm leading-relaxed text-neutral-700 dark:text-neutral-300">
               {{ previewData.content }}

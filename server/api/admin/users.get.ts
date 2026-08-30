@@ -5,7 +5,7 @@
 import { useD1 } from '../../utils/d1'
 import { requireAdmin } from '../../utils/authz'
 import { user as usersTable, aiUsage, quotaPackageOrder } from '../../db/schema'
-import { eq, desc, asc, count, sql } from 'drizzle-orm'
+import { eq, desc, asc, count, sql, and, like, or } from 'drizzle-orm'
 
 const SORT_FIELDS = ['balance', 'consumed', 'recharged', 'createdAt'] as const
 type SortField = typeof SORT_FIELDS[number]
@@ -13,7 +13,7 @@ type SortField = typeof SORT_FIELDS[number]
 export default defineEventHandler(async (event) => {
   await requireAdmin(event)
   const db = useD1(event)
-  const query = getQuery<{ page?: string, pageSize?: string, sort?: string, dir?: string }>(event)
+  const query = getQuery<{ page?: string, pageSize?: string, sort?: string, dir?: string, q?: string }>(event)
 
   const page = Math.max(1, Math.floor(Number(query.page ?? 1)) || 1)
   const pageSize = Math.min(100, Math.max(1, Math.floor(Number(query.pageSize ?? 20)) || 20))
@@ -22,6 +22,15 @@ export default defineEventHandler(async (event) => {
     ? query.sort as SortField
     : 'createdAt'
   const dir = query.dir === 'asc' ? 'asc' : 'desc'
+  // 搜索:按昵称/邮箱/用户 ID 模糊匹配(去掉 LIKE 通配符防注入干扰;D1 LIKE 对 ASCII 不区分大小写)
+  const q = String(query.q ?? '').trim().slice(0, 100).replace(/[%_\\]/g, '')
+  const searchWhere = q
+    ? or(
+        like(usersTable.name, `%${q}%`),
+        like(usersTable.email, `%${q}%`),
+        like(usersTable.id, `%${q}%`)
+      )
+    : undefined
 
   // 每用户累计消费(子查询;未消费用户 COALESCE 为 0,排序不受 NULL 干扰)
   const usage = db.select({
@@ -46,7 +55,10 @@ export default defineEventHandler(async (event) => {
     ? asc(sort === 'balance' ? usersTable.aiTokenBalance : sort === 'consumed' ? usage.consumed : sort === 'recharged' ? recharge.recharged : usersTable.createdAt)
     : desc(sort === 'balance' ? usersTable.aiTokenBalance : sort === 'consumed' ? usage.consumed : sort === 'recharged' ? recharge.recharged : usersTable.createdAt)
 
-  const total = await db.select({ n: count() }).from(usersTable).all()
+  // 搜索时 total 为过滤后总数(汇总统计卡片仍为全站数据)
+  const total = searchWhere
+    ? await db.select({ n: count() }).from(usersTable).where(searchWhere).all()
+    : await db.select({ n: count() }).from(usersTable).all()
   const rows = await db.select({
     id: usersTable.id,
     name: usersTable.name,
@@ -60,6 +72,7 @@ export default defineEventHandler(async (event) => {
     .from(usersTable)
     .leftJoin(usage, eq(usage.userId, usersTable.id))
     .leftJoin(recharge, eq(recharge.userId, usersTable.id))
+    .where(searchWhere ? and(searchWhere) : undefined)
     .orderBy(orderBy)
     .limit(pageSize)
     .offset((page - 1) * pageSize)
@@ -90,6 +103,7 @@ export default defineEventHandler(async (event) => {
     pageSize,
     sort,
     dir,
+    q,
     stats: {
       totalUsers: total[0]?.n ?? 0,
       totalBalance: balance[0]?.total ?? 0,

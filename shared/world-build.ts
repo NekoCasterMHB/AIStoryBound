@@ -16,16 +16,16 @@ export const UNIT_MAX_CHARS = 10000
 export const UNIT_OVERLAP_CHARS = 1000
 /** 成书时进入人物卡的角色数上限(按 mentionCount 取前 N) */
 export const TOP_CHARACTERS = 12
-/** 引用摘录上限(字符) */
-export const QUOTE_MAX_CHARS = 80
-/** 节约模式:单次提取输出上限(5 类核心实体,引用从简) */
-export const ECO_EXTRACT_MAX_TOKENS = 3800
+/** 引用摘录上限(字符;约 2~3 句话,支撑行为细节类证据如嗜好 detail) */
+export const QUOTE_MAX_CHARS = 150
+/** 节约模式:单次提取输出上限(5 类核心实体,引用从简);引用加长后同步上调,防挤占实体完整性 */
+export const ECO_EXTRACT_MAX_TOKENS = 4600
 /** 节约模式:单次提取的引用摘录上限(字符) */
-export const ECO_QUOTE_MAX_CHARS = 40
+export const ECO_QUOTE_MAX_CHARS = 80
 /** 节约模式:成书输出上限(标题/简介/角色定位 + 标签/性向/设定) */
 export const ECO_SYNTH_MAX_TOKENS = 1600
 /** 提取 schema 版本:写入缓存 key,变更后旧提取缓存作废(避免复用没有 plot_beat / 切段方式不同的结果) */
-export const EXTRACT_SCHEMA_VERSION = 4
+export const EXTRACT_SCHEMA_VERSION = 5
 /** 单角色章节变体上限:只保留前 N 处变化,防止超长作品变体膨胀 */
 export const MAX_STAGE_VARIANTS = 30
 /** 一致性检查单次输出上限(tokens);个人中心「生成参数-高级设置」可调。默认=主流模型输出上限(384K),等于不限制 */
@@ -211,6 +211,9 @@ export function buildSynthesizeMessages(
       relationships: c.relationships,
       desire: c.desire,
       kinks: (c.kinks ?? []).slice(0, 8),
+      identityVariants: c.identityVariants,
+      appearanceVariants: c.appearanceVariants,
+      backgroundVariants: c.backgroundVariants,
       sex: c.sex && Object.keys(c.sex).length ? c.sex : undefined,
       chapters: [...new Set(c.sources.map(s => s.chapter))],
       mentionCount: c.mentionCount
@@ -224,8 +227,11 @@ export function buildSynthesizeMessages(
     items: entities.items.length,
     foreshadowing: entities.foreshadowing.length
   }
+  // 冲突摘要带 valueA/valueB 具体值:成书 AI 据此合并出完整人设(只有 verdict/reason 时模型无从判断)
   const conflictSummary = conflicts.slice(0, 12).map(c => ({
     entity: `${c.entityType}:${c.entityName}.${c.field}`,
+    valueA: truncate(c.valueA == null ? null : String(c.valueA), 60),
+    valueB: truncate(c.valueB == null ? null : String(c.valueB), 60),
     verdict: c.verdict ?? 'uncertain',
     reason: c.reason
   }))
@@ -268,6 +274,7 @@ export function buildSynthesizeMessages(
         + '- 每张卡必须忠实于实体信息,不确定的字段填 null 或空数组,不要编造;\n'
         + `- first_appearance 填最早出现段落(如 "第3段");relationships.value 是 -100~100 的亲密度,依据原文关系定;patience/softness 按实体信息给合理估值,信息不足填 null。\n`
         + '- tags/orientation/setting/heat/contentWarnings/tropes/kinkProfile 只能在下方本地草稿上润色或纠偏,必须能被实体或故事骨干支持;禁止发明地名、势力、体系或玩法。\n'
+        + '- 同一角色的多版本身份/外貌/背景(identityVariants/appearanceVariants/backgroundVariants)与已知冲突:相互兼容的描述整合为一套更完整的设定(可并存的都保留,如既是留学生又是作家;不同侧面的背景合并叙述),互斥的按裁决结论(verdict)取信;每张卡输出一套自洽的完整人设,不要罗列多个版本。\n'
         + `人物信息:\n${JSON.stringify(top)}\n`
         + `世界设定(节选):\n${JSON.stringify(worldSlice)}\n`
         + `故事骨干(按文本顺序,不是逐段细纲):\n${JSON.stringify(draft.storySpine)}\n`
@@ -329,6 +336,18 @@ export function buildEcoSynthMessages(title: string, entities: WorldEntities, lo
   ]
 }
 
+/** eco 兜底:多版本表述代码拼接(不跑成书 AI,不能丢信息);超长时保留先出现的若干条 */
+function joinVariants(parts: string[] | undefined, sep: string, maxLen: number): string | null {
+  if (!parts?.length) return null
+  let out = ''
+  for (const p of parts) {
+    const cand = out ? `${out}${sep}${p}` : p
+    if (cand.length > maxLen) break
+    out = cand
+  }
+  return out || null
+}
+
 /** 节约模式人物卡:由合并实体直接拼卡(无 LLM 润色);roles 可按名字覆盖定位 */
 export function buildLocalCards(entities: WorldEntities, roles?: { name?: string, role?: string }[]): CharacterCard[] {
   const roleMap = new Map((roles ?? []).map(r => [norm(r.name ?? ''), r.role ?? '']))
@@ -345,11 +364,11 @@ export function buildLocalCards(entities: WorldEntities, roles?: { name?: string
         alias: alias || undefined,
         gender: c.gender ?? null,
         age: c.age ?? null,
-        identity: c.identity ?? null,
-        appearance: c.appearance ?? null,
+        identity: joinVariants(c.identityVariants, '/', 60) ?? c.identity ?? null,
+        appearance: joinVariants(c.appearanceVariants, '；', 200) ?? c.appearance ?? null,
         personality: c.personality ?? [],
         speech_style: c.speech_style ?? [],
-        background: c.background ?? null,
+        background: joinVariants(c.backgroundVariants, '；', 300) ?? c.background ?? null,
         abilities: c.abilities ?? [],
         goals: c.goals ?? [],
         fears: c.fears ?? [],
@@ -362,7 +381,7 @@ export function buildLocalCards(entities: WorldEntities, roles?: { name?: string
           theme: k.theme,
           view: k.view ?? null,
           role: k.role ?? null,
-          detail: k.quote ? truncate(k.quote, 60) : null
+          detail: k.quote ? truncate(k.quote, 120) : null
         })),
         sex: c.sex && Object.keys(c.sex).length ? { ...c.sex } : undefined,
         chapterVariants: (c.chapterVariants ?? []).length ? c.chapterVariants : undefined
@@ -411,6 +430,26 @@ interface CharacterUnitSnapshot {
 }
 
 const hasText = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0
+
+/** 可并存文本字段(身份/外貌/背景):同一角色在不同章节的表述收集为版本列表,差异不记冲突、不覆盖。
+ *  实体本体保留最后一次值(快照/eco 兜底用);版本列表在成书阶段交给 AI 合并出完整人设。 */
+const VARIANT_TEXT_FIELDS = ['identity', 'appearance', 'background'] as const
+type VariantTextField = typeof VARIANT_TEXT_FIELDS[number]
+
+/** 版本收集:归一化去重;互相包含时保留更完整的表述(吸收"同一件事的更完整说法")。返回是否有变化 */
+function absorbVariant(parts: string[], value: unknown): boolean {
+  if (!hasText(value)) return false
+  const v = value.trim()
+  const nv = norm(v)
+  if (parts.some(p => norm(p) === nv)) return false
+  const idx = parts.findIndex(p => norm(p).includes(nv) || nv.includes(norm(p)))
+  if (idx >= 0) {
+    if (v.length > parts[idx]!.length) parts[idx] = v
+    return true
+  }
+  parts.push(v)
+  return true
+}
 
 /** 由按段快照序列生成阶段变体:相邻快照 diff,值变化才记录;首拍记录起点值(基底卡是全书终态,前期段需要起点)。
  *  finalDead=该角色全书终态是否死亡:首拍未死而终态已死时,首拍显式记录 dead:false,防止前期段继承终态死亡。
@@ -484,6 +523,8 @@ export function mergeExtractions(
     scalarSources: Record<string, EntitySource>
     /** 按段标量快照(仅角色;章节变体 diff 素材) */
     snaps: CharacterUnitSnapshot[]
+    /** 可并存文本字段的版本收集(仅角色字段用;跨实体类型统一初始化为空) */
+    textParts: Record<VariantTextField, string[]>
     // 合并字段类型混杂(标量/数组/关系对),统一按 unknown 存取
     entity: Record<string, unknown>
   }
@@ -540,7 +581,7 @@ export function mergeExtractions(
   const getOrCreate = (map: Map<string, Acc>, key: string, displayName: string, make: () => Record<string, unknown>): Acc => {
     let acc = map.get(key)
     if (!acc) {
-      acc = { key, displayName, sources: [], mentionCount: 0, scalarSources: {}, snaps: [], entity: make() }
+      acc = { key, displayName, sources: [], mentionCount: 0, scalarSources: {}, snaps: [], textParts: { identity: [], appearance: [], background: [] }, entity: make() }
       map.set(key, acc)
     }
     return acc
@@ -564,9 +605,13 @@ export function mergeExtractions(
       addSource(acc, src)
       mergeScalar(acc, 'gender', c.gender, src, 'character')
       mergeScalar(acc, 'age', c.age, src, 'character')
-      mergeScalar(acc, 'identity', c.identity, src, 'character')
-      mergeScalar(acc, 'appearance', c.appearance, src, 'character')
-      mergeScalar(acc, 'background', c.background, src, 'character')
+      // 身份/外貌/背景是可并存描述(既是留学生又是作家;两段背景说同一件事的不同侧面):
+      // 收集全部不同表述,不记冲突、不覆盖;本体保留最后一次值,版本列表成书时交给 AI 合并
+      for (const f of VARIANT_TEXT_FIELDS) {
+        if (absorbVariant(acc.textParts[f], c[f])) {
+          acc.entity[f] = c[f]
+        }
+      }
       mergeScalar(acc, 'dead', c.dead, src, 'character')
       // 性欲强度随剧情推进会自然变化(成长线),按"后文为准"覆盖但不算设定冲突,避免刷爆冲突列表
       if (c.desire !== undefined && c.desire !== null) {
@@ -687,6 +732,14 @@ export function mergeExtractions(
       const variants = buildStageVariants(acc.snaps, acc.entity.dead === true)
       if (variants.length) acc.entity.chapterVariants = variants
     }
+  }
+
+  // 可并存文本字段的多版本表述挂到实体上(成书 AI 合并完整人设用;仅多版本时携带,控制 payload)
+  for (const acc of chars.values()) {
+    const ent = acc.entity as unknown as MergedCharacter
+    if (acc.textParts.identity.length > 1) ent.identityVariants = [...acc.textParts.identity]
+    if (acc.textParts.appearance.length > 1) ent.appearanceVariants = [...acc.textParts.appearance]
+    if (acc.textParts.background.length > 1) ent.backgroundVariants = [...acc.textParts.background]
   }
 
   return {
@@ -918,6 +971,9 @@ function inferSetting(entities: WorldEntities): string {
   const loc = [...entities.locations].sort((a, b) => b.mentionCount - a.mentionCount)[0]
   const stage = loc ? (loc.type || loc.name) : ''
   const rule = cat || (entities.world_rules[0]?.rule ? '有特殊规则' : '现实向')
+  // 体系类别优先作主语,最高频地点降级为括注:防止现实场景地点(如会所/网吧)靠提及数
+  // 顶掉世界类型(如虚拟游戏世界),把舞台误判成现实向
+  if (cat) return stage ? `${cat}(${stage})` : cat
   if (stage && rule) return `${stage} + ${rule}`
   return stage || rule || '设定不明'
 }

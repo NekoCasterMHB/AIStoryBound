@@ -1,9 +1,8 @@
 <script setup lang="ts">
 // 预置小说预览/阅读页:
 // - 挂载时先查 IndexedDB 缓存,未命中则从 /api/presets/[id]/download 下载全文并写入 IndexedDB(持久化,可离线阅读)
-// - 章节切分复用 shared/novel 的 segmentChapters(浏览器端可用)
+// - 全文单段展示(不再按章节切分)
 // - "用这本小说生成世界" → 跳转 /generate?from=preset&id=xxx:由生成页自动加载本小说为附件,进入确认页由用户确认
-import { segmentChapters } from '../../utils/chapters'
 import type { PresetNovelRow, ChapterSegment } from '#shared/novel'
 import { fetchPrebuiltWorld, installPrebuiltWork } from '~/utils/prebuiltWorld'
 import type { PrebuiltWorld } from '~/utils/prebuiltWorld'
@@ -27,19 +26,12 @@ const textState = ref<'loading' | 'ready' | 'error'>('loading')
 const textError = ref<string | null>(null)
 const cachedAt = ref<string | null>(null)
 const chapters = ref<ChapterSegment[]>([])
-const current = ref(0)
-
-function chapLabel(i: number) {
-  const ch = chapters.value[i]
-  if (!ch) return ''
-  return ch.title || (i === 0 ? '前言' : `第 ${i + 1} 部分`)
-}
 
 function applyText(raw: string) {
-  const clean = raw.replace(/^\uFEFF/, '') // 去 BOM
-  chapters.value = segmentChapters(clean)
+  const clean = raw.replace(/^\uFEFF/, '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim()
+  chapters.value = clean ? [{ title: '', content: clean }] : []
   textState.value = chapters.value.length > 0 ? 'ready' : 'error'
-  if (textState.value === 'error') textError.value = '文本解析失败(无可读章节)'
+  if (textState.value === 'error') textError.value = '文本为空或加载失败'
 }
 
 async function loadText() {
@@ -169,7 +161,7 @@ function fmtChars(n?: number) {
               <div class="mt-1 flex flex-wrap items-center gap-2">
                 <UBadge
                   variant="subtle"
-                  :label="`${meta.chapter_count ?? 0} 章 · ${fmtChars(meta.char_count ?? 0)}`"
+                  :label="`全书约 ${fmtChars(meta.char_count ?? 0)}`"
                 />
                 <UBadge
                   v-if="cachedAt"
@@ -252,72 +244,14 @@ function fmtChars(n?: number) {
 
         <div
           v-else
-          class="grid gap-6 lg:grid-cols-[260px_1fr]"
+          class="grid gap-6"
         >
-          <!-- 章节侧栏(大屏) -->
-          <aside class="hidden max-h-[75vh] overflow-y-auto rounded-2xl border border-neutral-200 p-2 dark:border-neutral-700 lg:block">
-            <nav class="space-y-0.5">
-              <button
-                v-for="(ch, i) in chapters"
-                :key="i"
-                type="button"
-                class="block w-full truncate rounded-lg px-3 py-1.5 text-left text-sm transition-colors"
-                :class="i === current
-                  ? 'bg-primary-500/10 font-medium text-primary-600 dark:text-primary-400'
-                  : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'"
-                @click="current = i"
-              >
-                {{ chapLabel(i) }}
-              </button>
-            </nav>
-          </aside>
-
-          <!-- 正文 -->
+          <!-- 正文(单段全文) -->
           <article class="min-w-0 space-y-4">
-            <div class="flex items-center gap-3">
-              <!-- 章节选择(小屏) -->
-              <USelect
-                v-model="current"
-                class="w-full lg:hidden"
-                :items="chapters.map((_, i) => ({ label: chapLabel(i), value: i }))"
-                value-key="value"
-                label-key="label"
-              />
-              <h2 class="hidden truncate text-lg font-semibold lg:block">
-                {{ chapLabel(current) }}
-              </h2>
-              <span class="ml-auto hidden shrink-0 text-xs text-neutral-400 lg:block">
-                {{ current + 1 }} / {{ chapters.length }}
-              </span>
-            </div>
-
             <div class="space-y-4 rounded-2xl border border-neutral-200 p-6 leading-8 dark:border-neutral-700 sm:px-8">
               <p class="whitespace-pre-wrap text-[15px] text-neutral-800 dark:text-neutral-200">
-                {{ chapters[current]?.content }}
+                {{ chapters[0]?.content }}
               </p>
-            </div>
-
-            <div class="flex items-center justify-between gap-3">
-              <UButton
-                label="上一章"
-                color="neutral"
-                variant="outline"
-                icon="i-lucide-arrow-left"
-                :disabled="current <= 0"
-                @click="current--"
-              />
-              <span class="text-xs text-neutral-400 lg:hidden">
-                {{ current + 1 }} / {{ chapters.length }}
-              </span>
-              <UButton
-                label="下一章"
-                color="neutral"
-                variant="outline"
-                icon="i-lucide-arrow-right"
-                trailing
-                :disabled="current >= chapters.length - 1"
-                @click="current++"
-              />
             </div>
           </article>
         </div>

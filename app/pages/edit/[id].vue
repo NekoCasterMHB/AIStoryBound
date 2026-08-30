@@ -2,7 +2,7 @@
 // /edit/[id] — 本地作品编辑页(与阅读页同款全屏布局与主题)
 // 书名 / 作者 / 正文可直接打字修改;每次改动 1s 防抖后自动保存到本机 IndexedDB。
 // 正文为整本连排文本,保存时按章节标题重新切分,章节结构随原文保留。
-import { getWork, saveWork, parseChaptersFromText } from '../../utils/worldGen'
+import { getWork, saveWork, toContentSegments } from '../../utils/worldGen'
 import { getReadingProgress } from '../../utils/readingStore'
 import { readingKey, DEFAULT_READER_SETTINGS, CHAPTER_REGEX } from '#shared/novel'
 import type { LocalWork, ReaderSettings, ChapterSegment } from '#shared/novel'
@@ -111,7 +111,7 @@ const chapterAnchors = computed<ChapterAnchor[]>(() => {
     // 全文无章节标题:退化为单章
     anchors.push({ title: '', offset: 0 })
   } else if (anchors[0]!.offset > 0) {
-    // 首个标题之前有前置内容(与 segmentChapters 的首段一致)
+    // 首个标题之前有前置内容:补「前言」锚点(旧版分章格式的作品仍有标题行,单段全文则天然退化单章)
     anchors.unshift({ title: '', offset: 0 })
   }
   return anchors
@@ -231,7 +231,7 @@ async function flushSave() {
   saving = true
   saveState.value = 'saving'
   try {
-    const parsed = parseChaptersFromText(text.value)
+    const parsed = toContentSegments(text.value)
     await saveWork({
       ...base,
       title: title.value.trim() || '未命名作品',
@@ -246,7 +246,7 @@ async function flushSave() {
     saveState.value = 'saved'
     lastSavedAt.value = Date.now()
   } catch {
-    // 正文为空或无法切分章节时保留改动,等下一次输入再自动重试
+    // 正文为空时保留改动,等下一次输入再自动重试
     saveState.value = 'error'
   } finally {
     saving = false

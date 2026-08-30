@@ -92,19 +92,18 @@ const rows = files.map((f) => {
     coverEmoji: ov.coverEmoji ?? null,
     storageKey: `txt/${id}.txt`,
     encoding: parsed.encoding,
-    chapterCount: parsed.chapters.length,
     charCount: parsed.totalChars,
     featured: ov.featured ?? 1,
     sortOrder: ov.sortOrder ?? 0
   }
 })
 
-// 1) 写 D1(ON CONFLICT 幂等更新;download_count/created_at 保留)
+// 1) 写 D1(ON CONFLICT 幂等更新;download_count/created_at 保留;chapter_count 已废弃,列保留但不再写)
 // 正文不再上传 R2:txt 文件放在 public/txt/ 随站点部署,下载接口按 storage_key 约定直读静态资源
 const values = rows.map(r =>
-  `(${sqlStr(r.id)}, ${sqlStr(r.title)}, ${sqlStr(r.author)}, ${sqlStr(r.genre)}, ${sqlStr(r.description)}, ${sqlStr(r.coverEmoji)}, ${sqlStr(r.storageKey)}, ${sqlStr(r.encoding)}, ${r.chapterCount}, ${r.charCount}, ${r.featured}, ${r.sortOrder}, 0, ${sqlStr(new Date().toISOString())})`
+  `(${sqlStr(r.id)}, ${sqlStr(r.title)}, ${sqlStr(r.author)}, ${sqlStr(r.genre)}, ${sqlStr(r.description)}, ${sqlStr(r.coverEmoji)}, ${sqlStr(r.storageKey)}, ${sqlStr(r.encoding)}, ${r.charCount}, ${r.featured}, ${r.sortOrder}, 0, ${sqlStr(new Date().toISOString())})`
 ).join(',\n')
-const sql = `INSERT INTO preset_novels (id, title, author, genre, description, cover_emoji, storage_key, encoding, chapter_count, char_count, featured, sort_order, download_count, created_at)\nVALUES\n${values}\nON CONFLICT(id) DO UPDATE SET\n  title = excluded.title,\n  author = excluded.author,\n  genre = excluded.genre,\n  description = excluded.description,\n  cover_emoji = excluded.cover_emoji,\n  storage_key = excluded.storage_key,\n  encoding = excluded.encoding,\n  chapter_count = excluded.chapter_count,\n  char_count = excluded.char_count,\n  featured = excluded.featured,\n  sort_order = excluded.sort_order;\n`
+const sql = `INSERT INTO preset_novels (id, title, author, genre, description, cover_emoji, storage_key, encoding, char_count, featured, sort_order, download_count, created_at)\nVALUES\n${values}\nON CONFLICT(id) DO UPDATE SET\n  title = excluded.title,\n  author = excluded.author,\n  genre = excluded.genre,\n  description = excluded.description,\n  cover_emoji = excluded.cover_emoji,\n  storage_key = excluded.storage_key,\n  encoding = excluded.encoding,\n  char_count = excluded.char_count,\n  featured = excluded.featured,\n  sort_order = excluded.sort_order;\n`
 
 const tmp = mkdtempSync(join(tmpdir(), 'seed-presets-'))
 const sqlFile = join(tmp, 'insert.sql')

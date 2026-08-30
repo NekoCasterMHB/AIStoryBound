@@ -981,6 +981,7 @@ watch(narrLength, v => saveNarrLength(v))
         variant="soft"
         icon="i-lucide-circle-alert"
         title="充值系统维护中"
+        description="可私聊作者购买token,维护期间额外赠送30%, 以兑换码形式发放。"
         class="mt-5"
       />
       <UButton
@@ -1808,6 +1809,7 @@ watch(narrLength, v => saveNarrLength(v))
             variant="soft"
             icon="i-lucide-circle-alert"
             title="充值系统维护中"
+            description="可私聊作者购买,维护期间额外赠送 30% , token以兑换码形式发放。"
           />
           <p class="text-sm text-neutral-500">
             选择加油包套餐:

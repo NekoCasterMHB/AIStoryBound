@@ -1,0 +1,80 @@
+// server/workflows/world-gen.ts
+// 云端世界生成任务执行器(Cloudflare Workflows):
+//  - 每个提取单元一个 step(自动重试/重放),合并结果与成书 overlay 走 R2 scratch;
+//  - 取消:API 端点把任务行置 cancelled 后调用 env.WORLD_GEN.get(taskId).terminate(),
+//    各步骤入口的 assertNotCancelled 兜底提前终止;
+//  - 失败:run 顶层 catch 统一 markTaskFailed(置状态 + 按实耗结算 + 清 key 暂存)。
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers'
+import {
+  createWorldGenCtx, extractUnitAt, markTask, markTaskFailed, stepAuthorAi, stepCheck,
+  stepFinalize, stepMerge, stepParseSource, stepPlanUnits, stepSynthesize, requireTask,
+  WorldGenCancelledError, EXTRACT_CONCURRENCY
+} from '../utils/world-gen-pipeline'
+import type { WorldGenEnv } from '../utils/world-gen-pipeline'
+
+export interface WorldGenWorkflowParams {
+  taskId: string
+}
+
+export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowParams> {
+  async run(event: WorkflowEvent<WorldGenWorkflowParams>, step: WorkflowStep): Promise<void> {
+    const env = this.env as unknown as WorldGenEnv
+    const ctx = createWorldGenCtx(env, event.payload.taskId)
+
+    try {
+      const task = await requireTask(ctx)
+      if (task.status === 'cancelled') return
+      await markTask(ctx, { status: 'running', error: null })
+
+      // 1) 解析(编码/清洗/书名页作者正则)
+      const parsed = await step.do('parse-source', {
+        retries: { limit: 3, delay: '5 second', backoff: 'exponential' }
+      }, () => stepParseSource(ctx))
+
+      // 2) 作者识别兜底(正则未命中时 AI 判断;失败不中止)
+      if (!parsed.author) {
+        const author = await step.do('author-ai', { retries: { limit: 1, delay: '5 second' } }, () => stepAuthorAi(ctx))
+        if (author) await markTask(ctx, { author })
+      }
+
+      // 3) 切段计划
+      const plan = await step.do('plan-units', {
+        retries: { limit: 3, delay: '5 second', backoff: 'exponential' }
+      }, () => stepPlanUnits(ctx))
+
+      // 4) 分块提取:并发 4 分批(与浏览器端并发一致;每单元独立 step,重试互不影响)
+      for (let start = 0; start < plan.units.length; start += EXTRACT_CONCURRENCY) {
+        const batch = plan.units.map((_, i) => i).slice(start, start + EXTRACT_CONCURRENCY)
+        await Promise.all(batch.map(i =>
+          step.do(`extract-unit-${i + 1}`, {
+            retries: { limit: 2, delay: '10 second', backoff: 'exponential' }
+          }, () => extractUnitAt(ctx, plan, i))
+        ))
+      }
+
+      // 5) 合并 + 引用校验 + 故事线(纯代码;失败率过高在此抛出)
+      await step.do('merge', {
+        retries: { limit: 3, delay: '10 second', backoff: 'exponential' }
+      }, () => stepMerge(ctx))
+
+      // 6) 一致性检查(完整模式;失败降级为告警,不中止)
+      if (task.mode !== 'eco') {
+        await step.do('check', { retries: { limit: 1, delay: '10 second' } }, () => stepCheck(ctx))
+      }
+
+      // 7) 成书(瞬时错误由 step 重试兜底)
+      await step.do('synthesize', {
+        retries: { limit: 3, delay: '15 second', backoff: 'exponential' }
+      }, () => stepSynthesize(ctx))
+
+      // 8) 落 R2 缓存 + 入库 + 结算 + 清 key/scratch
+      await step.do('finalize', {
+        retries: { limit: 3, delay: '5 second', backoff: 'exponential' }
+      }, () => stepFinalize(ctx))
+    } catch (e) {
+      if (e instanceof WorldGenCancelledError) return
+      console.error('[world-gen workflow] 任务失败', { taskId: event.payload.taskId }, e)
+      await markTaskFailed(ctx, e instanceof Error ? e.message : String(e)).catch(() => {})
+    }
+  }
+}

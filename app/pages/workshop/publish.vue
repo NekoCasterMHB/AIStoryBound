@@ -8,9 +8,9 @@ import {
   MAX_NOVEL_PREVIEW_CHARS,
   MIN_NOVEL_CHARS,
   NOVEL_TXT_EXTENSIONS,
-  decodeNovelText,
   countNovelChars
 } from '#shared/store-novel'
+import { detectNovelEncoding } from '#shared/novel-encoding'
 import { SELLER_RATIO } from '#shared/store-skill'
 import { TOKEN_CNY_PER_M } from '#shared/quota-packages'
 
@@ -54,11 +54,23 @@ const fileData = computed<File | null>(() => {
   return uploadFile.value
 })
 
-/** 正文预校验结果(与服务端一致,尽早提示) */
-const fileMeta = ref<{ totalChars: number, error: string }>({ totalChars: 0, error: '' })
+/** 正文预校验结果(与服务端一致,尽早提示)+ 编码自动识别/预览 */
+const fileMeta = ref<{
+  totalChars: number
+  error: string
+  /** 检测到的来源编码标签;utf-8 时为空串(无需转换) */
+  encoding: string
+  /** true = 乱码特征占比偏高,疑似乱码 */
+  garbled: boolean
+  /** 解码后正文开头预览(供上传前确认) */
+  preview: string
+}>({ totalChars: 0, error: '', encoding: '', garbled: false, preview: '' })
+/** 编码归一化后的 UTF-8 文件(提交时用它替代原文件) */
+const convertedFile = ref<File | null>(null)
 
 watch(fileData, (file) => {
-  fileMeta.value = { totalChars: 0, error: '' }
+  fileMeta.value = { totalChars: 0, error: '', encoding: '', garbled: false, preview: '' }
+  convertedFile.value = null
   if (!file) return
   const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
   if (!NOVEL_TXT_EXTENSIONS.includes(ext)) {
@@ -71,13 +83,19 @@ watch(fileData, (file) => {
   }
   void file.arrayBuffer().then((buf) => {
     try {
-      const text = decodeNovelText(new Uint8Array(buf))
+      const detected = detectNovelEncoding(new Uint8Array(buf))
+      const text = detected.text
       const totalChars = countNovelChars(text)
       if (totalChars < MIN_NOVEL_CHARS) {
         fileMeta.value.error = `小说正文过短(至少 ${MIN_NOVEL_CHARS} 字才能上架)`
         return
       }
+      // 统一转成 UTF-8 再上传:商城库内文件编码归一,买家下载/阅读不再乱码
+      convertedFile.value = new File([new TextEncoder().encode(text)], file.name, { type: 'text/plain' })
       fileMeta.value.totalChars = totalChars
+      fileMeta.value.encoding = detected.encoding === 'utf-8' ? '' : detected.label
+      fileMeta.value.garbled = detected.confidence === 'low'
+      fileMeta.value.preview = [...text].slice(0, 300).join('')
     } catch (err) {
       fileMeta.value.error = (err as Error).message
     }
@@ -166,7 +184,8 @@ async function submit() {
   fd.append('desc', desc.value.trim())
   if (!isUpdate) fd.append('price', String(priceNum))
   fd.append('previewChars', String(pv))
-  fd.append('file', fileData.value)
+  // 优先提交编码归一化后的 UTF-8 文件(粘贴模式文本本身就是 UTF-8)
+  fd.append('file', convertedFile.value ?? fileData.value)
   if (isUpdate) fd.append('novelId', novelId)
 
   submitting.value = true
@@ -347,7 +366,7 @@ async function submit() {
             position="inside"
             layout="list"
             label="点击选择或拖拽 .txt 文件到此处"
-            :description="`支持 UTF-8 / GBK 编码,大小不超过 ${MAX_NOVEL_TXT_BYTES / 1024 / 1024}MB,至少 ${MIN_NOVEL_CHARS} 字`"
+            :description="`自动识别编码并转为 UTF-8(支持 GBK / Big5 / UTF-16 等),大小不超过 ${MAX_NOVEL_TXT_BYTES / 1024 / 1024}MB,至少 ${MIN_NOVEL_CHARS} 字`"
             class="w-full"
             :ui="{ base: 'min-h-48' }"
           />
@@ -366,15 +385,40 @@ async function submit() {
           >
             {{ fileMeta.error }}
           </p>
-          <p
-            v-else-if="fileMeta.totalChars > 0"
-            class="mt-1 text-xs text-neutral-500"
-          >
-            已识别正文 {{ fileMeta.totalChars.toLocaleString() }} 字 ✓
-            <template v-if="settlePreviewChars > fileMeta.totalChars">
-              <span class="text-red-500">;可预览字数超过全书字数,提交前请调整</span>
-            </template>
-          </p>
+          <template v-else-if="fileMeta.totalChars > 0">
+            <p class="mt-1 text-xs text-neutral-500">
+              已识别正文 {{ fileMeta.totalChars.toLocaleString() }} 字 ✓
+              <template v-if="fileMeta.encoding">
+                ;检测到 {{ fileMeta.encoding }} 编码,已自动转换为 UTF-8(内容不变)
+              </template>
+              <template v-else>
+                ;UTF-8 编码
+              </template>
+              <template v-if="settlePreviewChars > fileMeta.totalChars">
+                <span class="text-red-500">;可预览字数超过全书字数,提交前请调整</span>
+              </template>
+            </p>
+            <UAlert
+              v-if="fileMeta.garbled"
+              class="mt-2"
+              color="error"
+              variant="subtle"
+              icon="i-lucide-triangle-alert"
+              title="疑似乱码"
+              description="文件编码未能可靠识别,下方预览可能乱码。建议将文件另存为 UTF-8 编码后重新上传;仍可提交,由管理员审核时处理。"
+            />
+            <details
+              v-if="fileMeta.preview"
+              class="mt-2 rounded-lg border border-neutral-200 dark:border-neutral-800"
+            >
+              <summary class="cursor-pointer px-3 py-1.5 text-xs text-neutral-500 select-none">
+                正文开头预览(前 300 字,请确认无乱码)
+              </summary>
+              <p class="max-h-48 overflow-y-auto border-t border-neutral-200 px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap text-neutral-700 dark:border-neutral-800 dark:text-neutral-300">
+                {{ fileMeta.preview }}
+              </p>
+            </details>
+          </template>
         </UFormField>
 
         <UButton

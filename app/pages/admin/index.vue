@@ -10,15 +10,34 @@ useHead({ title: 'AI Word2World · 管理仪表盘' })
 const { data: session } = await useAuthSession()
 const toast = useToast()
 
+interface AccountBalance {
+  label: string
+  source: 'db' | 'env'
+  provider: 'deepseek' | 'muskapi' | 'unknown'
+  supported: boolean
+  available: boolean
+  active: boolean
+  model: string | null
+  balanceInfos?: { currency: string, totalBalance: string, grantedBalance: string, toppedUpBalance: string }[]
+  musk?: { balance: number | null, remaining: number | null, unit: string, isValid: boolean, mode: string | null, totalCost: number | null }
+  error?: string
+}
+
 interface DashboardData {
   users: { total: number, day24: number }
+  revenue: { total: number, day24: number }
   tokens: { totalConsumed: number, day24Consumed: number }
-  deepseek: {
-    available: boolean
-    balanceInfos: { currency: string, totalBalance: string, grantedBalance: string, toppedUpBalance: string }[]
-    error?: string
-  } | null
-  aiConfig: { name: string | null, source: 'db' | 'env' }
+  pending: { skills: number, novels: number, requests: number }
+  accounts: AccountBalance[]
+  aiConfig: {
+    name: string | null
+    source: 'db' | 'env'
+    model: string
+    baseUrl: string
+    activeCount: number
+    totalCount: number
+    routing: { worldGen: string | null, chat: string | null }
+  }
 }
 
 const isAdmin = ref(false)
@@ -59,13 +78,30 @@ function fmtTokens(n: number) {
   return String(n)
 }
 
+/** 分 → ¥ 元 */
+function fmtCny(fen: number) {
+  return `¥${(fen / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
 const cards = computed(() => {
   const d = data.value
   return [
+    { label: '总充值收入', value: d ? fmtCny(d.revenue.total) : '—', icon: 'i-lucide-wallet', cls: 'text-emerald-600' },
+    { label: '近 24h 充值', value: d ? fmtCny(d.revenue.day24) : '—', icon: 'i-lucide-circle-dollar-sign', cls: 'text-emerald-500' },
     { label: '总注册用户', value: d ? d.users.total.toLocaleString() : '—', icon: 'i-lucide-users', cls: 'text-primary' },
-    { label: '近 24h 注册', value: d ? d.users.day24.toLocaleString() : '—', icon: 'i-lucide-user-plus', cls: 'text-emerald-600' },
+    { label: '近 24h 注册', value: d ? d.users.day24.toLocaleString() : '—', icon: 'i-lucide-user-plus', cls: 'text-sky-600' },
     { label: '总消耗 token', value: d ? fmtTokens(d.tokens.totalConsumed) : '—', icon: 'i-lucide-flame', cls: 'text-amber-600' },
     { label: '近 24h 消耗', value: d ? fmtTokens(d.tokens.day24Consumed) : '—', icon: 'i-lucide-activity', cls: 'text-rose-500' }
+  ]
+})
+
+/** 待审核处理入口(数量 >0 高亮) */
+const pendingItems = computed(() => {
+  const p = data.value?.pending
+  return [
+    { label: 'Skill 待审', count: p?.skills ?? 0, to: '/admin/skills', icon: 'i-lucide-store' },
+    { label: '小说待审', count: p?.novels ?? 0, to: '/admin/novels', icon: 'i-lucide-book-open' },
+    { label: '待处理需求', count: p?.requests ?? 0, to: '/admin/requests', icon: 'i-lucide-inbox' }
   ]
 })
 </script>
@@ -101,7 +137,7 @@ const cards = computed(() => {
 
     <template v-else>
       <!-- 统计卡片 -->
-      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <UCard
           v-for="c in cards"
           :key="c.label"
@@ -128,30 +164,75 @@ const cards = computed(() => {
         </UCard>
       </div>
 
-      <!-- DeepSeek 账户余额 -->
+      <!-- 待审核处理 -->
       <UCard class="mt-4">
-        <div class="mb-3 flex items-center justify-between gap-3">
+        <div class="mb-3 flex items-center gap-2">
+          <UIcon
+            name="i-lucide-clipboard-check"
+            class="size-4 text-amber-600"
+          />
+          <p class="font-semibold">
+            待审核处理
+          </p>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-3">
+          <NuxtLink
+            v-for="item in pendingItems"
+            :key="item.label"
+            :to="item.to"
+            class="flex items-center gap-3 rounded-lg border p-3 transition-colors"
+            :class="item.count > 0
+              ? 'border-red-200 bg-red-50 hover:bg-red-100 dark:border-red-900 dark:bg-red-950/40 dark:hover:bg-red-950'
+              : 'border-neutral-200 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900'"
+          >
+            <UIcon
+              :name="item.icon"
+              class="size-5 shrink-0"
+              :class="item.count > 0 ? 'text-red-500' : 'text-neutral-400'"
+            />
+            <div class="min-w-0 flex-1">
+              <p
+                class="truncate text-sm font-medium"
+                :class="item.count > 0 ? 'text-red-600 dark:text-red-400' : 'text-neutral-600 dark:text-neutral-300'"
+              >
+                {{ item.label }}
+              </p>
+              <p class="text-xs text-neutral-500">
+                {{ item.count > 0 ? `${item.count} 条待处理` : '暂无待处理' }}
+              </p>
+            </div>
+            <UIcon
+              name="i-lucide-chevron-right"
+              class="size-4 shrink-0 text-neutral-400"
+            />
+          </NuxtLink>
+        </div>
+      </UCard>
+
+      <!-- AI 配置生效状态 -->
+      <UCard class="mt-4">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <p class="flex items-center gap-2 font-semibold">
             <UIcon
-              name="i-simple-icons-openai"
-              class="size-4 text-emerald-600"
+              name="i-lucide-cpu"
+              class="size-4 text-violet-600"
             />
-            DeepSeek 账户余额
+            AI 配置生效状态
           </p>
           <div class="flex items-center gap-2">
+            <UBadge
+              size="sm"
+              :color="data?.aiConfig.source === 'db' ? 'primary' : 'warning'"
+              variant="soft"
+            >
+              {{ data?.aiConfig.source === 'db' ? '后台配置' : '环境变量' }}
+            </UBadge>
             <UBadge
               size="sm"
               color="neutral"
               variant="soft"
             >
-              {{ data?.aiConfig?.source === 'db' ? `后台配置 · ${data?.aiConfig?.name ?? '未命名'}` : '环境变量' }}
-            </UBadge>
-            <UBadge
-              size="sm"
-              :color="data?.deepseek?.available ? 'success' : 'error'"
-              variant="soft"
-            >
-              {{ data?.deepseek?.available ? '可用' : '不可用' }}
+              启用 {{ data?.aiConfig.activeCount ?? 0 }} / 共 {{ data?.aiConfig.totalCount ?? 0 }} 条
             </UBadge>
           </div>
         </div>
@@ -161,44 +242,175 @@ const cards = computed(() => {
         >
           加载中…
         </div>
-        <template v-else-if="data?.deepseek">
-          <div
-            v-if="data.deepseek.balanceInfos.length"
-            class="grid gap-3 sm:grid-cols-3"
-          >
-            <div
-              v-for="b in data.deepseek.balanceInfos"
-              :key="b.currency"
-              class="rounded-lg border border-neutral-200 p-3 dark:border-neutral-800"
-            >
-              <p class="text-xs text-neutral-500">
-                {{ b.currency }} 总余额
-              </p>
-              <p class="text-lg font-bold tabular-nums">
-                ¥{{ b.totalBalance }}
-              </p>
-              <p class="mt-1 text-xs text-neutral-500">
-                充值余额 ¥{{ b.toppedUpBalance }} · 赠送余额 ¥{{ b.grantedBalance }}
-              </p>
-            </div>
+        <div
+          v-else-if="data"
+          class="grid gap-3 sm:grid-cols-2"
+        >
+          <div class="rounded-lg border border-neutral-200 p-3 dark:border-neutral-800">
+            <p class="text-xs text-neutral-500">
+              当前生效配置
+            </p>
+            <p class="truncate font-semibold">
+              {{ data.aiConfig.source === 'db' ? data.aiConfig.name ?? '未命名' : '环境变量兜底' }}
+            </p>
+            <p class="mt-1 truncate text-xs text-neutral-500">
+              模型 {{ data.aiConfig.model }} · {{ data.aiConfig.baseUrl }}
+            </p>
           </div>
-          <p
-            v-else
-            class="text-sm text-red-500"
-          >
-            余额查询失败:{{ data.deepseek.error || '未知错误' }}
+          <div class="rounded-lg border border-neutral-200 p-3 dark:border-neutral-800">
+            <p class="text-xs text-neutral-500">
+              用途模型路由
+            </p>
+            <p class="mt-1 text-sm">
+              <span class="text-neutral-500">世界生成:</span>
+              <span class="font-medium">{{ data.aiConfig.routing.worldGen ?? '跟随生效配置' }}</span>
+            </p>
+            <p class="text-sm">
+              <span class="text-neutral-500">对话类:</span>
+              <span class="font-medium">{{ data.aiConfig.routing.chat ?? '跟随生效配置' }}</span>
+            </p>
+          </div>
+        </div>
+      </UCard>
+
+      <!-- AI 账户余额(逐配置展示;不支持的查询平台显示「不支持」) -->
+      <UCard class="mt-4">
+        <div class="mb-3 flex items-center gap-2">
+          <UIcon
+            name="i-lucide-landmark"
+            class="size-4 text-emerald-600"
+          />
+          <p class="font-semibold">
+            AI 账户余额
           </p>
-        </template>
-        <p
-          v-else
-          class="text-sm text-neutral-500"
+          <span class="text-xs text-neutral-400">
+            扫描全部已保存配置(含未启用),按平台支持情况查询
+          </span>
+        </div>
+        <div
+          v-if="loading"
+          class="py-6 text-center text-sm text-neutral-500"
         >
           加载中…
+        </div>
+        <p
+          v-else-if="!data?.accounts.length"
+          class="text-sm text-neutral-500"
+        >
+          暂无已保存的 AI 配置
         </p>
+        <div
+          v-else
+          class="flex flex-col gap-3"
+        >
+          <div
+            v-for="acc in data.accounts"
+            :key="`${acc.source}-${acc.label}`"
+            class="rounded-lg border p-3"
+            :class="acc.supported ? 'border-neutral-200 dark:border-neutral-800' : 'border-dashed border-neutral-200 dark:border-neutral-800'"
+          >
+            <div class="flex flex-wrap items-center gap-2">
+              <p class="font-medium">
+                {{ acc.label }}
+              </p>
+              <UBadge
+                size="sm"
+                color="neutral"
+                variant="subtle"
+              >
+                {{ acc.source === 'db' ? '后台' : '环境变量' }}
+              </UBadge>
+              <UBadge
+                v-if="!acc.supported"
+                size="sm"
+                color="neutral"
+                variant="soft"
+              >
+                不支持余额查询
+              </UBadge>
+              <UBadge
+                v-else
+                size="sm"
+                :color="acc.available ? 'success' : 'error'"
+                variant="soft"
+              >
+                {{ acc.available ? '可用' : '不可用' }}
+              </UBadge>
+              <UBadge
+                v-if="acc.source === 'db' && acc.active"
+                size="sm"
+                color="primary"
+                variant="subtle"
+              >
+                启用中
+              </UBadge>
+              <span
+                v-if="acc.model"
+                class="truncate text-xs text-neutral-400"
+              >
+                {{ acc.model }}
+              </span>
+            </div>
+
+            <!-- 不支持的平台:不显示余额区 -->
+            <p
+              v-if="!acc.supported"
+              class="mt-2 text-xs text-neutral-400"
+            >
+              该平台暂不支持余额查询,可在对应服务商控制台查看
+            </p>
+            <template v-else>
+              <p
+                v-if="acc.error && !acc.balanceInfos?.length && !acc.musk"
+                class="mt-2 text-sm text-red-500"
+              >
+                余额查询失败:{{ acc.error }}
+              </p>
+              <!-- DeepSeek -->
+              <template v-else-if="acc.balanceInfos?.length">
+                <div
+                  v-for="b in acc.balanceInfos"
+                  :key="b.currency"
+                  class="mt-2"
+                >
+                  <p class="text-lg font-bold tabular-nums">
+                    ¥{{ b.totalBalance }}
+                    <span class="text-xs font-normal text-neutral-500">{{ b.currency }}</span>
+                  </p>
+                  <p class="text-xs text-neutral-500">
+                    充值余额 ¥{{ b.toppedUpBalance }} · 赠送余额 ¥{{ b.grantedBalance }}
+                  </p>
+                </div>
+              </template>
+              <!-- MuskAPI -->
+              <p
+                v-else-if="acc.musk"
+                class="mt-2"
+              >
+                <span class="text-lg font-bold tabular-nums">
+                  {{ acc.musk.balance ?? '—' }}
+                  <span class="text-xs font-normal text-neutral-500">{{ acc.musk.unit }}</span>
+                </span>
+                <span
+                  v-if="acc.musk.remaining !== null && acc.musk.mode === 'quota_limited'"
+                  class="ml-2 text-xs text-neutral-500"
+                >
+                  Key 剩余 {{ acc.musk.remaining }} {{ acc.musk.unit }}
+                </span>
+                <span
+                  v-if="acc.musk.totalCost !== null"
+                  class="ml-2 text-xs text-neutral-500"
+                >
+                  累计消费 {{ acc.musk.totalCost }} {{ acc.musk.unit }}
+                </span>
+              </p>
+            </template>
+          </div>
+        </div>
       </UCard>
 
       <p class="mt-3 text-xs text-neutral-400">
-        * 总消耗 = 注册赠送 + 已支付订单发放 + 兑换码发放 − 商城手续费 − 当前全站余额(存量恒等式,含全部历史,精确);近 24h 消耗自用量记录表(ai_usage)部署起累计。
+        * 总消耗 = 注册赠送 + 已支付订单发放 + 兑换码发放 − 商城手续费 − 当前全站余额(存量恒等式,含全部历史,精确);近 24h 消耗自用量记录表(ai_usage)部署起累计;充值收入为已支付订单实付金额。
       </p>
     </template>
   </div>

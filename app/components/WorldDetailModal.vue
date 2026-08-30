@@ -18,6 +18,20 @@ const editing = ref(false)
 const saving = ref(false)
 
 const HEAT_OPTS = ['淡', '中', '烈'] as const
+/** 「未设置」的哨兵 value:Reka UI Select 禁止 SelectItem 用空字符串 value */
+const HEAT_NONE = '__none__'
+
+/** 尺度下拉的双向映射:空串(未设置)↔ 哨兵值 */
+const heatModel = computed({
+  get: () => draft.value.heat || HEAT_NONE,
+  set: (v: string) => { draft.value.heat = v === HEAT_NONE ? '' : v }
+})
+
+/** 显式 string 类型,避免 USelect 把 value 收窄成字面量联合导致 v-model 类型不匹配 */
+const heatItems = computed(() => [
+  { label: '未设置', value: HEAT_NONE },
+  ...HEAT_OPTS.map(h => ({ label: h, value: h as string }))
+])
 
 /** 概览元数据编辑草稿(数组字段用逗号分隔字符串编辑) */
 const draft = ref({
@@ -331,8 +345,8 @@ const VERDICT_LABEL: Record<string, string> = {
               </UFormField>
               <UFormField label="尺度">
                 <USelect
-                  v-model="draft.heat"
-                  :items="[{ label: '未设置', value: '' }, ...HEAT_OPTS.map(h => ({ label: h, value: h }))]"
+                  v-model="heatModel"
+                  :items="heatItems"
                   class="w-full"
                 />
               </UFormField>
