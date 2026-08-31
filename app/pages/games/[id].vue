@@ -665,7 +665,9 @@ async function runOptionsPhase(
       content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(state.value)}\n上文剧情:\n${messages.value.slice(-12).map(m => m.content).join('\n')}`
     }
   ]
-  const optionsCall = () => aiChatJson<TurnStructured>(optionsMessages, { maxTokens: 1200, temperature: narrTemp.value }, {
+  // 不设 maxTokens:高温下收尾输出(3 个选项 + state_delta + 500 字摘要)会顶到 1200 截断,
+  // 截断点在字符串中段时 tryRepairTruncated 无法修复 → 必失败;交给模型自然收尾,平台默认上限足够
+  const optionsCall = () => aiChatJson<TurnStructured>(optionsMessages, { temperature: narrTemp.value }, {
     // 选项阶段继续接收实时估算回调(头部已改为常驻统计按钮,此数据保留供调试)
     onLive: (info) => {
       liveTokens.value = info.tokens
