@@ -6,7 +6,14 @@
 // 浏览器端 aiRelay 只认 OpenAI 兼容 SSE,因此上游差异在此收敛。
 import type { AiApiFormat } from '../../shared/ai-config'
 import type { TokenUsage } from '../../shared/novel'
-import { estimateMessagesTokens, estimateTextTokens } from '../../shared/token-estimate'
+import {
+  estimateMessagesTokens,
+  estimateTextTokens,
+  finalizeStreamUsage,
+  mergeTokenUsage,
+  normalizeTokenUsage,
+  type NormalizedTokenUsage
+} from '../../shared/token-estimate'
 
 export interface RelayTarget {
   format: AiApiFormat
@@ -21,6 +28,7 @@ export interface RelayInput {
   json?: boolean
   maxTokens?: number
   temperature?: number
+  /** 思考开关:所有调用统一传 false(关闭)。chat 格式显式发送 thinking:{type:'disabled'} 强制关闭 */
   thinking?: boolean
   stream?: boolean
 }
@@ -31,7 +39,7 @@ interface UpstreamRequest {
   body: Record<string, unknown>
 }
 
-/** 按格式构建上游请求(stream=false 用于测试连接/非流式) */
+/** 按格式构建上游请求(stream=false 用于测试连接/非流式)。思考(thinking)统一关闭:调用方固定传 false。 */
 export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): UpstreamRequest {
   const base = cfg.baseUrl.replace(/\/+$/, '')
   const json = input.json ?? false
@@ -44,11 +52,13 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
       .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
     const body: Record<string, unknown> = {
       model: cfg.model,
-      max_tokens: input.maxTokens ?? 4096,
+      // Anthropic Messages 必填 max_tokens;未指定时用高上限,不再硬填 4096 截断完整提取/成书
+      max_tokens: input.maxTokens && input.maxTokens > 0 ? input.maxTokens : 32768,
       messages
     }
     if (input.stream) body.stream = true
     if (input.temperature !== undefined) body.temperature = input.temperature
+    // Anthropic 思考关闭即不发 thinking 字段(缺省不开启);开启才显式设置
     if (thinking) body.thinking = { type: 'enabled', budget_tokens: 1024 }
     if (json) {
       // Anthropic 无 response_format,在 system 里要求纯 JSON,前端仍用 extractJson 兜底
@@ -81,6 +91,7 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
     if (input.temperature !== undefined) body.temperature = input.temperature
     if (system) body.instructions = system
     if (json) body.text = { format: { type: 'json_object' } }
+    // Responses 思考关闭即不发 reasoning 字段(缺省不开启);开启才显式设置
     if (thinking) body.reasoning = { effort: 'high' }
     return {
       url: `${base}/responses`,
@@ -104,6 +115,8 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
   }
   if (json) body.response_format = { type: 'json_object' }
   if (input.maxTokens) body.max_tokens = input.maxTokens
+  // chat 格式必须显式带 thinking 字段:DeepSeek 等模型默认可能开启思考,
+  // 不传等于让模型自行决定;传 {type:'disabled'} 才是明确关闭。
   if (input.thinking !== undefined) body.thinking = { type: input.thinking ? 'enabled' : 'disabled' }
   return {
     url: `${base}/chat/completions`,
@@ -178,15 +191,15 @@ export async function relaySse(
 ): Promise<RelayStreamResult> {
   const reader = upstream.body?.getReader()
 
-  // Chat Completions:原样透传字节,同时按行解析流尾 usage
+  // Chat Completions:原样透传字节,同时按行解析 usage(跨分片合并,不锁第一帧)
   if (cfg.format === 'chat' && reader) {
     let usagePromiseResolve: (u: TokenUsage) => void = () => {}
     const usage = new Promise<TokenUsage>((resolve) => {
       usagePromiseResolve = resolve
     })
-    let usageResolved = false
     /** 已转发的输出文本(取消/无 usage 时估算兜底) */
     let outputText = ''
+    let mergedUsage: NormalizedTokenUsage | undefined
     const sse = new ReadableStream<Uint8Array>({
       async start(controller) {
         if (!reader) {
@@ -211,19 +224,13 @@ export async function relaySse(
               try {
                 const d = JSON.parse(json) as {
                   choices?: { delta?: { content?: string } }[]
-                  usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
+                  usage?: Record<string, unknown>
                 }
-                if (d.usage?.total_tokens && !usageResolved) {
-                  usageResolved = true
-                  usagePromiseResolve({
-                    promptTokens: d.usage.prompt_tokens ?? 0,
-                    completionTokens: d.usage.completion_tokens ?? 0,
-                    totalTokens: d.usage.total_tokens
-                  })
-                } else if (!usageResolved) {
-                  const delta = d.choices?.[0]?.delta?.content
-                  if (typeof delta === 'string' && delta) outputText += delta
+                if (d.usage) {
+                  mergedUsage = mergeTokenUsage(mergedUsage, normalizeTokenUsage(d.usage))
                 }
+                const delta = d.choices?.[0]?.delta?.content
+                if (typeof delta === 'string' && delta) outputText += delta
               } catch {
                 // 非 JSON 分片忽略
               }
@@ -233,7 +240,7 @@ export async function relaySse(
         } catch (e) {
           controller.error(e)
         } finally {
-          if (!usageResolved) usagePromiseResolve(estimateUsage(messages, outputText))
+          usagePromiseResolve(finalizeStreamUsage(mergedUsage, messages, outputText))
         }
       }
     })
@@ -265,11 +272,14 @@ export async function relaySse(
         done = true
         if (prompt > 0 || completion > 0) emit(emitUsage(prompt, completion))
         emit('data: [DONE]\n\n')
-        // 上游事件带 usage 用真实值;缺省(0/0)按已转发内容估算兜底
-        const u = prompt > 0 || completion > 0
-          ? { promptTokens: prompt, completionTokens: completion, totalTokens: prompt + completion }
-          : estimateUsage(messages, outputText)
-        usageResolve(u)
+        // 上游事件带 usage 用真实值;缺省(0/0)按已转发内容估算兜底;一边缺失时补估算
+        usageResolve(finalizeStreamUsage(
+          prompt > 0 || completion > 0
+            ? { promptTokens: prompt, completionTokens: completion, totalTokens: prompt + completion }
+            : undefined,
+          messages,
+          outputText
+        ))
       }
       try {
         for (;;) {

@@ -12,26 +12,22 @@ type FlatMsg = LocalGame['messages'][number]
 
 export async function listLocalGames(): Promise<LocalGame[]> {
   if (typeof indexedDB === 'undefined') return []
-  const d = await db()
-  return (await d.getAll(STORE)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  return (await db.table(STORE).toArray()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
 
 export async function getLocalGame(id: string): Promise<LocalGame | null> {
   if (typeof indexedDB === 'undefined') return null
-  const d = await db()
-  return (await d.get(STORE, id)) ?? null
+  return (await db.table(STORE).get(id)) ?? null
 }
 
 export async function saveLocalGame(game: LocalGame): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  await d.put(STORE, JSON.parse(JSON.stringify({ ...game, updatedAt: new Date().toISOString() })))
+  await db.table(STORE).put(JSON.parse(JSON.stringify({ ...game, updatedAt: new Date().toISOString() })))
 }
 
 export async function deleteLocalGame(id: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  await d.delete(STORE, id)
+  await db.table(STORE).delete(id)
 }
 
 /** 新建本地游戏会话(选角页调用) */
@@ -43,8 +39,8 @@ export async function createLocalGame(args: {
   state: GameState
   /** 开局设定(仅首回合生效) */
   opening?: LocalGame['opening']
-  /** 初始章节(从小说章节开始时预填顶栏) */
-  currentChapter?: string | null
+  /** 剧情起始细纲段下标(0-based) */
+  currentBeat?: number | null
 }): Promise<LocalGame> {
   const game: LocalGame = {
     id: args.id,
@@ -55,7 +51,7 @@ export async function createLocalGame(args: {
     messages: [],
     summary: null,
     opening: args.opening,
-    currentChapter: args.currentChapter ?? null,
+    currentBeat: args.currentBeat ?? null,
     status: 'active',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -98,7 +94,8 @@ export async function syncGameToCloud(game: LocalGame): Promise<boolean> {
       characterName: game.characterName,
       state: game.state,
       summary: game.summary,
-      currentChapter: game.currentChapter,
+      // 云端 D1 列为 current_chapter 字符串:上传段标签(如「第3段」),跨设备恢复时反解回段号
+      currentChapter: typeof game.currentBeat === 'number' && game.currentBeat >= 0 ? `第${game.currentBeat + 1}段` : null,
       status: game.status,
       fromIdx,
       messages: deltaMessages,

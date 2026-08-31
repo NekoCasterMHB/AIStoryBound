@@ -2,7 +2,7 @@
 // /edit/[id] — 本地作品编辑页(与阅读页同款全屏布局与主题)
 // 书名 / 作者 / 正文可直接打字修改;每次改动 1s 防抖后自动保存到本机 IndexedDB。
 // 正文为整本连排文本,保存时按章节标题重新切分,章节结构随原文保留。
-import { getWork, saveWork, parseChaptersFromText } from '../../utils/worldGen'
+import { getWork, saveWork, toContentSegments } from '../../utils/worldGen'
 import { getReadingProgress } from '../../utils/readingStore'
 import { readingKey, DEFAULT_READER_SETTINGS, CHAPTER_REGEX } from '#shared/novel'
 import type { LocalWork, ReaderSettings, ChapterSegment } from '#shared/novel'
@@ -19,6 +19,8 @@ const loadError = ref('')
 const title = ref('')
 const author = ref('')
 const text = ref('')
+/** 云端恢复且无正文的作品:显示补全正文提示条 */
+const cloudRestored = ref(false)
 const settings = ref<ReaderSettings>({ ...DEFAULT_READER_SETTINGS })
 
 const fontFamilyCss = computed(() => {
@@ -60,10 +62,12 @@ async function loadSettings() {
 async function loadBook() {
   try {
     const work = await getWork(id)
-    if (!work || work.chapters.length === 0) throw new Error('本地未找到该作品或没有可编辑的章节')
+    if (!work) throw new Error('本地未找到该作品')
     original.value = work
     title.value = work.title
     author.value = work.author ?? ''
+    // 云端恢复的作品可能没有正文(chapters 为空):允许进入并提示粘贴全文补全,不再直接报错
+    cloudRestored.value = work.chapters.length === 0
     text.value = joinChapters(work.chapters)
     dirty.value = false
     saveState.value = 'saved'
@@ -107,7 +111,7 @@ const chapterAnchors = computed<ChapterAnchor[]>(() => {
     // 全文无章节标题:退化为单章
     anchors.push({ title: '', offset: 0 })
   } else if (anchors[0]!.offset > 0) {
-    // 首个标题之前有前置内容(与 segmentChapters 的首段一致)
+    // 首个标题之前有前置内容:补「前言」锚点(旧版分章格式的作品仍有标题行,单段全文则天然退化单章)
     anchors.unshift({ title: '', offset: 0 })
   }
   return anchors
@@ -227,12 +231,14 @@ async function flushSave() {
   saving = true
   saveState.value = 'saving'
   try {
-    const parsed = parseChaptersFromText(text.value)
+    const parsed = toContentSegments(text.value)
     await saveWork({
       ...base,
       title: title.value.trim() || '未命名作品',
       author: author.value.trim() || undefined,
       chapters: parsed,
+      // 内容有实际改动:云端已有对应作品时标记待同步,书架卡片会显示「待同步」徽章
+      syncStatus: base.syncStatus === 'synced' ? 'dirty' : base.syncStatus,
       createdAt: base.createdAt,
       updatedAt: new Date().toISOString()
     })
@@ -240,7 +246,7 @@ async function flushSave() {
     saveState.value = 'saved'
     lastSavedAt.value = Date.now()
   } catch {
-    // 正文为空或无法切分章节时保留改动,等下一次输入再自动重试
+    // 正文为空时保留改动,等下一次输入再自动重试
     saveState.value = 'error'
   } finally {
     saving = false
@@ -259,7 +265,9 @@ watch([title, author, text], () => {
 
 const saveStatus = computed(() => {
   if (saveState.value === 'saving') return '保存中…'
-  if (saveState.value === 'error') return '自动保存失败,稍后重试'
+  if (saveState.value === 'error') {
+    return text.value.trim() ? '自动保存失败,稍后重试' : '正文为空,粘贴全文后会自动保存'
+  }
   if (dirty.value) return '有未保存的修改'
   return lastSavedAt.value
     ? `已保存 ${new Date(lastSavedAt.value).toLocaleTimeString('zh-CN', { hour12: false })}`
@@ -385,6 +393,12 @@ useSeoMeta({ title: computed(() => `${title.value.trim() || '编辑'} · AI Word
         v-else
         class="reader-pane mx-auto max-w-3xl px-6 pb-44 pt-28 sm:px-10"
       >
+        <div
+          v-if="cloudRestored"
+          class="mb-6 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300"
+        >
+          该作品为云端恢复,本机暂无正文。在下方粘贴小说全文后会自动按章节切分保存,之后可回书架「重新生成世界」或直接阅读。
+        </div>
         <input
           v-model="title"
           class="edit-book-title"

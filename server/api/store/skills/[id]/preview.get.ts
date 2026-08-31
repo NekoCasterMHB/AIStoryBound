@@ -61,10 +61,13 @@ export default defineEventHandler(async (event) => {
   }
 
   const names = Object.keys(files).sort()
-  const entries = names.map((name) => {
-    const bytes = files[name] ?? new Uint8Array(0)
-    return { name, size: bytes.length, isDirectory: name.endsWith('/') || bytes.length === 0 }
-  })
+  // 未付费仅返回文件数量,不暴露压缩包内文件名清单
+  const entries = canViewAll
+    ? names.map((name) => {
+        const bytes = files[name] ?? new Uint8Array(0)
+        return { name, size: bytes.length, isDirectory: name.endsWith('/') || bytes.length === 0 }
+      })
+    : []
 
   const decoder = new TextDecoder()
   const mds: { name: string, content: string }[] = []
@@ -90,6 +93,8 @@ export default defineEventHandler(async (event) => {
     /** 未付费可读的 README 摘要(主表快照,收录时强制非空;老数据可能为空) */
     readme: skill.readme ?? '',
     entries,
+    /** 压缩包内文件总数(未付费时 entries 为空,仅以数量展示) */
+    entryCount: names.length,
     files: visible
   }
 })

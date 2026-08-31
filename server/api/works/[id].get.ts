@@ -32,11 +32,19 @@ export default defineEventHandler(async (event) => {
           title: world.title ?? novel.title,
           genre: world.genre ?? null,
           summary: world.summary ?? null,
-          characters: world.characters ?? []
+          characters: world.characters ?? [],
+          tags: world.tags ?? [],
+          orientation: world.orientation ?? null,
+          setting: world.setting ?? null,
+          heat: world.heat ?? null,
+          contentWarnings: world.contentWarnings ?? [],
+          tropes: world.tropes ?? [],
+          kinkProfile: world.kinkProfile ?? []
         }
       : null,
     entities: world?.entities ?? null,
     conflicts: world?.conflicts ?? [],
-    warnings: world?.warnings ?? []
+    warnings: world?.warnings ?? [],
+    storyline: world?.storyline ?? []
   }
 })

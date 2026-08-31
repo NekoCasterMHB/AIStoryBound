@@ -41,8 +41,7 @@ export function saveEnabledAiSkills(keys: string[]): void {
 /** 全部本地条目(含老格式残留,一般不直接使用) */
 export async function getUserSkills(): Promise<AiSkill[]> {
   if (typeof indexedDB === 'undefined') return []
-  const d = await db()
-  return (await d.getAll(STORE_SKILLS)) as AiSkill[]
+  return (await db.table(STORE_SKILLS).toArray()) as AiSkill[]
 }
 
 /** 已下载技能列表(仅新版格式:带 SKILL.md 正文;旧结构化条目不再兼容展示/加载) */
@@ -54,22 +53,19 @@ export async function listInstalledSkills(): Promise<AiSkill[]> {
 /** 按 key 读取单个技能(不存在返回 null) */
 export async function getUserSkill(key: string): Promise<AiSkill | null> {
   if (typeof indexedDB === 'undefined') return null
-  const d = await db()
-  return ((await d.get(STORE_SKILLS, key)) as AiSkill | undefined) ?? null
+  return ((await db.table(STORE_SKILLS).get(key)) as AiSkill | undefined) ?? null
 }
 
 /** 保存/覆盖一个技能(key 冲突时覆盖) */
 export async function saveUserSkill(skill: AiSkill): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  await d.put(STORE_SKILLS, JSON.parse(JSON.stringify(skill)))
+  await db.table(STORE_SKILLS).put(JSON.parse(JSON.stringify(skill)))
 }
 
 /** 删除本地技能副本,并把它从启用列表里移除 */
 export async function deleteUserSkill(key: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const d = await db()
-  await d.delete(STORE_SKILLS, key)
+  await db.table(STORE_SKILLS).delete(key)
   saveEnabledAiSkills(loadEnabledAiSkills().filter(k => k !== key))
 }
 

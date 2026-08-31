@@ -20,13 +20,20 @@ database_name = "aiword2world"
 database_id = "41cf9e1a-9453-4300-9b36-659fa8aff422"
 remote = true
 
-# Skill 商城文件存储(R2 bucket)
+# Skill 商城文件存储 + 云端世界生成任务源文件/成书缓存(R2 bucket)
 # remote = true:本地 dev 直接读写云端真桶(与上方 D1 remote=true 同款 Cloudflare Remote Bindings),
 # 需 wrangler 登录态(`npx wrangler whoami` 可查);部署时始终走真实绑定。
 [[r2_buckets]]
 binding = "SKILL_FILES"
 bucket_name = "aiword2world"
 remote = true
+
+# 云端世界生成任务(Workflows 持久化执行,见 server/workflows/world-gen.ts):
+# 上传 txt → 建任务 → Workflow 分步跑提取/合并/检查/成书;本地 dev 由 API 端点内联兜底执行
+[[workflows]]
+binding = "WORLD_GEN"
+name = "world-gen"
+class_name = "WorldGenWorkflow"
 
 # LLM 网关非敏感配置(注入 env.AI_BASE_URL / env.AI_MODEL,server/utils/ai.ts 读取)
 # 注意:AI_API_KEY 属于敏感信息,不放这里,用 `wrangler secret put AI_API_KEY` 设置
@@ -49,3 +56,7 @@ ADMIN_EMAIL = "2575525962@qq.com"
 [assets]
 directory = ".output/public"
 binding = "ASSETS"
+
+# 定时任务:每小时整点触发充值健康检查(失败自动进维护,恢复自动开放;见 server/utils/recharge-health.ts)
+[triggers]
+crons = ["0 * * * *"]

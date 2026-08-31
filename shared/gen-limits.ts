@@ -20,13 +20,12 @@ export interface GenLimits {
   relayTimeoutSec: number
 }
 
-/** 默认与代码常量一致(30000/1000/384000/384000/384000/600s) */
+/** 默认与代码常量一致(10000/1000/384000/384000/384000/600s) */
 export const DEFAULT_GEN_LIMITS: GenLimits = {
   unitMaxChars: UNIT_MAX_CHARS,
   unitOverlapChars: UNIT_OVERLAP_CHARS,
-  // 提取/检查/成书输出上限默认 = deepseek-v4-flash 等主流模型的输出上限(384K),等于"不限制":
-  // 低于模型上限会自己截断输出(旧默认即如此),高于则被上游 400 拒绝。
-  // 输出篇幅由提示词软约束控制(见 buildExtractMessages 规则 4),不靠硬截断。
+  // 提取/检查/成书输出上限默认 384K 仅作本地哨兵,生成时不发给上游 max_tokens(等于不限制)。
+  // 真传 384K 会被 DeepSeek 等常见 8K 上限直接 400。篇幅由提示词软约束控制。
   extractMaxTokens: 384000,
   checkMaxTokens: CHECK_MAX_TOKENS,
   synthMaxTokens: SYNTH_MAX_TOKENS,

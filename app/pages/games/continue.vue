@@ -50,6 +50,14 @@ async function doDelete() {
 function fmtTime(iso: string) {
   return new Date(iso).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
 }
+
+/** 进度显示:优先段号;旧存档回退解析旧 currentChapter 字符串(如「第3段」),否则「进行中」 */
+function progressLabel(g: LocalGame): string {
+  if (typeof g.currentBeat === 'number' && g.currentBeat >= 0) return `第${g.currentBeat + 1}段`
+  const legacy = (g as { currentChapter?: string | null }).currentChapter
+  if (legacy?.match(/^第\d+段/)) return legacy
+  return '进行中'
+}
 </script>
 
 <template>
@@ -106,7 +114,7 @@ function fmtTime(iso: string) {
           你是「{{ g.playerName }}」
         </p>
         <p class="mt-1 truncate text-xs text-neutral-500">
-          {{ g.currentChapter || '进行中' }} · {{ g.messages.length }} 条剧情
+          {{ progressLabel(g) }} · {{ g.messages.length }} 条剧情
         </p>
         <p class="mt-1 text-xs text-neutral-500">
           最后游玩: {{ fmtTime(g.updatedAt) }}

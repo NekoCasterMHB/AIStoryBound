@@ -1,7 +1,7 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
-export default defineNuxtConfig({
-  // 开发端口(生产部署与端口无关)
+import { fileURLToPath } from 'node:url'
 
+export default defineNuxtConfig({
   modules: [
     '@nuxt/eslint',
     '@nuxt/ui',
@@ -13,6 +13,7 @@ export default defineNuxtConfig({
     // PWA:可安装 + Workbox 预缓存离线壳。dev 下不注册 SW(devOptions.enabled: false),build 产物里生成 sw.js
     '@vite-pwa/nuxt'
   ],
+  // 开发端口(生产部署与端口无关)
 
   devtools: {
     enabled: true
@@ -63,6 +64,24 @@ export default defineNuxtConfig({
   typescript: {
     tsConfig: {
       include: ['../worker-configuration.d.ts']
+    }
+  },
+
+  hooks: {
+    'nitro:config'(nitroConfig) {
+      // cloudflare worker 类构建:改用自定义入口(额外导出 WorldGenWorkflow 类,
+      // wrangler [[workflows]] 绑定要求类从主模块导出;见 entry.cloudflare.mjs)。
+      // preset 写法归一化后再匹配:规范名是 cloudflare-module(连字符),
+      // 本地脚本用 --preset cloudflare_module(下划线)。
+      // 注意:Workers Builds 只设 WORKERS_CI 环境变量、不传 --preset/NITRO_PRESET,
+      // preset 是 nitro 构建内部按 stdName(cloudflare_workers)自动识别的,
+      // 钩子触发时 nitroConfig.preset 还是空值 → 只按 preset 匹配会漏掉线上构建,
+      // 部署时报「Workflows 未从入口导出」,故再用 WORKERS_CI 兜底。
+      const preset = String(nitroConfig.preset ?? '').replace(/_/g, '-').toLowerCase()
+      const isCloudflareWorker = preset === 'cloudflare-module' || preset === 'cloudflare-worker' || preset === 'cloudflare'
+      if (!nitroConfig.dev && (isCloudflareWorker || process.env.WORKERS_CI)) {
+        nitroConfig.entry = fileURLToPath(new URL('./entry.cloudflare.mjs', import.meta.url))
+      }
     }
   },
 

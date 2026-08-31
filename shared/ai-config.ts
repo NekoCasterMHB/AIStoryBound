@@ -21,8 +21,6 @@ export interface AiApiFormatMeta {
   defaultBaseUrl: string
   /** 模型名占位 */
   placeholderModel: string
-  /** 是否支持思考模式切换 */
-  supportsThinking: boolean
 }
 
 export const AI_API_FORMATS: AiApiFormatMeta[] = [
@@ -31,26 +29,26 @@ export const AI_API_FORMATS: AiApiFormatMeta[] = [
     label: 'Chat Completions',
     desc: 'OpenAI 标准 /chat/completions 接口,DeepSeek、通义、智谱及各类中转站通用',
     defaultBaseUrl: 'https://api.openai.com/v1',
-    placeholderModel: 'gpt-4o-mini',
-    supportsThinking: true
+    placeholderModel: 'gpt-4o-mini'
   },
   {
     value: 'anthropic',
     label: 'Anthropic Messages',
     desc: 'Claude 官方 /v1/messages 接口(x-api-key 认证)',
     defaultBaseUrl: 'https://api.anthropic.com',
-    placeholderModel: 'claude-sonnet-4-20250514',
-    supportsThinking: true
+    placeholderModel: 'claude-sonnet-4-20250514'
   },
   {
     value: 'responses',
     label: 'Responses',
-    desc: 'OpenAI 新一代 /responses 接口,支持推理模型',
+    desc: 'OpenAI 新一代 /responses 接口',
     defaultBaseUrl: 'https://api.openai.com/v1',
-    placeholderModel: 'gpt-4.1-mini',
-    supportsThinking: true
+    placeholderModel: 'gpt-4.1-mini'
   }
 ]
+
+/** 每用户自建配置数量上限(前端「最多可保存 N 套配置」与服务端验证记录滚动保留共用) */
+export const AI_USER_CONFIG_LIMIT = 5
 
 export function aiFormatMeta(format: AiApiFormat): AiApiFormatMeta {
   return AI_API_FORMATS.find(f => f.value === format) ?? AI_API_FORMATS[0]!
@@ -59,3 +57,6 @@ export function aiFormatMeta(format: AiApiFormat): AiApiFormatMeta {
 export function isAiApiFormat(v: unknown): v is AiApiFormat {
   return v === 'chat' || v === 'anthropic' || v === 'responses'
 }
+
+/** 用途模型路由中「环境变量(部署默认)」的哨兵值:与配置行 id 一样可作为某用途的指向 */
+export const AI_ROUTE_ENV = '__env__'

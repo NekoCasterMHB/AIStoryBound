@@ -5,8 +5,17 @@ import { normalizeRedeemCode } from '../../shared/redeem-code'
 import { uuid } from '../../shared/novel'
 import { useD1 } from '../utils/d1'
 import { requireUser } from '../utils/authz'
+import { createRateLimiter } from '../utils/rate-limit'
 import { redeemCodes, redeemCodeRedemptions, user as usersTable } from '../db/schema'
 import { and, count, eq, sql } from 'drizzle-orm'
+
+// 兑换尝试限流:单用户 10 分钟内失败 ≥5 次返回 429,防止兑换码在线爆破;兑换成功即清零。
+// 实现见 server/utils/rate-limit.ts(进程内存,per-isolate,计数不跨 isolate,仅抬高爆破成本)。
+const redeemThrottle = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  limit: 5,
+  message: '尝试次数过多,请 10 分钟后再试'
+})
 
 export default defineEventHandler(async (event) => {
   const user = await requireUser(event)
@@ -16,9 +25,23 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: '请输入兑换码' })
   }
 
+  redeemThrottle.check(user.id)
+
   const db = useD1(event)
   const now = new Date()
 
+  try {
+    const tokens = await claimRedeemCode(db, user.id, code, now)
+    redeemThrottle.clear(user.id)
+    return { ok: true, tokens }
+  } catch (e) {
+    if ((e as { statusCode?: number }).statusCode === 400) redeemThrottle.record(user.id)
+    throw e
+  }
+})
+
+/** 校验码有效性并原子入账,返回入账 token 数;校验失败抛 400 */
+async function claimRedeemCode(db: ReturnType<typeof useD1>, userId: string, code: string, now: Date): Promise<number> {
   // 1) 查码与状态校验
   const rows = await db.select().from(redeemCodes).where(eq(redeemCodes.code, code)).all()
   const rc = rows[0]
@@ -37,7 +60,7 @@ export default defineEventHandler(async (event) => {
     .from(redeemCodeRedemptions)
     .where(and(
       eq(redeemCodeRedemptions.codeId, rc.id),
-      eq(redeemCodeRedemptions.userId, user.id)
+      eq(redeemCodeRedemptions.userId, userId)
     ))
     .all()
   if ((userCounts[0]?.n ?? 0) >= rc.perUserLimit) {
@@ -57,18 +80,18 @@ export default defineEventHandler(async (event) => {
     db.insert(redeemCodeRedemptions).values({
       id: uuid(),
       codeId: rc.id,
-      userId: user.id,
+      userId,
       tokens: rc.tokens,
       createdAt: now
     }),
     db.update(usersTable)
       .set({ aiTokenBalance: sql`${usersTable.aiTokenBalance} + ${rc.tokens}` })
-      .where(eq(usersTable.id, user.id))
+      .where(eq(usersTable.id, userId))
   ])
   const claimChanges = (results[0] as { meta: { changes: number } }).meta.changes
   if (claimChanges === 0) {
     throw createError({ statusCode: 400, statusMessage: '兑换码已被领完' })
   }
 
-  return { ok: true, tokens: rc.tokens }
-})
+  return rc.tokens
+}

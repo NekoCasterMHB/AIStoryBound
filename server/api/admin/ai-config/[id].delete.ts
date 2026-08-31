@@ -1,8 +1,10 @@
-// 管理员删除平台 AI 配置;若删的是当前启用配置,自动激活剩余最早创建的一条(没有则回退环境变量)。
-import { asc, eq } from 'drizzle-orm'
+// 管理员删除平台 AI 配置(删除后该行从路由候选中消失;系统按路由/启用链回落,无启用行时回退环境变量)。
+// 被用途模型路由使用的配置阻止删除(先在路由中改选),避免悬空引用。
+import { eq } from 'drizzle-orm'
 import { useD1 } from '../../../utils/d1'
 import { requireAdmin } from '../../../utils/authz'
 import { aiProviderConfigs } from '../../../db/schema'
+import { getAiPurposeRouting } from '../../../utils/ai'
 
 export default defineEventHandler(async (event) => {
   await requireAdmin(event)
@@ -17,16 +19,20 @@ export default defineEventHandler(async (event) => {
   if (!row) {
     throw createError({ statusCode: 404, statusMessage: '配置不存在' })
   }
-  const wasActive = row.active === 1
 
-  await db.delete(aiProviderConfigs).where(eq(aiProviderConfigs.id, id)).run()
-
-  if (wasActive) {
-    const rest = await db.select().from(aiProviderConfigs).orderBy(asc(aiProviderConfigs.createdAt)).all()
-    if (rest[0]) {
-      await db.update(aiProviderConfigs).set({ active: 1 }).where(eq(aiProviderConfigs.id, rest[0].id)).run()
-    }
+  // 被路由使用的配置阻止删除
+  const routing = await getAiPurposeRouting(event)
+  const usedBy = [
+    routing.worldGen === id ? '生成世界' : null,
+    routing.chat === id ? '对话' : null
+  ].filter(Boolean).join('、')
+  if (usedBy) {
+    throw createError({
+      statusCode: 409,
+      statusMessage: `该配置正被用途路由使用(${usedBy}),请先在「用途模型路由」中改选后再删除`
+    })
   }
 
+  await db.delete(aiProviderConfigs).where(eq(aiProviderConfigs.id, id)).run()
   return { ok: true }
 })

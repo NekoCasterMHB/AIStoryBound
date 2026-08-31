@@ -3,12 +3,12 @@
 // 书架端「导入 ZIP 分享包」:校验格式与结构后,作为新的个人作品入库。
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import { uuid } from '#shared/novel'
-import type { ChapterSegment, LocalGame, LocalWork } from '#shared/novel'
+import type { ChapterSegment, HeatLevel, KinkProfileEntry, LocalGame, LocalWork, WorldOverlay } from '#shared/novel'
+import { SHARE_FORMAT, SHARE_VERSION } from '#shared/share-format'
 import { buildGameTxt, sanitizeFilename } from './exportStory'
 
-/** 分享包格式标识:manifest.json 中的 format 字段,与本应用导出的包互相匹配 */
-export const SHARE_FORMAT = 'aisb-share'
-export const SHARE_VERSION = 1
+/** 分享包格式标识:manifest.json 中的 format 字段,与本应用导出的包互相匹配(常量定义在 shared/share-format) */
+export { SHARE_FORMAT, SHARE_VERSION }
 /** 单文件上限:超过视为异常(防异常大包拖垮浏览器) */
 const MAX_ZIP_BYTES = 64 * 1024 * 1024
 
@@ -136,19 +136,40 @@ function normalizeWork(raw: unknown): LocalWork {
   if (!chapters.some(c => c.content.trim().length > 0)) throw new Error('作品正文为空,无法导入')
 
   // 生成产物:类型不符(如损坏/篡改)时整项丢弃,不阻止导入
-  const overlay = (() => {
+  const overlay = ((): WorldOverlay | undefined => {
     const o = r.overlay as Record<string, unknown> | null
     if (!o || typeof o !== 'object') return undefined
+    const heat: HeatLevel | undefined = o.heat === '淡' || o.heat === '中' || o.heat === '烈' ? o.heat : undefined
+    const kinkProfile: KinkProfileEntry[] | undefined = Array.isArray(o.kinkProfile)
+      ? o.kinkProfile.flatMap((k): KinkProfileEntry[] => {
+          if (!k || typeof k !== 'object') return []
+          const e = k as Record<string, unknown>
+          if (typeof e.theme !== 'string' || !e.theme.trim()) return []
+          return [{
+            theme: e.theme,
+            count: typeof e.count === 'number' && Number.isFinite(e.count) ? e.count : 1,
+            dominantView: typeof e.dominantView === 'string' ? e.dominantView : null
+          }]
+        })
+      : undefined
     return {
       title: typeof o.title === 'string' ? o.title : undefined,
       genre: typeof o.genre === 'string' ? o.genre : undefined,
       summary: typeof o.summary === 'string' ? o.summary : undefined,
-      characters: Array.isArray(o.characters) ? o.characters : undefined
+      characters: Array.isArray(o.characters) ? o.characters : undefined,
+      tags: Array.isArray(o.tags) ? o.tags.filter((t): t is string => typeof t === 'string') : undefined,
+      orientation: typeof o.orientation === 'string' ? o.orientation : undefined,
+      setting: typeof o.setting === 'string' ? o.setting : undefined,
+      heat,
+      contentWarnings: Array.isArray(o.contentWarnings) ? o.contentWarnings.filter((t): t is string => typeof t === 'string') : undefined,
+      tropes: Array.isArray(o.tropes) ? o.tropes.filter((t): t is string => typeof t === 'string') : undefined,
+      kinkProfile
     }
   })()
   const entities = r.entities && typeof r.entities === 'object' ? r.entities as LocalWork['entities'] : undefined
   const conflicts = Array.isArray(r.conflicts) ? r.conflicts as LocalWork['conflicts'] : undefined
   const warnings = Array.isArray(r.warnings) ? r.warnings.filter(w => typeof w === 'string') as string[] : undefined
+  const storyline = Array.isArray(r.storyline) ? r.storyline as LocalWork['storyline'] : undefined
 
   const now = new Date().toISOString()
   return {
@@ -165,18 +186,18 @@ function normalizeWork(raw: unknown): LocalWork {
     entities,
     conflicts,
     warnings,
-    overlay
+    overlay,
+    storyline
   }
 }
 
 /**
- * 校验 ZIP 分享包并重建为个人作品(不落库,由调用方保存)。
+ * 校验 ZIP 分享包字节并重建为个人作品(不落库,由调用方保存)。
  * 失败时抛出带中文说明的 Error,调用方按错误提示用户。
  */
-export async function importWorkFromZip(file: File): Promise<LocalWork> {
-  if (file.size > MAX_ZIP_BYTES) throw new Error('分享包过大(超过 64MB),无法导入')
+export async function importWorkFromBytes(bytes: Uint8Array): Promise<LocalWork> {
+  if (bytes.length > MAX_ZIP_BYTES) throw new Error('分享包过大(超过 64MB),无法导入')
 
-  const bytes = new Uint8Array(await file.arrayBuffer())
   // ZIP 魔数 PK(空包为 PK\x05\x06)
   if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
     throw new Error('不是有效的 ZIP 文件(文件头不正确)')
@@ -200,4 +221,9 @@ export async function importWorkFromZip(file: File): Promise<LocalWork> {
     throw new Error('work.json 解析失败,文件已损坏')
   }
   return normalizeWork(parsed)
+}
+
+/** File 入口(书架「导入 ZIP 分享包」):读出字节后走 importWorkFromBytes */
+export async function importWorkFromZip(file: File): Promise<LocalWork> {
+  return importWorkFromBytes(new Uint8Array(await file.arrayBuffer()))
 }

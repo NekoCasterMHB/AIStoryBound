@@ -84,7 +84,9 @@ function loadKnownCache(): KnownDeviceRecord[] {
 
 function saveKnownCache(records: KnownDeviceRecord[]): void {
   if (typeof localStorage === 'undefined') return
-  try { localStorage.setItem(KNOWN_CACHE_KEY, JSON.stringify(records)) } catch { /* 隐私模式等场景忽略 */ }
+  try {
+    localStorage.setItem(KNOWN_CACHE_KEY, JSON.stringify(records))
+  } catch { /* 隐私模式等场景忽略 */ }
 }
 
 /** 记录一次成功扫描/连接的设备(去重置顶,最多留 20 条;battery 为 null 时沿用旧值) */
@@ -131,7 +133,7 @@ async function attach(raw: RawBleDevice, gatt: ToyGattParams, battery?: ToyBatte
   } catch (e) {
     // 旧授权(授权时未含服务)的已授权设备直连会抛 SecurityError:提示重新走一次系统选择器
     if (e instanceof Error && /not allowed to access any service/.test(e.message)) {
-      throw new Error('蓝牙服务未授权:请点击「连接设备」重新配对授权')
+      throw new Error('蓝牙服务未授权:请点击「连接设备」重新配对授权', { cause: e })
     }
     throw e
   }

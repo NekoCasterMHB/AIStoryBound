@@ -2,15 +2,15 @@
 // 游戏页(浏览器驱动回合):本地游戏会话 + 本地作品(人物卡) → /api/ai/chat 中继
 // 叙事流式(打字机)→ 选项结构化 → mergeState 本地应用 → 落 IndexedDB + 本地存档点
 // 回滚完全本地(存盘点恢复);登录用户可一键同步云端(跨设备续玩)。
-import { aiChat, aiChatJson } from '../../utils/aiRelay'
+import { aiChat, aiChatJson, CancelledError, type RelayedUsage } from '../../utils/aiRelay'
 import { estimateTextTokens } from '#shared/token-estimate'
 import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
 import { loadScenePrefs, saveScenePrefs } from '../../utils/scenePrefs'
 import { loadNarrTemp, saveNarrTemp, NARR_TEMP_MIN, NARR_TEMP_MAX, NARR_TEMP_STEP } from '../../utils/narrPrefs'
 import { loadEnabledAiSkillObjects, listInstalledSkills, loadEnabledAiSkills, saveEnabledAiSkills } from '../../utils/aiSkills'
-import { buildTurnPrompt, cardBrief, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, REINJECT_CHAPTER_EVERY, REINJECT_WINDOW_CHARS } from '#shared/game'
+import { ADULT_CONTENT_POLICY, buildTurnPrompt, cardBrief, effectiveCards, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, estimateTurnPromptBreakdown, REINJECT_CHAPTER_EVERY, REINJECT_WINDOW_CHARS } from '#shared/game'
 import { uuid } from '#shared/novel'
-import type { GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
+import type { CharacterDynamicState, GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
 import { getLocalGame, saveLocalGame, syncGameToCloud } from '../../utils/gameStore'
 import { isCloudSaveEnabled } from '../../utils/cloudSave'
 import { getWork, touchWork, addWorkTokens } from '../../utils/worldGen'
@@ -24,7 +24,7 @@ import { loadAllPluginSpecs } from '../../toy/runtime/adapter-loader'
 import { isAdapterEnabled, DEFAULT_TOY_SETTINGS } from '#shared/toy'
 import type { ToySettings } from '#shared/toy'
 import { describePlugin } from '#shared/plugin'
-import { loadNarrSpeed, saveNarrSpeed, narrSpeedTierOf, NARR_SPEED_TIERS } from '../../utils/narrSpeed'
+import { loadNarrSpeed, saveNarrSpeed, narrSpeedTierOf, clampNarrCps, NARR_SPEED_TIERS, NARR_SPEED_DEFAULT } from '../../utils/narrSpeed'
 import { loadNarrLength, saveNarrLength, NARR_LENGTH_MIN, NARR_LENGTH_MAX, NARR_LENGTH_STEP } from '../../utils/narrLength'
 import { createNarrParser } from '../../utils/narrStream'
 import { createTypewriter } from '../../utils/typewriter'
@@ -42,7 +42,6 @@ const game = ref<LocalGame | null>(null)
 const work = ref<LocalWork | null>(null)
 const state = ref<GameState>({})
 const messages = ref<LocalGame['messages']>([])
-const currentChapter = ref<string | null>(null)
 const options = ref<{ idx: number, text: string }[]>([])
 const loadError = ref<string | null>(null)
 
@@ -59,16 +58,25 @@ watch(narrTemp, v => saveNarrTemp(v))
 /** 每回合生成字数(游戏内设置弹窗/个人中心滑动条,默认 400 字):回合正文目标篇幅,并据此缩放叙事 maxTokens */
 const narrLength = ref(loadNarrLength())
 watch(narrLength, v => saveNarrLength(v))
-/** 叙事速度(游戏内设置弹窗/个人中心,IndexedDB 持久化):回合正文流式速率档位,新回合生效 */
-const narrSpeed = ref(60)
+/** 叙事速度(游戏内设置弹窗/个人中心,IndexedDB 持久化):回合正文流式速率档位,新回合生效。
+ *  初值取默认档位(旧档位 60 会在 IndexedDB 加载完成前的首回合以 1.5 倍速播放) */
+const narrSpeed = ref(NARR_SPEED_DEFAULT.cps)
 const narrSpeedLoaded = ref(false)
 void loadNarrSpeed().then((cps) => {
   narrSpeed.value = cps
   narrSpeedLoaded.value = true
 })
 function pickNarrSpeed(cps: number): void {
-  narrSpeed.value = cps
-  if (narrSpeedLoaded.value) void saveNarrSpeed(cps)
+  narrSpeed.value = clampNarrCps(cps)
+  if (narrSpeedLoaded.value) void saveNarrSpeed(clampNarrCps(cps))
+}
+/** 自定义速度输入(数字,回车/按钮应用;即时保存) */
+const narrSpeedCustom = ref('')
+function applyNarrSpeedCustom(): void {
+  const n = Number(narrSpeedCustom.value)
+  if (!Number.isFinite(n) || n <= 0) return
+  pickNarrSpeed(n)
+  narrSpeedCustom.value = ''
 }
 
 // ---- 游戏内设置弹窗(个人中心「模型设置」成人模式往下的游玩偏好项,改动即时保存/新回合生效) ----
@@ -80,64 +88,63 @@ function submitScenePrefs() {
   sceneMsg.value = { kind: 'ok', text: '已保存,新回合生效' }
 }
 
-// ---- 章节回注定位(每 N 回合把当前章剩余情节窗口 + 下一章开头窗口重新注入提示词) ----
+// ---- 段回注定位(每 N 回合把当前段情节 + 段起始原文窗口重新注入提示词;不依赖章节) ----
 
-/** 回注定位:当前章索引 + 章内字符偏移(AI 报告进入新章时重置偏移) */
-const plotPos = ref({ idx: 0, offset: 0 })
+/** 剧情当前推进到的细纲段下标(0-based;收尾器按回报推进,阶段变体与回注共用) */
+const plotBeat = ref(0)
 
-/** 解析回注定位的章节索引:优先开局 chapterIndex,再按标题匹配作品章节(旧存档回退),缺省 0 */
-function resolveChapterIndex(title: string | null | undefined): number {
-  const chapters = work.value?.chapters ?? []
+const storylineBeats = computed(() => work.value?.storyline ?? [])
+const currentBeatLabel = computed(() => storylineBeats.value[plotBeat.value]?.label ?? `第${plotBeat.value + 1}段`)
+
+/** 全书拼接正文(与 splitUnits 的 join('\n') 同源):段 startChar 直接在此上取原文窗口 */
+const joinedText = computed(() => (work.value?.chapters ?? []).map(c => c.content).join('\n'))
+
+/** 旧字段字符串(如「第3段」)→ 段下标;非段格式返回 null */
+function beatFromLegacyLabel(label: string | null | undefined): number | null {
+  const m = label?.match(/^第(\d+)段/)
+  if (!m) return null
+  const idx = Number(m[1]) - 1
+  if (idx >= 0 && idx < storylineBeats.value.length) return idx
+  return null
+}
+
+/** 解析初始段定位:细纲段开场直接用 beatIndex;旧存档回退解析旧 currentChapter 字符串(如「第3段」),缺省 0 */
+function resolveInitialBeat(): number {
+  const beats = storylineBeats.value
+  if (beats.length === 0) return 0
   const op = game.value?.opening
-  if (op?.mode === 'chapter' && typeof op.chapterIndex === 'number' && chapters[op.chapterIndex]) {
-    return op.chapterIndex
+  if (op?.mode === 'beat' && typeof op.beatIndex === 'number' && op.beatIndex >= 0 && op.beatIndex < beats.length) {
+    return op.beatIndex
   }
-  if (title) {
-    const idx = chapters.findIndex(c => c.title === title || (c.title && (c.title.startsWith(title) || title.startsWith(c.title))))
-    if (idx >= 0) return idx
-  }
-  return 0
+  const legacy = (game.value as { currentChapter?: string | null } | null)?.currentChapter
+  return beatFromLegacyLabel(legacy) ?? 0
 }
 
-/** 每回合推进回注定位:AI 报告的新章节在作品中匹配到 → 换章并重置偏移;仍在原章 → 偏移累加本回合实际旁白字数 */
-function advancePlotPos(reportedChapter: string | null | undefined, chars: number): void {
-  const chapters = work.value?.chapters ?? []
-  if (chapters.length === 0) return
-  const cur = plotPos.value
-  const curTitle = chapters[cur.idx]?.title ?? ''
-  if (reportedChapter && curTitle && curTitle !== reportedChapter) {
-    // 尝试从当前章向后匹配报告章节(精确/前缀/包含)
-    let matched = -1
-    for (let i = cur.idx; i < chapters.length; i++) {
-      const t = chapters[i]?.title ?? ''
-      if (t === reportedChapter || (t && (t.startsWith(reportedChapter) || reportedChapter.startsWith(t)))) {
-        matched = i
-        break
-      }
-    }
-    if (matched >= 0) {
-      plotPos.value = { idx: matched, offset: 0 }
-      return
-    }
+/** 每回合推进段定位:收尾器报告的段序号(1-based)仅在向前且最多跳 2 段时采纳——
+ *  报告偶尔是幻觉,不设上限会把回注定位拽到无关段;向后/越界一律保持原位 */
+function advancePlotBeat(reportedBeat: number | null | undefined): void {
+  const beats = storylineBeats.value
+  if (typeof reportedBeat !== 'number' || !Number.isFinite(reportedBeat)) return
+  const idx = reportedBeat - 1
+  if (idx > plotBeat.value && idx < beats.length && idx <= plotBeat.value + 2) {
+    plotBeat.value = idx
   }
-  // 仍在原章:偏移按实际旁白字数累加(不超章节长度,防止窗口越界)
-  const maxOffset = Math.max(0, (chapters[cur.idx]?.content?.length ?? 0) - 1)
-  plotPos.value = { idx: cur.idx, offset: Math.min(maxOffset, cur.offset + chars) }
 }
 
-/** 构建回注窗口:当前章从定位起 1500 字(剩余情节窗口)+ 下一章开头 1500 字(接下来的走向) */
-function buildReinjectWindow(): { currentTitle?: string, window: string, nextWindow?: string } | undefined {
-  const chapters = work.value?.chapters ?? []
-  if (chapters.length === 0) return undefined
-  const ch = chapters[plotPos.value.idx]
-  if (!ch) return undefined
-  const text = ch.content ?? ''
-  const start = Math.max(0, Math.min(plotPos.value.offset, text.length))
-  const window = text.slice(start, start + REINJECT_WINDOW_CHARS)
-  const next = chapters[plotPos.value.idx + 1]
-  const nextWindow = next ? (next.content ?? '').slice(0, REINJECT_WINDOW_CHARS) : ''
-  if (!window && !nextWindow) return undefined
-  return { currentTitle: ch.title || undefined, window, nextWindow }
+/** 构建段回注:当前段情节摘要 + 段起始原文窗口 + 后段走向摘要(全部来自细纲,不经章节) */
+function buildBeatReinject(): { beatTitle?: string, beatSummary?: string, window: string, nextBeat?: { title?: string, summary?: string } } | undefined {
+  const beats = storylineBeats.value
+  const beat = beats[plotBeat.value]
+  if (!beat) return undefined
+  const start = Math.max(0, beat.startChar)
+  const window = joinedText.value.slice(start, start + REINJECT_WINDOW_CHARS)
+  const next = beats[plotBeat.value + 1]
+  return {
+    beatTitle: beat.label,
+    beatSummary: beat.summary,
+    window,
+    ...(next ? { nextBeat: { title: next.label, summary: next.summary } } : {})
+  }
 }
 /** AI Skill 玩法库(个人中心逐项开关 + 链接导入):本轮成人互动可用的玩法菜单(含详细设定)
  *  异步加载(IndexedDB),sendTurn 前必须 await 完成,否则首回合技能不会注入 prompt */
@@ -162,13 +169,21 @@ onMounted(async () => {
     loadError.value = '本地未找到该游戏会话(可能已在新设备上;请到书架「云端游戏」恢复)'
     return
   }
+  // 旧版「从章节开始」存档:章节识别不可靠已下线,这类存档无法继续,提示后不进入游戏
+  // (mode: 'chapter' 已从类型中移除,但 IndexedDB 旧存档仍可能带有该值,运行时兜底判断)
+  if ((g.opening?.mode as string | undefined) === 'chapter') {
+    loadError.value = '该存档基于已下线的「从章节开始」开局,已失效。请返回选角页,改用「按细纲段开始」或其它开场方式重新开局。'
+    return
+  }
   game.value = g
   work.value = g.workId ? await getWork(g.workId) : null
   if (g.workId) void touchWork(g.workId)
   state.value = ensureDesires(g.state, cards.value)
   messages.value = g.messages
-  currentChapter.value = g.currentChapter ?? null
-  plotPos.value = { idx: resolveChapterIndex(g.currentChapter), offset: 0 }
+  // 段定位:新存档读 currentBeat,旧存档回退解析旧 currentChapter 字符串
+  plotBeat.value = (typeof g.currentBeat === 'number' && g.currentBeat >= 0)
+    ? g.currentBeat
+    : resolveInitialBeat()
   const last = g.messages.at(-1)
   options.value = last ? (g.optionsByMessage?.[last.id] ?? []) : []
   // 初始存档点:保证第一轮行动也有回滚目标
@@ -181,6 +196,11 @@ const playerName = computed(() => game.value?.playerName ?? '玩家')
 const cards = computed(() => work.value?.overlay?.characters ?? [])
 const playerCard = computed(() => cards.value.find(c => c.name === game.value?.characterName))
 
+/** 当前阶段段下标(0-based;随收尾器回报推进):有效卡按此叠加阶段变体 */
+const stageIndex = computed(() => plotBeat.value)
+/** 有效角色卡 = 基础卡 + 阶段变体(≤当前段)+ 运行时动态状态(收尾合并/性欲播种/面板展示共用) */
+const effectiveCardsList = computed(() => effectiveCards(cards.value, stageIndex.value, state.value))
+
 const streaming = ref(false)
 /** 叙事流式已完成、选项(结构化)生成中:此阶段显示选项骨架屏 */
 const awaitingOptions = ref(false)
@@ -190,10 +210,65 @@ const liveTokens = ref(0)
 const liveSpeed = ref(0)
 let liveStartedAt = 0
 const turnUsage = ref<string | null>(null)
+/** 本回合 token 消耗统计(模态框展示;各阶段真实 usage + 叙事输入细项估算) */
+interface TurnCostPart { label: string, tokens: number }
+interface TurnCostItem { stage: 'narrative' | 'options' | 'desires', label: string, prompt: number, completion: number, total: number, details?: TurnCostPart[] }
+const turnCostReport = ref<TurnCostItem[] | null>(null)
+const costModalOpen = ref(false)
+/** 饼图色板(按序循环取色;与阶段/细项共用,保证图例颜色一致) */
+const PIE_COLORS = ['#60a5fa', '#f472b6', '#fbbf24', '#34d399', '#a78bfa', '#f87171', '#22d3ee', '#fb923c', '#a3e635', '#f472b6', '#2dd4bf', '#c084fc']
+/** 由 token 数值生成 conic-gradient(跳过 ≤0 的扇区;全 0 返回中性色环) */
+function pieGradient(values: number[]): string {
+  const total = values.reduce((s, v) => s + Math.max(0, v), 0)
+  if (total <= 0) return 'conic-gradient(#e5e7eb 0deg 360deg)'
+  let acc = 0
+  const stops: string[] = []
+  values.forEach((v, i) => {
+    if (v <= 0) return
+    const start = (acc / total) * 360
+    acc += v
+    stops.push(`${PIE_COLORS[i % PIE_COLORS.length]} ${start}deg ${(acc / total) * 360}deg`)
+  })
+  return `conic-gradient(${stops.join(',')})`
+}
+/** 阶段消耗饼图:各阶段大项 total */
+const costStageRows = computed(() => (turnCostReport.value ?? []).map(c => ({ label: c.label, value: c.total })))
+const costStageGradient = computed(() => pieGradient(costStageRows.value.map(r => r.value)))
+const costStageTotal = computed(() => costStageRows.value.reduce((s, r) => s + r.value, 0))
+/** 输入构成饼图:叙事细项(估算)+ 正文输出(真实 completion);其余阶段无细项 */
+const costInputRows = computed(() => {
+  const narr = (turnCostReport.value ?? []).find(c => c.stage === 'narrative')
+  if (!narr) return []
+  const rows: { label: string, value: number }[] = (narr.details ?? []).map(d => ({ label: d.label, value: d.tokens }))
+  if (narr.completion > 0) rows.push({ label: '正文(输出)', value: narr.completion })
+  return rows
+})
+const costInputGradient = computed(() => pieGradient(costInputRows.value.map(r => r.value)))
+const costInputTotal = computed(() => costInputRows.value.reduce((s, r) => s + r.value, 0))
+/** 汇总:各阶段真实 total 之和(与 turnUsage 数字同口径) */
+const costGrandTotal = computed(() => (turnCostReport.value ?? []).reduce((s, c) => s + c.total, 0))
+const costPct = (v: number, total: number) => (total > 0 ? Math.round((v / total) * 1000) / 10 : 0)
 const error = ref<string | null>(null)
 const input = ref('')
 const chatRef = ref<HTMLElement | null>(null)
 const toast = useToast()
+
+/** 本回合取消控制器:停止按钮/页面卸载时中止在途 AI 调用(叙事与选项阶段共用) */
+let turnAbort: AbortController | null = null
+/** 失败回合快照(重试用):记录失败时玩家提交的行动,选项阶段失败重试只需补选项 */
+const failedTurn = ref<{ choice?: string } | null>(null)
+
+/** 停止本回合:中止在途 AI 调用,未获回应的行动将被撤销 */
+function stopTurn() {
+  turnAbort?.abort()
+}
+
+const lastMessage = computed(() => messages.value.at(-1) ?? null)
+/** 上一回合旁白已上屏但选项缺失/为空:提供「重新生成选项」入口 */
+const needsOptionsRetry = computed(() =>
+  !streaming.value && lastMessage.value?.role === 'narrator' && options.value.length === 0)
+/** 玩家行动已提交但未获回应(生成失败/中断):提供「重试本回合」入口 */
+const pendingAction = computed(() => !streaming.value && lastMessage.value?.role === 'user')
 
 // ---- 流式打字机(每回合一个 parser + typewriter;点击流式文本立即显示全文) ----
 let narrParser: NarrParser | null = null
@@ -205,6 +280,9 @@ function flushStream() {
 }
 
 onUnmounted(() => {
+  // 中止在途 AI 调用,避免卸载后后台继续跑完回合并写库
+  turnAbort?.abort()
+  turnAbort = null
   typewriter?.dispose()
   typewriter = null
 })
@@ -304,6 +382,130 @@ function confirmChanges() {
   persist()
 }
 
+// ---- 角色动态状态:查看/手动编辑 + 章节时间线(章节变体 + 互动变化履历) ----
+
+interface CharStateDraft { status: string, location: string, mood: string, dead: boolean }
+const charStateModalOpen = ref(false)
+const charDraft = ref<Record<string, CharStateDraft>>({})
+
+const charStates = computed(() => state.value.characterStates ?? {})
+
+/** 面板摘要:前两位角色的当前状态(或身亡标记) */
+const charStateBriefText = computed(() => {
+  const entries = statRoles.value
+    .map((name) => {
+      const d = charStates.value[name]
+      if (!d) return null
+      if (d.dead) return `${name} 身亡`
+      return d.status ? `${name} ${d.status}` : null
+    })
+    .filter((x): x is string => !!x)
+  if (entries.length === 0) return '—'
+  return entries.length > 2 ? `${entries.slice(0, 2).join(' · ')} 等${entries.length}人` : entries.join(' · ')
+})
+
+function openCharStateModal() {
+  const draft: Record<string, CharStateDraft> = {}
+  for (const name of statRoles.value) {
+    const d = charStates.value[name]
+    draft[name] = { status: d?.status ?? '', location: d?.location ?? '', mood: d?.mood ?? '', dead: d?.dead === true }
+  }
+  charDraft.value = draft
+  charStateModalOpen.value = true
+}
+
+/** 应用草稿:有实际变化的字段写入 characterStates(留一条「手动调整」履历),空值清除已有字段 */
+function applyCharDraft() {
+  const states = { ...(state.value.characterStates ?? {}) }
+  const turnIdx = messages.value.at(-1)?.idx ?? 0
+  for (const name of statRoles.value) {
+    const d = charDraft.value[name]
+    if (!d) continue
+    const prev: CharacterDynamicState = states[name] ?? {}
+    const next: CharacterDynamicState = { ...prev, patch: { ...(prev.patch ?? {}) } }
+    let changed = false
+    const bits: string[] = []
+    const setField = (key: 'status' | 'location' | 'mood', label: string) => {
+      const v = d[key].trim()
+      if (v && v !== (prev[key] ?? '').trim()) {
+        next[key] = v
+        bits.push(`${label}:${v}`)
+        changed = true
+      } else if (!v && prev[key]) {
+        // 置 null 清除该字段(JSON 序列化后等价于移除)
+        next[key] = null
+        changed = true
+      }
+    }
+    setField('status', '状态')
+    setField('location', '位置')
+    setField('mood', '情绪')
+    if (d.dead !== (prev.dead === true)) {
+      next.dead = d.dead
+      bits.push(d.dead ? '身亡' : '未死')
+      changed = true
+    }
+    if (!changed) continue
+    next.log = [...(prev.log ?? []), { idx: turnIdx, text: `手动调整:${bits.join(';')}` }].slice(-20)
+    states[name] = next
+  }
+  state.value.characterStates = Object.keys(states).length > 0 ? states : undefined
+  charStateModalOpen.value = false
+  persist()
+  toast.add({ title: '角色状态已更新', color: 'neutral' })
+}
+
+// ---- 章节时间线:章节变体(生成时提取)+ 互动变化履历(运行时) ----
+
+const timelineOpen = ref(false)
+const timelineName = ref<string | null>(null)
+const timelineTitle = computed(() => timelineName.value ?? '角色时间线')
+
+/** 章节变体 patch 字段名 → 中文标签 */
+const VARIANT_FIELD_LABELS: Record<string, string> = {
+  identity: '身份', appearance: '外貌', dead: '身亡', desire: '性欲强度', sex: '床笫', alias: '别名'
+}
+function variantFieldText(key: string, value: unknown): string {
+  const label = VARIANT_FIELD_LABELS[key] ?? key
+  if (key === 'dead') return value === true ? '身亡' : '未死'
+  if (Array.isArray(value)) return `${label}:${value.join('/')}`
+  if (value && typeof value === 'object') return `${label}:${Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k}=${String(v)}`).join(',')}`
+  return `${label}:${String(value)}`
+}
+
+/** 时间线条目:阶段变体按段排序在前(故事内演进),运行时 log 追加在后(互动演进) */
+const timelineEntries = computed(() => {
+  const name = timelineName.value
+  if (!name) return []
+  const card = cards.value.find(c => c.name === name)
+  const out: { label: string, text: string }[] = []
+  for (const v of card?.chapterVariants ?? []) {
+    const bits: string[] = []
+    if (v.status?.trim()) bits.push(v.status.trim())
+    const patchBits = Object.entries(v.patch ?? {}).map(([k, val]) => variantFieldText(k, val))
+    if (patchBits.length) bits.push(patchBits.join(';'))
+    if (bits.length) {
+      const stage = v.stage ?? v.chapter ?? 0
+      out.push({ label: v.title?.trim() || `第${stage + 1}段`, text: bits.join(';') })
+    }
+  }
+  const dyn = charStates.value[name]
+  for (const l of dyn?.log ?? []) {
+    out.push({ label: `第${(l.idx ?? 0) + 1}回合`, text: l.text })
+  }
+  return out
+})
+
+function openTimeline(name: string) {
+  timelineName.value = name
+  timelineOpen.value = true
+}
+
+function closeTimeline() {
+  timelineOpen.value = false
+  timelineName.value = null
+}
+
 // ---- AI 开场生成(opening.mode = 'ai' 且未选定场景时,点「开始故事」先进入开场选择) ----
 
 interface OpeningCard { title: string, scene: string }
@@ -325,14 +527,14 @@ async function generateOpenings() {
       [
         {
           role: 'system',
-          content: `你是故事开场设计师。基于作品设定与玩家角色,构思 3~4 个互不相同的开场剧情点,每个包含标题与场景描述(须写清玩家所处场景与第一个矛盾,80~150 字,第二人称叙述)。输出 JSON:\n{"openings":[{"title":"开场标题","scene":"场景描述"}]}`
+          content: `${ADULT_CONTENT_POLICY}\n你是故事开场设计师。基于作品设定与玩家角色,构思 3~4 个互不相同的开场剧情点,每个包含标题与场景描述(须写清玩家所处场景与第一个矛盾,80~150 字,第二人称叙述)。允许成人向开场,不要因题材拒绝。输出 JSON:\n{"openings":[{"title":"开场标题","scene":"场景描述"}]}`
         },
         {
           role: 'user',
-          content: `作品《${work.value?.overlay?.title || '未命名小说'}》,题材:${work.value?.overlay?.genre ?? '未知'}\n故事背景:${work.value?.overlay?.summary ?? '无'}\n玩家扮演:${brief}\n当前状态:${JSON.stringify(state.value)}`
+          content: `作品《${work.value?.overlay?.title || '未命名小说'}》,题材:${work.value?.overlay?.genre ?? '未知'}${work.value?.overlay?.orientation ? `，性向:${work.value.overlay.orientation}` : ''}${work.value?.overlay?.heat ? `，尺度:${work.value.overlay.heat}` : ''}${work.value?.overlay?.setting ? `，舞台:${work.value.overlay.setting}` : ''}${work.value?.overlay?.tags?.length ? `，标签:${work.value.overlay.tags.slice(0, 8).join('、')}` : ''}\n故事背景:${work.value?.overlay?.summary ?? '无'}\n玩家扮演:${brief}\n当前状态:${JSON.stringify(state.value)}`
         }
       ],
-      { maxTokens: 800, temperature: 1.0, thinking: false }
+      { maxTokens: 800, temperature: 1.0 }
     )
     if (!res.ok) throw new Error(res.message)
     void addWorkTokens(game.value?.workId ?? '', res.usage?.totalTokens ?? 0)
@@ -363,9 +565,9 @@ function confirmOpening() {
 async function seedDesiresByOpening(): Promise<void> {
   const op = game.value?.opening
   if (!op || op.desiresSeeded) return
-  const scene = op.mode === 'chapter' ? op.chapterText : op.scene
+  const scene = op.mode === 'beat' ? op.beatText : op.scene
   if (!scene?.trim()) return
-  const briefs = cards.value.map(cardBrief)
+  const briefs = effectiveCardsList.value.map(c => cardBrief(c, state.value.characterStates?.[c.name]))
   if (briefs.length === 0) return
   const res = await aiChatJson<{ desires: Record<string, number> }>(
     [
@@ -378,10 +580,18 @@ async function seedDesiresByOpening(): Promise<void> {
         content: `起始情节:\n${scene.trim().slice(0, 1500)}\n\n人物卡:\n${briefs.join('\n')}\n\n当前公式播种值(仅参考,请按情节覆盖):${JSON.stringify(state.value.desires ?? {})}`
       }
     ],
-    { maxTokens: 400, temperature: 0.4, thinking: false }
+    { maxTokens: 400, temperature: 0.4 }
   )
   if (!res.ok) return
   void addWorkTokens(game.value?.workId ?? '', res.usage?.totalTokens ?? 0)
+  // 消耗统计:开局性欲初始化大项(首回合,真实 usage;叙事大项稍后覆盖写入)
+  turnCostReport.value = [{
+    stage: 'desires',
+    label: '开局性欲初始化',
+    prompt: res.usage?.promptTokens ?? 0,
+    completion: res.usage?.completionTokens ?? 0,
+    total: res.usage?.totalTokens ?? 0
+  }]
   const desires = { ...(state.value.desires ?? {}) }
   let changed = false
   for (const c of cards.value) {
@@ -413,7 +623,7 @@ function persist() {
   if (!game.value) return
   game.value.state = JSON.parse(JSON.stringify(state.value))
   game.value.messages = JSON.parse(JSON.stringify(messages.value))
-  game.value.currentChapter = currentChapter.value
+  game.value.currentBeat = plotBeat.value
   game.value.syncStatus = game.value.syncStatus === 'synced' ? 'dirty' : game.value.syncStatus
   void saveLocalGame(game.value)
 }
@@ -425,11 +635,129 @@ async function savePointNow() {
     gameId,
     idx: last?.idx ?? -1,
     state: JSON.parse(JSON.stringify(state.value)),
-    currentChapter: currentChapter.value,
+    currentBeat: plotBeat.value,
     messages: JSON.parse(JSON.stringify(messages.value)),
     savedAt: new Date().toISOString()
   }).catch(() => {})
   await capGamePoints(gameId)
+}
+
+/**
+ * 选项 + 状态变化 + 剧情摘要(结构化收尾)。独立成可重入函数:
+ * 收尾失败/选项为空时的重试只需补跑本阶段,不重发叙事(旁白已上屏,不重复扣费)。
+ * 收尾输出偶尔不是合法 JSON(模型在字符串里夹带未转义引号等):此时该次调用已消耗 token,
+ * 静默重试一次(玩家只看到骨架屏多等几秒);失败尝试与重试的用量都入账,避免少扣。
+ * 402 余额不足/400 参数错误重试必然复现,直接放行报错;取消(CancelledError)向上抛,不重试。
+ */
+async function runOptionsPhase(
+  narratorMsg: LocalGame['messages'][number],
+  narratorText: string,
+  narrTokens: number
+): Promise<void> {
+  if (!game.value) throw new Error('会话已丢失')
+  const optionsMessages = [
+    {
+      role: 'system' as const,
+      content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3 个下一回合的行动选项、本轮对游戏状态的增量变化(相对当前值),以及整局剧情摘要。\n输出 JSON:\n${turnOptionsSchema()}`
+    },
+    {
+      role: 'user' as const,
+      content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(state.value)}\n上文剧情:\n${messages.value.slice(-12).map(m => m.content).join('\n')}`
+    }
+  ]
+  const optionsCall = () => aiChatJson<TurnStructured>(optionsMessages, { maxTokens: 1200, temperature: narrTemp.value }, {
+    // 选项阶段继续更新头部实时 token(否则停留在叙事阶段末值,显示误导)
+    onLive: (info) => {
+      liveTokens.value = info.tokens
+      liveSpeed.value = info.speed
+    },
+    signal: turnAbort?.signal
+  })
+  let optRes = await optionsCall()
+  let retryTokens = optRes.ok ? 0 : (optRes.usage?.totalTokens ?? 0)
+  if (!optRes.ok && optRes.status !== 402 && optRes.status !== 400) {
+    console.warn('[game] 回合收尾失败,静默重试一次:', optRes.message)
+    optRes = await optionsCall()
+    if (!optRes.ok) retryTokens += optRes.usage?.totalTokens ?? 0
+  }
+  if (!optRes.ok) throw new Error(optRes.message)
+  void addWorkTokens(game.value.workId, retryTokens + (optRes.usage?.totalTokens ?? 0))
+  const turn = optRes.data
+
+  state.value = mergeState(state.value, turn.state_delta, effectiveCardsList.value, narratorMsg.idx)
+  if (turn.summary) game.value.summary = { idx: narratorMsg.idx, text: turn.summary }
+  options.value = (turn.options ?? []).map((t, i) => ({ idx: i, text: String(t) }))
+  if (!game.value.optionsByMessage) game.value.optionsByMessage = {}
+  game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(options.value))
+  // 推进段定位:收尾器报告当前推进到的段序号(1-based),向前且最多跳 2 段时采纳
+  advancePlotBeat(turn.current_beat)
+
+  if (options.value.length === 0) {
+    toast.add({ title: '本回合没有生成选项,可重新生成或直接输入行动', color: 'warning' })
+  }
+
+  const total = narrTokens + (retryTokens + (optRes.usage?.totalTokens ?? 0))
+  turnUsage.value = `本回合 ${total.toLocaleString()} tokens`
+  // 消耗统计:追加选项收尾大项(真实 usage,含重试;叙事大项已在叙事成功后写入)
+  const optTotal = retryTokens + (optRes.usage?.totalTokens ?? 0)
+  turnCostReport.value = [...(turnCostReport.value ?? []), {
+    stage: 'options',
+    label: '选项与状态收尾',
+    prompt: optRes.usage?.promptTokens ?? 0,
+    completion: optRes.usage?.completionTokens ?? 0,
+    total: optTotal
+  }]
+  persist()
+  await savePointNow()
+  // 开启「本地存档上云」时,每回合结束自动同步(未登录或失败静默跳过)
+  if (cloudSaveEnabled.value) void syncGameToCloud(game.value)
+}
+
+/** 收尾失败/选项为空后的重试:旁白已上屏,只补跑选项阶段 */
+async function retryOptionsPhase() {
+  if (streaming.value || !game.value) return
+  const narratorMsg = messages.value.at(-1)
+  if (!narratorMsg || narratorMsg.role !== 'narrator') return
+  streaming.value = true
+  awaitingOptions.value = true
+  error.value = null
+  failedTurn.value = null
+  turnAbort = new AbortController()
+  turnUsage.value = null
+  liveTokens.value = 0
+  liveSpeed.value = 0
+  try {
+    await runOptionsPhase(narratorMsg, narratorMsg.content, 0)
+  } catch (e) {
+    if (e instanceof CancelledError) {
+      turnAbort = null
+      toast.add({ title: '已停止生成', color: 'neutral' })
+      return
+    }
+    failedTurn.value = {}
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    turnAbort = null
+    streaming.value = false
+    awaitingOptions.value = false
+  }
+}
+
+/** 「重试本回合」:叙事失败 → 弹出未获回应的行动重发;收尾失败 → 只补选项阶段 */
+function retryFailedTurn() {
+  if (streaming.value) return
+  const last = messages.value.at(-1)
+  if (last?.role === 'narrator') {
+    void retryOptionsPhase()
+    return
+  }
+  // 叙事失败(最后一条是未获回应的行动)或首回合失败:弹出后重发(行动文本取快照,快照缺失时取消息本身——如刷新后的中断回合)
+  const choice = failedTurn.value?.choice ?? (last?.role === 'user' ? last.content : undefined)
+  if (last?.role === 'user') {
+    messages.value.pop()
+    persist()
+  }
+  void sendTurn(choice)
 }
 
 async function sendTurn(choice?: string) {
@@ -437,52 +765,61 @@ async function sendTurn(choice?: string) {
   streaming.value = true
   awaitingOptions.value = false
   error.value = null
+  failedTurn.value = null
+  turnAbort = new AbortController()
   turnUsage.value = null
+  turnCostReport.value = null
   streamDisplay.value = ''
   options.value = []
   liveTokens.value = 0
   liveSpeed.value = 0
   liveStartedAt = Date.now()
 
-  // 本回合打字机:叙事速度(游戏内设置弹窗/个人中心)→ 限速/停顿;设备指令到句执行,自动会话回调
-  typewriter?.dispose()
-  narrParser = createNarrParser()
-  const speedTier = narrSpeedTierOf(narrSpeed.value)
-  typewriter = createTypewriter({
-    cps: narrSpeed.value,
-    pauseScale: speedTier.pauseScale,
-    onDisplay: (t) => {
-      streamDisplay.value = t
-    },
-    onExecute: (cmd) => {
-      // 指令分发:dev 单次事件 / wave 调教(AI 门槛+上限钳制)/ stop 停止调教
-      if (cmd.kind === 'wave') {
-        return toyController.startWaveForAI(cmd.function, cmd.pattern, cmd.duration, toySettings.value ?? DEFAULT_TOY_SETTINGS).then((r) => {
+  // 本回合打字机:叙事速度(游戏内设置弹窗/个人中心)→ 限速/停顿;设备指令到句执行,自动会话回调。
+  // 抽成可重入函数:叙事流失败静默重试时重建 parser/打字机并清空半截显示,保证重试从零开始
+  const startNarrStream = () => {
+    typewriter?.dispose()
+    narrParser = createNarrParser()
+    const speedTier = narrSpeedTierOf(narrSpeed.value)
+    typewriter = createTypewriter({
+      cps: narrSpeed.value,
+      pauseScale: speedTier.pauseScale,
+      onDisplay: (t) => {
+        streamDisplay.value = t
+      },
+      onExecute: (cmd) => {
+        // 指令分发:dev 单次事件 / wave 调教(AI 门槛+上限钳制)/ stop 停止调教
+        if (cmd.kind === 'wave') {
+          return toyController.startWaveForAI(cmd.function, cmd.pattern, cmd.duration, toySettings.value ?? DEFAULT_TOY_SETTINGS).then((r) => {
+            if (!r.ok) {
+              toast.add({ title: '调教指令被拒绝', description: r.reason, color: 'error' })
+            }
+            return r.ok
+          })
+        }
+        if (cmd.kind === 'stop') {
+          toyController.stopWave(cmd.function)
+          return true
+        }
+        return toyController.execute({
+          function: cmd.function,
+          intensity: cmd.intensity,
+          ...(cmd.mode != null ? { mode: cmd.mode } : {}),
+          ...(cmd.duration != null && cmd.duration > 0 ? { duration: cmd.duration } : {})
+        }, { source: 'ai', settings: toySettings.value ?? DEFAULT_TOY_SETTINGS }).then((r) => {
           if (!r.ok) {
-            toast.add({ title: '调教指令被拒绝', description: r.reason, color: 'error' })
+            toast.add({ title: '设备指令被拒绝', description: r.reason, color: 'error' })
           }
           return r.ok
         })
-      }
-      if (cmd.kind === 'stop') {
-        toyController.stopWave(cmd.function)
-        return true
-      }
-      return toyController.execute({
-        function: cmd.function,
-        intensity: cmd.intensity,
-        ...(cmd.mode != null ? { mode: cmd.mode } : {}),
-        ...(cmd.duration != null && cmd.duration > 0 ? { duration: cmd.duration } : {})
-      }, { source: 'ai', settings: toySettings.value ?? DEFAULT_TOY_SETTINGS }).then((r) => {
-        if (!r.ok) {
-          toast.add({ title: '设备指令被拒绝', description: r.reason, color: 'error' })
-        }
-        return r.ok
-      })
-    },
-    onAutoStart: () => toyController.beginAutoSession(),
-    onAutoEnd: () => toyController.endAutoSession()
-  })
+      },
+      onAutoStart: () => toyController.beginAutoSession(),
+      onAutoEnd: () => toyController.endAutoSession()
+    })
+    streamDisplay.value = ''
+    liveStartedAt = Date.now()
+  }
+  startNarrStream()
 
   if (choice) {
     messages.value.push({ id: uuid(), idx: messages.value.length, role: 'user', speaker: playerName.value, content: choice })
@@ -506,13 +843,13 @@ async function sendTurn(choice?: string) {
       : []
     const deviceEnabled = !!settingsNow?.aiEnabled && enabledBriefs.length > 0
     const deviceSpec = deviceEnabled ? narratorDeviceSpec(enabledBriefs) : ''
-    // 章节回注:每 REINJECT_CHAPTER_EVERY 回合,按当前定位取当前章剩余情节窗口 + 下一章开头窗口
+    // 段回注:每 REINJECT_CHAPTER_EVERY 回合,取当前段情节 + 段起始原文窗口 + 后段走向(有细纲即启用,不依赖开局方式)
     const turnIndex = messages.value.filter(m => m.role === 'narrator').length
-    const reinjectPlot = turnIndex > 0 && turnIndex % REINJECT_CHAPTER_EVERY === 0 && game.value.opening?.mode === 'chapter'
-      ? buildReinjectWindow()
+    const reinjectPlot = turnIndex > 0 && turnIndex % REINJECT_CHAPTER_EVERY === 0 && storylineBeats.value.length > 0
+      ? buildBeatReinject()
       : undefined
     // 1) 叙事流式(中继 SSE)
-    const prompt = buildTurnPrompt({
+    const promptArgs = {
       title: work.value?.overlay?.title || '未命名小说',
       genre: work.value?.overlay?.genre,
       summary: work.value?.overlay?.summary,
@@ -520,6 +857,7 @@ async function sendTurn(choice?: string) {
       playerCard: playerCard.value,
       cards: cards.value,
       state: state.value,
+      stageIndex: stageIndex.value,
       history: messages.value,
       choice,
       summaryText: game.value.summary?.text,
@@ -532,75 +870,113 @@ async function sendTurn(choice?: string) {
       narrLength: narrLength.value,
       entities: work.value?.entities,
       conflicts: work.value?.conflicts,
+      storyline: work.value?.storyline,
+      overlayMeta: work.value?.overlay
+        ? {
+            orientation: work.value.overlay.orientation,
+            setting: work.value.overlay.setting,
+            heat: work.value.overlay.heat,
+            tags: work.value.overlay.tags
+          }
+        : undefined,
       reinjectPlot
-    })
-    const narr = await aiChat(prompt, { maxTokens: Math.min(2400, Math.max(800, Math.round(narrLength.value * 2))), temperature: narrTemp.value, thinking: false }, {
-      onDelta: (d) => {
-        // 解析器增量识别 [[dev:...]] / [[pause:...]],打字机按序消费(文本限速 + 停顿;指令到句执行)
-        const tokens = narrParser?.feed(d) ?? []
-        typewriter?.push(tokens)
-        // 实时消耗估算(与生成页一致:CJK 感知字符 → token,含速度;用 fullText 不因显示延迟失真)
-        const elapsed = Date.now() - liveStartedAt
-        const tokensOut = typewriter ? estimateTextTokens(typewriter.fullText) : 0
-        liveTokens.value = tokensOut
-        liveSpeed.value = elapsed > 0 ? Math.round((tokensOut / elapsed) * 1000) : 0
+    }
+    const prompt = buildTurnPrompt(promptArgs)
+    // 1) 叙事流式(中继 SSE)。失败静默重试一次(HTTP 5xx/网络/超时/空输出):
+    //    中途失败时流式可能已上屏半截,重试前 startNarrStream 重建从零开始;
+    //    402 余额不足/400 参数错误重试必然复现,直接抛出;玩家取消(CancelledError)不重试
+    const narrOpts = { maxTokens: Math.min(2400, Math.max(800, Math.round(narrLength.value * 2))), temperature: narrTemp.value }
+    const tryNarrOnce = async (): Promise<Awaited<ReturnType<typeof aiChat>>> => {
+      try {
+        return await aiChat(prompt, narrOpts, {
+          onDelta: (d) => {
+            // 解析器增量识别 [[dev:...]] / [[pause:...]],打字机按序消费(文本限速 + 停顿;指令到句执行)
+            const tokens = narrParser?.feed(d) ?? []
+            typewriter?.push(tokens)
+            // 实时消耗估算(与生成页一致:CJK 感知字符 → token,含速度;用 fullText 不因显示延迟失真)
+            const elapsed = Date.now() - liveStartedAt
+            const tokensOut = typewriter ? estimateTextTokens(typewriter.fullText) : 0
+            liveTokens.value = tokensOut
+            liveSpeed.value = elapsed > 0 ? Math.round((tokensOut / elapsed) * 1000) : 0
+          }
+        }, turnAbort?.signal)
+      } catch (e) {
+        // 取消(生成取消/页面卸载)向上抛由外层收尾;网络/超时等异常转成失败结果参与重试
+        if (e instanceof CancelledError) throw e
+        return { ok: false, status: 0, message: (e as Error)?.message ?? String(e) }
       }
-    })
-    if (!narr.ok) throw new Error(narr.message)
+    }
+    const runNarrative = async (): Promise<{ usage?: RelayedUsage, retryTokens: number, narratorText: string }> => {
+      let retryTokens = 0
+      for (let attempt = 0; ; attempt++) {
+        const narr = await tryNarrOnce()
+        if (narr.ok) {
+          // 流结束:解析器收尾(丢弃未闭合指令)→ 推送剩余 token,打字机按原速继续播完
+          // (不再立即上屏全部;点击流式正文仍可跳过,播完后再生成选项)
+          const tail = narrParser?.finish() ?? []
+          typewriter?.push(tail)
+          await typewriter?.done()
+          const text = (typewriter?.fullText ?? streamDisplay.value).trim()
+          if (text) return { usage: narr.usage, retryTokens, narratorText: text }
+          retryTokens += narr.usage?.totalTokens ?? 0
+          if (attempt >= 1) throw new Error('AI 未返回剧情内容,请重试')
+        } else if (narr.status === 402 || narr.status === 400 || attempt >= 1) {
+          throw new Error(narr.message)
+        }
+        console.warn('[game] 叙事生成失败,静默重试一次:', narr.ok ? '输出为空' : narr.message)
+        startNarrStream()
+      }
+    }
+    const narrResult = await runNarrative()
     // 游玩消耗累计到作品计量(含失败重试已消耗的部分)
-    void addWorkTokens(game.value.workId, narr.usage?.totalTokens ?? 0)
-
-    // 流结束:解析器收尾(丢弃未闭合指令)→ 推送剩余 token,打字机按原速继续播完
-    // (不再立即上屏全部;点击流式正文仍可跳过,播完后再生成选项)
-    const tail = narrParser?.finish() ?? []
-    typewriter?.push(tail)
-    await typewriter?.done()
-    const narratorText = (typewriter?.fullText ?? streamDisplay.value).trim()
-    if (!narratorText) throw new Error('AI 未返回剧情内容,请重试')
+    void addWorkTokens(game.value.workId, narrResult.retryTokens + (narrResult.usage?.totalTokens ?? 0))
+    // 消耗统计:叙事大项(真实 usage,含重试)+ 输入细项(按字符估算);保留首回合欲望大项
+    const narrUsage = narrResult.usage
+    const narrTotal = narrResult.retryTokens + (narrUsage?.totalTokens ?? 0)
+    const narrDetails: TurnCostPart[] = estimateTurnPromptBreakdown(promptArgs).map(d => ({ label: d.label, tokens: d.tokens }))
+    if (narrResult.retryTokens > 0) narrDetails.push({ label: '失败重试', tokens: narrResult.retryTokens })
+    const prior: TurnCostItem[] = (turnCostReport.value ?? [] as TurnCostItem[]).filter(c => c.stage !== 'narrative')
+    turnCostReport.value = [
+      ...prior,
+      {
+        stage: 'narrative',
+        label: '叙事生成(正文流式)',
+        prompt: narrUsage?.promptTokens ?? 0,
+        completion: narrUsage?.completionTokens ?? 0,
+        total: narrTotal,
+        details: narrDetails
+      }
+    ]
+    const narratorText = narrResult.narratorText
     const narratorMsg = { id: uuid(), idx: messages.value.length, role: 'narrator', speaker: null, content: narratorText }
     messages.value.push(narratorMsg)
     // 叙事已上屏,进入选项生成阶段:显示骨架屏等待
     awaitingOptions.value = true
 
     // 2) 选项 + 状态变化 + 剧情摘要(结构化);设备控制已走叙事流内联指令,收尾器不含设备字段
-    const optRes = await aiChatJson<TurnStructured>(
-      [
-        {
-          role: 'system',
-          content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3 个下一回合的行动选项、本轮对游戏状态的增量变化(相对当前值),以及整局剧情摘要。\n输出 JSON:\n${turnOptionsSchema()}`
-        },
-        {
-          role: 'user',
-          content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(state.value)}\n上文剧情:\n${messages.value.slice(-12).map(m => m.content).join('\n')}`
-        }
-      ],
-      { maxTokens: 1200, temperature: narrTemp.value, thinking: false }
-    )
-    if (!optRes.ok) throw new Error(optRes.message)
-    void addWorkTokens(game.value.workId, optRes.usage?.totalTokens ?? 0)
-    const turn = optRes.data
-
-    state.value = mergeState(state.value, turn.state_delta, cards.value)
-    if (turn.current_chapter) currentChapter.value = turn.current_chapter
-    if (turn.summary) game.value.summary = { idx: narratorMsg.idx, text: turn.summary }
-    options.value = (turn.options ?? []).map((t, i) => ({ idx: i, text: String(t) }))
-    if (!game.value.optionsByMessage) game.value.optionsByMessage = {}
-    game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(options.value))
-    // 推进章节回注定位:AI 报告进入新章则换章重置,否则按本回合实际旁白字数累加偏移
-    advancePlotPos(turn.current_chapter, narratorText.length)
-
-    const total = (narr.usage?.totalTokens ?? 0) + (optRes.usage?.totalTokens ?? 0)
-    turnUsage.value = `本回合 ${total.toLocaleString()} tokens`
-    persist()
-    await savePointNow()
-    // 开启「本地存档上云」时,每回合结束自动同步(未登录或失败静默跳过)
-    if (cloudSaveEnabled.value) void syncGameToCloud(game.value)
+    await runOptionsPhase(narratorMsg, narratorText, narrResult.retryTokens + (narrResult.usage?.totalTokens ?? 0))
   } catch (e) {
+    if (e instanceof CancelledError) {
+      // 玩家停止/页面卸载:不当作失败。未获回应的行动弹出撤销,恢复上一决策点选项
+      turnAbort = null
+      const last = messages.value.at(-1)
+      if (last?.role === 'user') {
+        messages.value.pop()
+        const prevNarr = [...messages.value].reverse().find(m => m.role === 'narrator')
+        options.value = prevNarr ? (game.value?.optionsByMessage?.[prevNarr.id] ?? []) : []
+        streamDisplay.value = ''
+      }
+      toast.add({ title: '已停止生成', color: 'neutral' })
+      persist()
+      return
+    }
+    failedTurn.value = { choice }
     error.value = e instanceof Error ? e.message : String(e)
-    // 叙事已上屏而收尾失败:保留剧情,下次重试只补选项
+    // 叙事已上屏而收尾失败:保留剧情,重试只补选项
     typewriter?.flush()
   } finally {
     // 回合结束:清理打字机,自动会话兜底收尾(解锁手动面板)
+    turnAbort = null
     typewriter?.dispose()
     typewriter = null
     narrParser = null
@@ -617,7 +993,10 @@ function pickOption(text: string) {
 
 function sendInput() {
   const v = input.value.trim()
-  if (!v) return
+  if (!v) {
+    toast.add({ title: '请输入行动内容', color: 'warning' })
+    return
+  }
   input.value = ''
   void sendTurn(v)
 }
@@ -652,9 +1031,11 @@ async function rollbackAction() {
 
   messages.value = JSON.parse(JSON.stringify(target.messages))
   state.value = ensureDesires(JSON.parse(JSON.stringify(target.state)), cards.value)
-  currentChapter.value = target.currentChapter
-  // 回滚后按恢复的章节重置回注定位(偏移归零,从该章开头重新定位,不跳过情节)
-  plotPos.value = { idx: resolveChapterIndex(target.currentChapter), offset: 0 }
+  // 回滚后按存档点恢复段定位(新存档读 currentBeat,旧存档点回退解析旧 currentChapter 字符串)
+  plotBeat.value = (typeof (target as { currentBeat?: number | null }).currentBeat === 'number'
+    && (target as { currentBeat?: number | null }).currentBeat! >= 0)
+    ? (target as { currentBeat: number }).currentBeat
+    : (beatFromLegacyLabel((target as { currentChapter?: string | null }).currentChapter) ?? 0)
   streamDisplay.value = ''
   typewriter?.dispose()
   typewriter = null
@@ -671,6 +1052,9 @@ async function rollbackAction() {
     }
     game.value.optionsByMessage = kept
   }
+  // 回填恢复点最后一条旁白挂载的选项:回滚后可直接继续选择,不必只能自由输入
+  const restoredNarr = [...messages.value].reverse().find(m => m.role === 'narrator')
+  options.value = restoredNarr ? (game.value?.optionsByMessage?.[restoredNarr.id] ?? []) : []
   persist()
   await pruneGamePoints(gameId, msg.idx)
   await savePointNow()
@@ -685,7 +1069,7 @@ function onExportZip() {
   downloadGameAsZip({
     title: work.value?.overlay?.title,
     playerName: playerName.value,
-    chapter: currentChapter.value,
+    chapter: currentBeatLabel.value,
     work: work.value,
     game: game.value,
     messages: messages.value
@@ -702,7 +1086,7 @@ function onExportTxt() {
   const ok = downloadGameAsTxt({
     title: work.value?.overlay?.title,
     playerName: playerName.value,
-    chapter: currentChapter.value,
+    chapter: currentBeatLabel.value,
     messages: messages.value
   })
   if (!ok) toast.add({ title: '还没有剧情可导出', description: '先开始故事,产生一段旁白后再导出', color: 'warning' })
@@ -733,159 +1117,211 @@ watch([messages, streamDisplay], async () => {
 </script>
 
 <template>
-  <div class="flex h-full flex-col px-4">
+  <div
+    v-if="loadError"
+    class="flex min-h-dvh items-center justify-center px-4"
+  >
+    <!-- 旧版章节开局存档已失效:只提示,不渲染游戏主体 -->
+    <div class="w-full max-w-md">
+      <UAlert
+        color="error"
+        variant="soft"
+        icon="i-lucide-triangle-alert"
+        :title="loadError"
+      />
+      <div class="mt-4 flex justify-center gap-3">
+        <UButton
+          label="返回书架"
+          icon="i-lucide-arrow-left"
+          color="neutral"
+          variant="outline"
+          to="/works"
+        />
+      </div>
+    </div>
+  </div>
+  <div
+    v-else
+    class="flex h-full flex-col px-4"
+  >
     <div class="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden">
       <!-- 顶栏(固定置顶):标题行 + 地点/时间等状态排 -->
       <div class="shrink-0 space-y-4 pt-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="min-w-0">
-          <h1 class="truncate text-xl font-semibold">
-            {{ work?.overlay?.title || '故事' }}
-          </h1>
-          <p class="text-xs text-neutral-500">
-            你是「{{ playerName }}」{{ currentChapter ? ` · ${currentChapter}` : '' }}
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="min-w-0">
+            <h1 class="truncate text-xl font-semibold">
+              {{ work?.overlay?.title || '故事' }}
+            </h1>
+            <p class="text-xs text-neutral-500">
+              你是「{{ playerName }}」{{ started ? ` · ${currentBeatLabel}` : '' }}
+              <span
+                v-if="game?.syncStatus === 'dirty'"
+                class="ml-1 text-amber-500"
+              >· 未同步</span>
+              <span
+                v-else-if="game?.syncStatus === 'synced'"
+                class="ml-1 text-emerald-500"
+              >· 已同步</span>
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
             <span
-              v-if="game?.syncStatus === 'dirty'"
-              class="ml-1 text-amber-500"
-            >· 未同步</span>
-            <span
-              v-else-if="game?.syncStatus === 'synced'"
-              class="ml-1 text-emerald-500"
-            >· 已同步</span>
-          </p>
-        </div>
-        <div class="flex items-center gap-2">
-          <span
-            v-if="streaming && liveTokens > 0"
-            class="text-xs text-neutral-400 tabular-nums"
-          >≈ {{ liveTokens }} tokens · {{ liveSpeed }}/s</span>
-          <span
-            v-else-if="turnUsage"
-            class="text-xs text-neutral-400"
-          >{{ turnUsage }}</span>
-          <UButton
-            v-if="cloudSaveEnabled"
-            label="同步"
-            icon="i-lucide-cloud-upload"
-            color="neutral"
-            variant="outline"
-            size="sm"
-            :loading="syncing"
-            @click="onSyncCloud"
-          />
-          <UDropdownMenu
-            :items="shareMenuItems"
-            :disabled="!started || streaming"
-          >
+              v-if="streaming && liveTokens > 0"
+              class="text-xs text-neutral-400 tabular-nums"
+            >≈ {{ liveTokens }} tokens · {{ liveSpeed }}/s</span>
+            <button
+              v-else-if="turnUsage && turnCostReport"
+              type="button"
+              class="text-xs text-neutral-400 tabular-nums underline decoration-dotted underline-offset-2 hover:text-neutral-600 dark:hover:text-neutral-200"
+              title="查看本回合 token 消耗构成"
+              @click="costModalOpen = true"
+            >
+              {{ turnUsage }}
+            </button>
             <UButton
-              label="分享"
-              icon="i-lucide-share-2"
+              v-if="cloudSaveEnabled"
+              label="同步"
+              icon="i-lucide-cloud-upload"
               color="neutral"
               variant="outline"
               size="sm"
+              :loading="syncing"
+              @click="onSyncCloud"
             />
-          </UDropdownMenu>
-          <UButton
-            label="技能"
-            icon="i-lucide-wand-2"
-            color="neutral"
-            variant="outline"
-            size="sm"
-            @click="openSkillManager"
-          />
-          <UButton
-            label="设置"
-            icon="i-lucide-settings"
-            color="neutral"
-            variant="outline"
-            size="sm"
-            @click="settingsOpen = true"
-          />
-          <UButton
-            label="返回"
-            icon="i-lucide-arrow-left"
-            color="neutral"
-            variant="outline"
-            size="sm"
-            :to="'/'"
-          />
-          <!-- 外部设备连接入口:顶栏图标 + 弹出菜单 -->
-          <ToyControlStrip />
+            <UDropdownMenu
+              :items="shareMenuItems"
+              :disabled="!started || streaming"
+            >
+              <UButton
+                label="分享"
+                icon="i-lucide-share-2"
+                color="neutral"
+                variant="outline"
+                size="sm"
+              />
+            </UDropdownMenu>
+            <UButton
+              label="技能"
+              icon="i-lucide-wand-2"
+              color="neutral"
+              variant="outline"
+              size="sm"
+              @click="openSkillManager"
+            />
+            <UButton
+              label="设置"
+              icon="i-lucide-settings"
+              color="neutral"
+              variant="outline"
+              size="sm"
+              @click="settingsOpen = true"
+            />
+            <UButton
+              v-if="work?.chapters?.length"
+              label="阅读原著"
+              icon="i-lucide-book-open"
+              color="neutral"
+              variant="outline"
+              size="sm"
+              :to="`/read/work/${game?.workId}`"
+            />
+            <UButton
+              label="返回"
+              icon="i-lucide-arrow-left"
+              color="neutral"
+              variant="outline"
+              size="sm"
+              :to="'/'"
+            />
+            <!-- 外部设备连接入口:顶栏图标 + 弹出菜单 -->
+            <ToyControlStrip />
+          </div>
         </div>
-      </div>
 
-      <UAlert
-        v-if="loadError"
-        color="error"
-        variant="soft"
-        :title="loadError"
-      />
-      <UAlert
-        v-if="syncMsg"
-        color="success"
-        variant="soft"
-        :title="syncMsg"
-      />
+        <UAlert
+          v-if="loadError"
+          color="error"
+          variant="soft"
+          :title="loadError"
+        />
+        <UAlert
+          v-if="syncMsg"
+          color="success"
+          variant="soft"
+          :title="syncMsg"
+        />
 
-      <!-- 公开状态面板 -->
-      <div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-6">
-        <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
-          <p class="text-neutral-500">
-            地点
-          </p>
-          <p class="truncate font-semibold">
-            {{ state.location || '未知' }}
-          </p>
+        <!-- 公开状态面板 -->
+        <div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-6">
+          <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
+            <p class="text-neutral-500">
+              地点
+            </p>
+            <p class="truncate font-semibold">
+              {{ state.location || '未知' }}
+            </p>
+          </div>
+          <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
+            <p class="text-neutral-500">
+              时间
+            </p>
+            <p class="truncate font-semibold">
+              {{ state.time || '—' }}
+            </p>
+          </div>
+          <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
+            <p class="text-neutral-500">
+              身体状况
+            </p>
+            <p class="truncate font-semibold">
+              {{ state.health || '—' }}
+            </p>
+          </div>
+          <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
+            <p class="text-neutral-500">
+              心情
+            </p>
+            <p class="truncate font-semibold">
+              {{ state.mood || '—' }}
+            </p>
+          </div>
+          <div
+            class="cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800"
+            title="点击查看详情并调节"
+            @click="openStatModal('relations')"
+          >
+            <p class="text-neutral-500">
+              关系
+            </p>
+            <p class="truncate tabular-nums">
+              {{ relationBrief }}
+            </p>
+          </div>
+          <div
+            class="cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800"
+            title="点击查看各角色当前状态"
+            @click="openStatModal('desires')"
+          >
+            <p class="text-neutral-500">
+              性欲
+            </p>
+            <p class="truncate tabular-nums">
+              {{ desireBrief }}
+            </p>
+          </div>
+          <div
+            class="cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800"
+            title="点击查看/编辑各角色当前状态"
+            @click="openCharStateModal"
+          >
+            <p class="text-neutral-500">
+              角色状态
+            </p>
+            <p class="truncate">
+              {{ charStateBriefText }}
+            </p>
+          </div>
         </div>
-        <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
-          <p class="text-neutral-500">
-            时间
-          </p>
-          <p class="truncate font-semibold">
-            {{ state.time || '—' }}
-          </p>
-        </div>
-        <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
-          <p class="text-neutral-500">
-            身体状况
-          </p>
-          <p class="truncate font-semibold">
-            {{ state.health || '—' }}
-          </p>
-        </div>
-        <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
-          <p class="text-neutral-500">
-            心情
-          </p>
-          <p class="truncate font-semibold">
-            {{ state.mood || '—' }}
-          </p>
-        </div>
-        <div
-          class="cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800"
-          title="点击查看详情并调节"
-          @click="openStatModal('relations')"
-        >
-          <p class="text-neutral-500">
-            关系
-          </p>
-          <p class="truncate tabular-nums">
-            {{ relationBrief }}
-          </p>
-        </div>
-        <div
-          class="cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800"
-          title="点击查看详情并调节"
-          @click="openStatModal('desires')"
-        >
-          <p class="text-neutral-500">
-            性欲
-          </p>
-          <p class="truncate tabular-nums">
-            {{ desireBrief }}
-          </p>
-        </div>
-      </div>
       </div>
 
       <!-- 关系/性欲:查看详情与手动调节 -->
@@ -945,6 +1381,125 @@ watch([messages, streamDisplay], async () => {
         </template>
       </UModal>
 
+      <!-- 角色动态状态:查看/手动编辑 + 时间线入口 -->
+      <UModal
+        :open="charStateModalOpen"
+        :ui="{ content: 'sm:max-w-lg!' }"
+        @update:open="charStateModalOpen = $event"
+      >
+        <template #title>
+          角色状态
+        </template>
+        <template #body>
+          <div class="flex flex-col gap-4">
+            <p class="text-xs text-neutral-500">
+              状态/位置/情绪随剧情由 AI 自动更新,也可手动修改(留空清除);修改立即生效并影响后续剧情。点「时间线」可查看该角色的章节差异与变化履历。
+            </p>
+            <div
+              v-for="name in statRoles"
+              :key="name"
+              class="flex flex-col gap-2 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700"
+            >
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-semibold">{{ name }}</span>
+                <UButton
+                  label="时间线"
+                  color="neutral"
+                  variant="ghost"
+                  size="xs"
+                  @click="openTimeline(name)"
+                />
+              </div>
+              <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div class="flex flex-col gap-1">
+                  <span class="text-xs text-neutral-500">状态</span>
+                  <UInput
+                    v-model="charDraft[name]!.status"
+                    size="sm"
+                    placeholder="当前处境"
+                  />
+                </div>
+                <div class="flex flex-col gap-1">
+                  <span class="text-xs text-neutral-500">位置</span>
+                  <UInput
+                    v-model="charDraft[name]!.location"
+                    size="sm"
+                    placeholder="当前位置"
+                  />
+                </div>
+                <div class="flex flex-col gap-1">
+                  <span class="text-xs text-neutral-500">情绪</span>
+                  <UInput
+                    v-model="charDraft[name]!.mood"
+                    size="sm"
+                    placeholder="当前情绪"
+                  />
+                </div>
+              </div>
+              <USwitch
+                v-model="charDraft[name]!.dead"
+                label="已身亡"
+                size="sm"
+              />
+            </div>
+            <p
+              v-if="statRoles.length === 0"
+              class="text-xs text-neutral-400"
+            >
+              暂无角色数据
+            </p>
+            <div class="flex justify-end gap-2">
+              <UButton
+                label="取消"
+                color="neutral"
+                variant="outline"
+                size="sm"
+                @click="charStateModalOpen = false"
+              />
+              <UButton
+                label="保存"
+                color="primary"
+                size="sm"
+                @click="applyCharDraft"
+              />
+            </div>
+          </div>
+        </template>
+      </UModal>
+
+      <!-- 章节时间线:章节变体(原著提取)+ 互动变化履历 -->
+      <UModal
+        :open="timelineOpen"
+        :ui="{ content: 'sm:max-w-md!' }"
+        @update:open="!$event && closeTimeline()"
+      >
+        <template #title>
+          {{ timelineTitle }} · 状态时间线
+        </template>
+        <template #body>
+          <div class="flex flex-col gap-3">
+            <div
+              v-for="(e, i) in timelineEntries"
+              :key="i"
+              class="flex gap-3"
+            >
+              <div class="w-24 shrink-0 pt-0.5 text-right text-xs text-neutral-500">
+                {{ e.label }}
+              </div>
+              <div class="min-w-0 flex-1 border-l-2 border-primary-500/40 pl-3 text-sm">
+                {{ e.text }}
+              </div>
+            </div>
+            <p
+              v-if="timelineEntries.length === 0"
+              class="text-xs text-neutral-400"
+            >
+              暂无记录。生成世界观时未提取到该角色的章节差异;游玩中的状态变化会出现在这里。
+            </p>
+          </div>
+        </template>
+      </UModal>
+
       <UModal
         :open="confirmOpen"
         @update:open="confirmOpen = $event"
@@ -967,7 +1522,9 @@ watch([messages, streamDisplay], async () => {
                 <li
                   v-for="c in pendingChanges"
                   :key="c.name"
-                >· {{ c.name }} {{ statFieldName }}: {{ c.old }} → {{ c.next }}</li>
+                >
+                  · {{ c.name }} {{ statFieldName }}: {{ c.old }} → {{ c.next }}
+                </li>
               </ul>
             </template>
             <p class="text-xs text-amber-600 dark:text-amber-400">
@@ -1125,6 +1682,28 @@ watch([messages, streamDisplay], async () => {
                   当前 {{ narrSpeed }} 字符/秒
                 </span>
               </div>
+              <div class="flex items-center gap-2">
+                <UInput
+                  v-model="narrSpeedCustom"
+                  type="number"
+                  :min="1"
+                  :max="200"
+                  size="sm"
+                  class="w-28"
+                  placeholder="自定义"
+                  @keyup.enter="applyNarrSpeedCustom"
+                />
+                <UButton
+                  size="sm"
+                  variant="soft"
+                  @click="applyNarrSpeedCustom"
+                >
+                  自定义字/秒
+                </UButton>
+                <span class="text-xs text-neutral-500">
+                  1~200,回车或点击应用
+                </span>
+              </div>
             </div>
 
             <!-- 每回合生成字数 -->
@@ -1158,12 +1737,14 @@ watch([messages, streamDisplay], async () => {
               <UTextarea
                 v-model="scenePrefs.prefer"
                 :rows="2"
+                autoresize
                 placeholder="偏好场景,可填写多个,用逗号分隔,留空不生效"
                 class="w-full"
               />
               <UTextarea
                 v-model="scenePrefs.avoid"
                 :rows="2"
+                autoresize
                 placeholder="避免出现的场景,可填写多个,用逗号分隔,留空不生效"
                 class="w-full"
               />
@@ -1189,13 +1770,114 @@ watch([messages, streamDisplay], async () => {
         </template>
       </UModal>
 
+      <!-- 本回合 token 消耗统计:点击顶部「本回合 N tokens」打开;阶段真实占比 + 叙事输入构成(估算) -->
+      <UModal
+        :open="costModalOpen"
+        :ui="{ content: 'sm:max-w-md!' }"
+        @update:open="costModalOpen = $event"
+      >
+        <template #title>
+          本回合 token 消耗
+        </template>
+        <template #body>
+          <div
+            v-if="turnCostReport"
+            class="flex flex-col gap-5"
+          >
+            <!-- 阶段消耗:各阶段真实 usage 占比 -->
+            <div class="flex flex-col gap-2">
+              <p class="text-sm font-semibold">
+                阶段消耗
+              </p>
+              <div class="flex items-center gap-4">
+                <div
+                  class="relative h-28 w-28 shrink-0 rounded-full"
+                  :style="{ background: costStageGradient }"
+                >
+                  <div class="absolute inset-3 flex flex-col items-center justify-center rounded-full bg-white dark:bg-neutral-900">
+                    <span class="text-sm font-semibold tabular-nums">{{ costGrandTotal.toLocaleString() }}</span>
+                    <span class="text-[10px] text-neutral-500">tokens</span>
+                  </div>
+                </div>
+                <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <div
+                    v-for="(c, i) in costStageRows"
+                    :key="c.label"
+                    class="flex items-center gap-2 text-xs"
+                  >
+                    <span
+                      class="h-2.5 w-2.5 shrink-0 rounded-full"
+                      :style="{ background: PIE_COLORS[i % PIE_COLORS.length] }"
+                    />
+                    <span class="min-w-0 flex-1 truncate text-neutral-600 dark:text-neutral-300">{{ c.label }}</span>
+                    <span class="shrink-0 tabular-nums text-neutral-500">{{ c.value.toLocaleString() }} · {{ costPct(c.value, costStageTotal) }}%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 输入构成:叙事 prompt 细项(估算)+ 正文输出;回答「为什么几百字对话上万 token」 -->
+            <div
+              v-if="costInputRows.length > 1"
+              class="flex flex-col gap-2"
+            >
+              <p class="text-sm font-semibold">
+                输入构成(估算)
+              </p>
+              <div class="flex items-center gap-4">
+                <div
+                  class="relative h-28 w-28 shrink-0 rounded-full"
+                  :style="{ background: costInputGradient }"
+                >
+                  <div class="absolute inset-3 flex flex-col items-center justify-center rounded-full bg-white dark:bg-neutral-900">
+                    <span class="text-sm font-semibold tabular-nums">{{ costInputTotal.toLocaleString() }}</span>
+                    <span class="text-[10px] text-neutral-500">tokens</span>
+                  </div>
+                </div>
+                <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <div
+                    v-for="(r, i) in costInputRows"
+                    :key="r.label"
+                    class="flex items-center gap-2 text-xs"
+                  >
+                    <span
+                      class="h-2.5 w-2.5 shrink-0 rounded-full"
+                      :style="{ background: PIE_COLORS[i % PIE_COLORS.length] }"
+                    />
+                    <span class="min-w-0 flex-1 truncate text-neutral-600 dark:text-neutral-300">{{ r.label }}</span>
+                    <span class="shrink-0 tabular-nums text-neutral-500">{{ r.value.toLocaleString() }} · {{ costPct(r.value, costInputTotal) }}%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p
+            v-else
+            class="py-4 text-center text-sm text-neutral-400"
+          >
+            本回合无消耗记录
+          </p>
+        </template>
+      </UModal>
+
       <UAlert
         v-if="error"
         color="error"
         variant="soft"
         :title="error"
         :icon="'i-lucide-triangle-alert'"
-      />
+      >
+        <template #actions>
+          <UButton
+            label="重试本回合"
+            icon="i-lucide-refresh-cw"
+            size="sm"
+            color="error"
+            variant="soft"
+            @click="retryFailedTurn"
+          />
+        </template>
+      </UAlert>
 
       <!-- 剧情流:充满剩余空间,内部滚动 -->
       <div
@@ -1293,9 +1975,15 @@ watch([messages, streamDisplay], async () => {
             />
             <p class="text-sm text-neutral-500">
               故事尚未开始。以「{{ playerName }}」的身份进入《{{ work?.overlay?.title || '' }}》
-              <template v-if="game?.opening?.mode === 'chapter'">，将从「{{ game.opening.chapterTitle || '所选章节' }}」开头的情节开始演绎。</template>
-              <template v-else-if="game?.opening?.mode === 'custom'">，将按你提供的背景故事开场。</template>
-              <template v-else>，AI 将为你铺设开场。</template>
+              <template v-if="game?.opening?.mode === 'beat'">
+                ，将从「{{ game.opening.beatTitle || '所选细纲段' }}」的情节开始演绎。
+              </template>
+              <template v-else-if="game?.opening?.mode === 'custom'">
+                ，将按你提供的背景故事开场。
+              </template>
+              <template v-else>
+                ，AI 将为你铺设开场。
+              </template>
             </p>
             <UButton
               label="开始故事"
@@ -1379,17 +2067,46 @@ watch([messages, streamDisplay], async () => {
           </UButton>
         </div>
 
-        <!-- 无选项时「行动中」占位(AI 生成中 / 等待行动) -->
+        <!-- 无选项时占位:区分「AI 生成中」「等你行动」「行动未获回应」三种状态 -->
         <div
           v-else
           class="flex h-11 items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-300 text-sm text-neutral-400 dark:border-neutral-700"
         >
-          <UIcon
-            :name="streaming ? 'i-lucide-loader-circle' : 'i-lucide-hourglass'"
-            class="size-4"
-            :class="{ 'animate-spin': streaming }"
+          <template v-if="streaming">
+            <UIcon
+              name="i-lucide-loader-circle"
+              class="size-4 animate-spin"
+            />
+            {{ awaitingOptions ? '正在生成选项…' : '生成剧情中…' }}
+          </template>
+          <template v-else>
+            <UIcon name="i-lucide-hourglass" />
+            {{ pendingAction ? '上一条行动未获回应' : '请选择行动或自由输入' }}
+            <UButton
+              v-if="pendingAction"
+              label="重试本回合"
+              icon="i-lucide-refresh-cw"
+              size="xs"
+              color="neutral"
+              variant="soft"
+              @click="retryFailedTurn"
+            />
+          </template>
+        </div>
+
+        <!-- 旁白已上屏但选项缺失/为空:重新生成选项 -->
+        <div
+          v-if="needsOptionsRetry"
+          class="flex justify-center"
+        >
+          <UButton
+            label="重新生成选项"
+            icon="i-lucide-refresh-cw"
+            size="sm"
+            color="neutral"
+            variant="soft"
+            @click="retryOptionsPhase"
           />
-          行动中…
         </div>
 
         <p class="text-xs text-neutral-500">
@@ -1405,10 +2122,18 @@ watch([messages, streamDisplay], async () => {
             @keydown.enter="sendInput"
           />
           <UButton
+            v-if="streaming"
+            label="停止"
+            icon="i-lucide-square"
+            color="error"
+            variant="outline"
+            @click="stopTurn"
+          />
+          <UButton
+            v-else
             icon="i-lucide-send"
             color="primary"
-            :loading="streaming"
-            :disabled="!started || streaming || !input.trim()"
+            :disabled="!started || !input.trim()"
             @click="sendInput"
           >
             行动

@@ -3,7 +3,7 @@
 import { getNovel } from '../../utils/db'
 import { getGame, listMessages, listOptionsByMessage } from '../../utils/game-db'
 import { assertGameOwned } from '../../utils/authz'
-import type { WorldOverlay, GameState } from '../../../shared/novel'
+import type { WorldOverlay, GameState, StoryBeat, WorldEntities, EntityConflict } from '../../../shared/novel'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')
@@ -14,14 +14,34 @@ export default defineEventHandler(async (event) => {
   if (!game) {
     throw createError({ statusCode: 404, statusMessage: 'Game not found' })
   }
-  await assertGameOwned(event, game)
+  const userId = await assertGameOwned(event, game)
 
   let world: WorldOverlay | null = null
+  let entities: WorldEntities | null = null
+  let conflicts: EntityConflict[] = []
+  let storyline: StoryBeat[] = []
   if (game.novel_id) {
     const novel = await getNovel(event, game.novel_id)
-    if (novel?.world_state) {
+    // 双保险:即使 game 挂载了他人作品,也不返回其世界观
+    if (novel?.user_id === userId && novel.world_state) {
       try {
-        world = JSON.parse(novel.world_state) as WorldOverlay
+        const raw = JSON.parse(novel.world_state) as Record<string, unknown>
+        world = {
+          title: typeof raw.title === 'string' ? raw.title : novel.title,
+          genre: typeof raw.genre === 'string' ? raw.genre : undefined,
+          summary: typeof raw.summary === 'string' ? raw.summary : undefined,
+          characters: Array.isArray(raw.characters) ? raw.characters as WorldOverlay['characters'] : [],
+          tags: Array.isArray(raw.tags) ? raw.tags as string[] : undefined,
+          orientation: typeof raw.orientation === 'string' ? raw.orientation : undefined,
+          setting: typeof raw.setting === 'string' ? raw.setting : undefined,
+          heat: raw.heat === '淡' || raw.heat === '中' || raw.heat === '烈' ? raw.heat : undefined,
+          contentWarnings: Array.isArray(raw.contentWarnings) ? raw.contentWarnings as string[] : undefined,
+          tropes: Array.isArray(raw.tropes) ? raw.tropes as string[] : undefined,
+          kinkProfile: Array.isArray(raw.kinkProfile) ? raw.kinkProfile as WorldOverlay['kinkProfile'] : undefined
+        }
+        entities = (raw.entities && typeof raw.entities === 'object') ? raw.entities as WorldEntities : null
+        conflicts = Array.isArray(raw.conflicts) ? raw.conflicts as EntityConflict[] : []
+        storyline = Array.isArray(raw.storyline) ? raw.storyline as StoryBeat[] : []
       } catch {
         world = null
       }
@@ -55,6 +75,9 @@ export default defineEventHandler(async (event) => {
     summary: game.summary,
     state,
     world,
+    entities,
+    conflicts,
+    storyline,
     messages,
     optionsByMessage
   }

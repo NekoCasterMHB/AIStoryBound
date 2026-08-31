@@ -14,15 +14,15 @@ export interface AiConfigInput {
 
 export type ValidateResult = { ok: true, value: AiConfigInput } | { ok: false, message: string }
 
-/** 校验并规整配置表单;allowEmptyKey=true 时 apiKey 可留空(编辑场景表示不改) */
-export function validateAiConfigInput(body: Record<string, unknown>, opts: { allowEmptyKey?: boolean } = {}): ValidateResult {
+/** 校验并规整配置表单;allowEmptyKey=true 时 apiKey 可留空(编辑场景表示不改);skipName=true 时名称不参与校验(测试连接场景) */
+export function validateAiConfigInput(body: Record<string, unknown>, opts: { allowEmptyKey?: boolean, skipName?: boolean } = {}): ValidateResult {
   const name = String(body.name ?? '').trim()
   const format = String(body.format ?? 'chat').trim()
   const baseUrl = String(body.baseUrl ?? '').trim().replace(/\/+$/, '')
   const apiKey = String(body.apiKey ?? '').trim()
   const model = String(body.model ?? '').trim()
 
-  if (!name) return { ok: false, message: '名称必填' }
+  if (!name && !opts.skipName) return { ok: false, message: '名称必填' }
   if (!isAiApiFormat(format)) return { ok: false, message: 'API 格式无效' }
   if (!baseUrl || !/^https?:\/\/.+/.test(baseUrl)) return { ok: false, message: 'baseUrl 必须是 http(s) 地址' }
   if (!opts.allowEmptyKey && !apiKey) return { ok: false, message: 'apiKey 必填' }

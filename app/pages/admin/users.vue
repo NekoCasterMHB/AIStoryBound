@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // /admin/users — 用户管理(管理后台):全部注册用户列表,展示 token 余额、累计消费 token 与累计充值金额,
-// 支持按 token 余额 / 消费量 / 充值金额 / 注册时间排序(点击表头切换升/降序)与分页。
+// 支持按昵称/邮箱/用户 ID 搜索、按 token 余额 / 消费量 / 充值金额 / 注册时间排序(点击表头切换升/降序)与分页。
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
 useHead({ title: 'AI Word2World · 用户管理' })
@@ -29,6 +29,9 @@ const loading = ref(false)
 const sort = ref<SortField>('createdAt')
 const dir = ref<'asc' | 'desc'>('desc')
 const stats = ref<{ totalUsers: number, totalBalance: number, totalConsumed: number }>({ totalUsers: 0, totalBalance: 0, totalConsumed: 0 })
+/** 搜索词(昵称/邮箱/用户 ID 模糊匹配;服务端过滤) */
+const search = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 async function load(pageNum = page.value) {
   loading.value = true
@@ -39,6 +42,7 @@ async function load(pageNum = page.value) {
       sort: sort.value,
       dir: dir.value
     })
+    if (search.value.trim()) query.set('q', search.value.trim())
     const res = await $fetch<{ rows: UserRow[], total: number, stats: typeof stats.value }>(`/api/admin/users?${query}`)
     rows.value = res.rows
     total.value = res.total
@@ -53,6 +57,28 @@ async function load(pageNum = page.value) {
 onMounted(() => {
   void load(1)
 })
+
+/** 搜索输入防抖(300ms):变化即回到第一页重新加载 */
+watch(search, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    searchTimer = null
+    void load(1)
+  }, 300)
+})
+onUnmounted(() => {
+  if (searchTimer) clearTimeout(searchTimer)
+})
+
+/** 清空搜索:立即恢复全量列表 */
+function clearSearch() {
+  search.value = ''
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  void load(1)
+}
 
 /** 点击表头排序:同列切换升/降序,新列默认降序 */
 function setSort(field: SortField) {
@@ -158,6 +184,33 @@ function fmtTs(ts: number) {
     </div>
 
     <UCard>
+      <!-- 搜索框 -->
+      <div class="mb-4 flex items-center gap-2">
+        <UInput
+          v-model="search"
+          icon="i-lucide-search"
+          placeholder="搜索昵称 / 邮箱 / 用户 ID"
+          class="w-full max-w-xs"
+          :ui="{ trailing: 'pe-1' }"
+        >
+          <UButton
+            v-if="search.trim()"
+            icon="i-lucide-x"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            aria-label="清空搜索"
+            @click="clearSearch"
+          />
+        </UInput>
+        <span
+          v-if="search.trim()"
+          class="text-xs text-neutral-500"
+        >
+          共 {{ total }} 条匹配结果
+        </span>
+      </div>
+
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead>
@@ -232,7 +285,7 @@ function fmtTs(ts: number) {
                 colspan="6"
                 class="py-6 text-center text-neutral-500"
               >
-                暂无注册用户
+                {{ search.trim() ? '没有匹配的用户' : '暂无注册用户' }}
               </td>
             </tr>
             <tr

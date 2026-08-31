@@ -539,7 +539,10 @@ interface PreviewData {
   canViewAll: boolean
   /** 未付费可读的 README 摘要 */
   readme: string
+  /** 文件清单(仅 canViewAll 时返回;未付费为空,只给 entryCount) */
   entries: { name: string, size: number, isDirectory: boolean }[]
+  /** 压缩包内文件总数 */
+  entryCount?: number
   files: { name: string, content: string }[]
 }
 const previewOpen = ref(false)
@@ -1343,7 +1346,7 @@ async function onPreviewFile(i: number) {
           v-if="previewData && !previewData.canViewAll"
           class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
         >
-          未购买,仅可预览 README 摘要(压缩包共 {{ previewData.entries.length }} 个文件);{{ previewData.price > 0 ? '购买后' : '免费获取后' }}可查看全部文件内容
+          未购买,仅可预览 README 摘要(压缩包共 {{ previewData.entryCount ?? previewData.entries.length }} 个文件);{{ previewData.price > 0 ? '购买后' : '免费获取后' }}可查看全部文件内容
         </p>
       </template>
     </UModal>

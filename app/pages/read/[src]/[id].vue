@@ -17,6 +17,8 @@ const router = useRouter()
 const src = route.params.src as string
 const id = String(route.params.id)
 const key = readingKey(src === 'work' ? 'work' : 'preset', id)
+/** 本地作品已生成世界(有人物卡):顶栏显示「进入世界」直达选角页 */
+const hasWorld = ref(false)
 
 // ---- 加载 ----
 const chapters = ref<ChapterSegment[]>([])
@@ -65,6 +67,7 @@ async function loadBook() {
       if (!work || work.chapters.length === 0) throw new Error('本地未找到该作品或无可读章节')
       chapters.value = work.chapters
       bookTitle.value = work.title
+      hasWorld.value = !!work.overlay?.characters?.length
       void touchWork(id)
     } else {
       const loaded = await loadPresetChapters(id)
@@ -542,6 +545,8 @@ const fontFamilyCss = computed(() => {
 // ---- 全文进度 / 读完检测 ----
 const totalChars = computed(() => chapters.value.reduce((s, c) => s + c.content.length, 0))
 const isLastChapter = computed(() => chapters.value.length > 0 && chapterIndex.value === chapters.value.length - 1)
+/** 单段全文(不分章):隐藏目录/翻章与章数文案 */
+const singleChapter = computed(() => chapters.value.length <= 1)
 const percent = computed(() => {
   if (!chapters.value.length) return 0
   return Math.min(100, Math.round(((chapterIndex.value + scrollRatio.value) / chapters.value.length) * 100))
@@ -654,6 +659,15 @@ useSeoMeta({ title: pageTitle })
           </p>
         </div>
         <button
+          v-if="hasWorld"
+          type="button"
+          class="reader-icon-btn"
+          aria-label="进入世界"
+          @click="router.push(`/play/${id}`)"
+        >
+          <UIcon name="i-lucide-play" />
+        </button>
+        <button
           type="button"
           class="reader-icon-btn"
           aria-label="设置"
@@ -662,6 +676,7 @@ useSeoMeta({ title: pageTitle })
           <UIcon name="i-lucide-settings" />
         </button>
         <button
+          v-if="!singleChapter"
           type="button"
           class="reader-icon-btn"
           aria-label="目录"
@@ -771,7 +786,9 @@ useSeoMeta({ title: pageTitle })
               🎉 全书完
             </p>
             <p class="mt-2 text-sm opacity-80">
-              《{{ bookTitle || chapLabel(chapterIndex) }}》· {{ chapters.length }} 章 · {{ totalChars.toLocaleString() }} 字
+              《{{ bookTitle || chapLabel(chapterIndex) }}》<template v-if="!singleChapter">
+                · {{ chapters.length }} 章
+              </template> · {{ totalChars.toLocaleString() }} 字
             </p>
             <p class="mt-1 text-xs opacity-60">
               {{ finished ? '已完成阅读,谢谢你读完这本书' : '阅读到底部后将记录为已读完' }}
@@ -805,6 +822,7 @@ useSeoMeta({ title: pageTitle })
       >
         <div class="flex items-center gap-3 px-5 pb-3 pt-2">
           <button
+            v-if="!singleChapter"
             type="button"
             class="reader-icon-btn"
             aria-label="上一章"
@@ -821,10 +839,13 @@ useSeoMeta({ title: pageTitle })
               />
             </div>
             <p class="mt-1 text-right text-xs opacity-70">
-              {{ percent }}% · 第 {{ chapterIndex + 1 }}/{{ chapters.length }} 章
+              {{ percent }}%<template v-if="!singleChapter">
+                · 第 {{ chapterIndex + 1 }}/{{ chapters.length }} 章
+              </template>
             </p>
           </div>
           <button
+            v-if="!singleChapter"
             type="button"
             class="reader-icon-btn"
             aria-label="下一章"

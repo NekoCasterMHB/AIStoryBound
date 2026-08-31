@@ -6,7 +6,8 @@ import { getSkillBucket } from '../../../../utils/r2'
 import { requireAdmin } from '../../../../utils/authz'
 import { novelProductVersions } from '../../../../db/schema'
 import { eq, desc } from 'drizzle-orm'
-import { MAX_NOVEL_REVIEW_BYTES, decodeNovelText, countNovelChars } from '../../../../../shared/store-novel'
+import { MAX_NOVEL_REVIEW_BYTES, countNovelChars } from '../../../../../shared/store-novel'
+import { detectNovelEncoding } from '../../../../../shared/novel-encoding'
 
 export default defineEventHandler(async (event) => {
   await requireAdmin(event)
@@ -24,6 +25,7 @@ export default defineEventHandler(async (event) => {
     totalChars: novelProductVersions.totalChars,
     fileSize: novelProductVersions.fileSize,
     fileKey: novelProductVersions.fileKey,
+    sourceEncoding: novelProductVersions.sourceEncoding,
     status: novelProductVersions.status,
     rejectReason: novelProductVersions.rejectReason
   })
@@ -42,7 +44,10 @@ export default defineEventHandler(async (event) => {
 
   const bytes = new Uint8Array(await object.arrayBuffer())
   const head = bytes.slice(0, MAX_NOVEL_REVIEW_BYTES)
-  const text = decodeNovelText(head)
+  // 自适应格式检测:对预览字节按乱码特征评分择优解码(Workers 支持 utf-8/gb18030/gbk;
+  // Big5 等不支持标签会落到低置信,管理员可在浏览器端「一键转 UTF-8」修复)
+  const detected = detectNovelEncoding(head)
+  const text = detected.text
   const truncated = bytes.length > MAX_NOVEL_REVIEW_BYTES
 
   return {
@@ -56,6 +61,13 @@ export default defineEventHandler(async (event) => {
     fileSize: novel.fileSize,
     status: novel.status,
     rejectReason: novel.rejectReason,
+    sourceEncoding: novel.sourceEncoding,
+    detected: {
+      encoding: detected.encoding,
+      label: detected.label,
+      garbledRatio: Number(detected.garbledRatio.toFixed(4)),
+      confidence: detected.confidence
+    },
     /** 正文前 MAX_NOVEL_REVIEW_BYTES 字节解码后的文本(超长截断) */
     content: text,
     truncated,

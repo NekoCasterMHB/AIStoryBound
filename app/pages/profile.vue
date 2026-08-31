@@ -5,7 +5,7 @@
 import type { TabsItem } from '@nuxt/ui'
 import { TOKEN_PACKAGES } from '#shared/quota-packages'
 import type { TokenPackage } from '#shared/quota-packages'
-import { AI_API_FORMATS, aiFormatMeta } from '#shared/ai-config'
+import { AI_API_FORMATS, aiFormatMeta, AI_USER_CONFIG_LIMIT } from '#shared/ai-config'
 import type { AiApiFormat } from '#shared/ai-config'
 import { useAuthSession } from '../utils/auth-client'
 import { isCloudSaveEnabled, setCloudSaveEnabled } from '../utils/cloudSave'
@@ -26,7 +26,7 @@ import type { ToyAdapter, ToySettings } from '#shared/toy'
 import { toyController } from '../toy/api'
 import { listImportedAdapters, loadToySettings, saveToySettings, clearLegacyImportedAdapters } from '../toy/store'
 import { loadAllAdapters, removeImportedAdapter, importAdapterFiles } from '../toy/runtime/adapter-loader'
-import { loadNarrSpeed, saveNarrSpeed, NARR_SPEED_TIERS } from '../utils/narrSpeed'
+import { loadNarrSpeed, saveNarrSpeed, clampNarrCps, NARR_SPEED_TIERS, NARR_SPEED_DEFAULT } from '../utils/narrSpeed'
 import { loadNarrLength, saveNarrLength, NARR_LENGTH_MIN, NARR_LENGTH_MAX, NARR_LENGTH_STEP } from '../utils/narrLength'
 
 useHead({ title: 'AI Word2World · 个人中心' })
@@ -538,6 +538,33 @@ function isConfigActive(c: AiConfigItem) {
   return aiMode.value === 'custom' && c.active === true
 }
 
+/** 配置数量上限:前端 UI 与服务端验证记录(每用户滚动保留)共用同一常量 */
+const aiAtLimit = computed(() => aiState.value.configs.length >= AI_USER_CONFIG_LIMIT)
+
+/**
+ * 已通过服务端测试的配置签名集(format|baseUrl|apiKey|model)。
+ * 保存前强制测试、启用前检查签名(缺失则补测一次);服务端 ai/ai/chat 指纹准入以此为准。
+ */
+const aiVerifiedSigs = ref(new Set<string>())
+
+function aiConfigSig(format: AiApiFormat, baseUrl: string, apiKey: string, model: string) {
+  return [format, baseUrl.trim(), apiKey.trim(), model.trim()].join('|')
+}
+
+/** 调服务端测试连接;成功时把签名记入已验证集合 */
+async function testAiConfig(format: AiApiFormat, baseUrl: string, apiKey: string, model: string): Promise<{ ok: boolean, message: string }> {
+  try {
+    const res = await $fetch<{ ok: boolean, message: string }>('/api/profile/ai-config/test', {
+      method: 'POST',
+      body: { format, baseUrl, apiKey, model }
+    })
+    if (res.ok) aiVerifiedSigs.value.add(aiConfigSig(format, baseUrl, apiKey, model))
+    return res
+  } catch (e) {
+    return { ok: false, message: errText(e) }
+  }
+}
+
 /** 切回默认配置(平台配额),返回是否成功 */
 async function onUseDefault(): Promise<boolean> {
   if (aiBusy.value || aiMode.value === 'default') return false
@@ -583,8 +610,7 @@ const aiModal = reactive({
   format: 'chat' as AiApiFormat,
   baseUrl: '',
   apiKey: '',
-  model: '',
-  thinking: false
+  model: ''
 })
 const aiModalBusy = ref(false)
 const aiModalError = ref<string | null>(null)
@@ -592,13 +618,16 @@ const aiTestResult = ref<string | null>(null)
 const aiTestBusy = ref(false)
 
 function openAiModal() {
+  if (aiAtLimit.value) {
+    aiMsg.value = { kind: 'error', text: `最多可保存 ${AI_USER_CONFIG_LIMIT} 套配置,请先删除不再使用的配置` }
+    return
+  }
   aiModal.id = null
   aiModal.name = ''
   aiModal.format = 'chat'
   aiModal.baseUrl = ''
   aiModal.apiKey = ''
   aiModal.model = ''
-  aiModal.thinking = false
   aiModalError.value = null
   aiTestResult.value = null
   aiKeyShow.value = false
@@ -612,7 +641,6 @@ function openAiEdit(c: AiConfigItem) {
   aiModal.baseUrl = c.baseUrl
   aiModal.apiKey = c.apiKey
   aiModal.model = c.model
-  aiModal.thinking = c.thinking
   aiModalError.value = null
   aiTestResult.value = null
   aiKeyShow.value = false
@@ -629,16 +657,17 @@ async function onAiTest() {
   aiTestBusy.value = true
   aiTestResult.value = null
   try {
-    const res = await $fetch<{ ok: boolean, message: string }>('/api/profile/ai-config/test', {
-      method: 'POST',
-      body: { format: aiModal.format, baseUrl: aiModal.baseUrl, apiKey: aiModal.apiKey, model: aiModal.model }
-    })
+    const res = await testAiConfig(aiModal.format, aiModal.baseUrl, effectiveModalKey(), aiModal.model)
     aiTestResult.value = res.message
-  } catch (e) {
-    aiTestResult.value = errText(e)
   } finally {
     aiTestBusy.value = false
   }
+}
+
+/** 模态框内生效的 apiKey:留空表示沿用原配置的 key(编辑场景) */
+function effectiveModalKey(): string {
+  const existing = aiModal.id ? aiState.value.configs.find(c => c.id === aiModal.id) : undefined
+  return aiModal.apiKey.trim() || existing?.apiKey || ''
 }
 
 async function onAiSave() {
@@ -653,9 +682,17 @@ async function onAiSave() {
       baseUrl: aiModal.baseUrl.trim(),
       apiKey: aiModal.apiKey.trim() || existing?.apiKey || '',
       model: aiModal.model.trim(),
-      thinking: aiModal.thinking,
+      // 思考统一关闭:自建配置不提供开关,保存时固定 false
+      thinking: false,
       // 编辑时保留原启用状态;新建/编辑都不自动切换为当前配置
       active: existing?.active
+    }
+    // 保存前强制测试连接:不通过的配置不允许保存(服务端指纹只对测试通过的配置留痕)
+    const test = await testAiConfig(cfg.format, cfg.baseUrl, cfg.apiKey, cfg.model)
+    if (!test.ok) {
+      aiTestResult.value = test.message
+      aiModalError.value = `连接测试未通过,已取消保存:${test.message}`
+      return
     }
     if (existing) {
       aiState.value.configs = aiState.value.configs.map(c => (c.id === cfg.id ? cfg : c))
@@ -726,6 +763,14 @@ async function onAiEnable() {
   if (!target || aiEnableBusy.value) return
   aiEnableBusy.value = true
   try {
+    // 启用自建配置前确保其已通过服务端测试(签名缺失则补测一次,失败中止)
+    if (target !== 'default' && !aiVerifiedSigs.value.has(aiConfigSig(target.format, target.baseUrl, target.apiKey, target.model))) {
+      const test = await testAiConfig(target.format, target.baseUrl, target.apiKey, target.model)
+      if (!test.ok) {
+        aiMsg.value = { kind: 'error', text: `「${target.name}」连接测试未通过,无法启用:${test.message}` }
+        return
+      }
+    }
     const ok = target === 'default' ? await onUseDefault() : await onAiActivate(target)
     if (ok) {
       const label = target === 'default' ? '默认配置(平台配额)' : target.name
@@ -742,15 +787,11 @@ function aiFormatLabel(f: AiApiFormat) {
   return aiFormatMeta(f).label
 }
 
-// ---- 生成参数(本地偏好):提取输入/输出上限 + 检查、成书输出上限(高级设置) ----
+// ---- 生成参数(本地偏好):只保留分段相关;输出上限/超时由平台默认,生成时不读用户值 ----
 const loadedLimits = loadGenLimits()
 const genForm = reactive({
   unitMaxChars: loadedLimits.unitMaxChars,
-  unitOverlapChars: loadedLimits.unitOverlapChars,
-  extractMaxTokens: loadedLimits.extractMaxTokens,
-  checkMaxTokens: loadedLimits.checkMaxTokens,
-  synthMaxTokens: loadedLimits.synthMaxTokens,
-  relayTimeoutSec: loadedLimits.relayTimeoutSec
+  unitOverlapChars: loadedLimits.unitOverlapChars
 })
 const genMsg = ref<{ kind: 'ok' | 'error', text: string } | null>(null)
 
@@ -770,28 +811,25 @@ const unitMaxHint = computed(() => {
 })
 
 /** 表单各字段的校验顺序与文案(范围取自 GEN_LIMIT_RANGE) */
-const LIMIT_FIELDS: { key: keyof GenLimits, label: string, unit: string }[] = [
+const LIMIT_FIELDS: { key: 'unitMaxChars' | 'unitOverlapChars', label: string, unit: string }[] = [
   { key: 'unitMaxChars', label: '单次输入上限', unit: '字符' },
-  { key: 'unitOverlapChars', label: '单元切段重叠', unit: '字符(0=关闭)' },
-  { key: 'extractMaxTokens', label: '提取输出上限', unit: 'tokens' },
-  { key: 'checkMaxTokens', label: '一致性检查输出上限', unit: 'tokens' },
-  { key: 'synthMaxTokens', label: '成书输出上限', unit: 'tokens' },
-  { key: 'relayTimeoutSec', label: '单次调用超时', unit: '秒' }
+  { key: 'unitOverlapChars', label: '单元切段重叠', unit: '字符(0=关闭)' }
 ]
 
 async function resetGenForm() {
   const ok = await resetGenLimits()
-  Object.assign(genForm, DEFAULT_GEN_LIMITS)
+  genForm.unitMaxChars = DEFAULT_GEN_LIMITS.unitMaxChars
+  genForm.unitOverlapChars = DEFAULT_GEN_LIMITS.unitOverlapChars
   genMsg.value = ok
     ? { kind: 'ok', text: '已恢复默认' }
     : { kind: 'error', text: '恢复默认失败,请检查网络' }
 }
 
 async function submitGenLimits() {
-  const next: GenLimits = { ...genForm }
+  const next: GenLimits = { ...DEFAULT_GEN_LIMITS }
   for (const f of LIMIT_FIELDS) {
     const range = GEN_LIMIT_RANGE[f.key]
-    const v = Math.round(next[f.key])
+    const v = Math.round(genForm[f.key])
     if (!Number.isFinite(v) || v < range.min || v > range.max) {
       genMsg.value = { kind: 'error', text: `${f.label}需在 ${range.min.toLocaleString()} ~ ${range.max.toLocaleString()} ${f.unit}之间` }
       return
@@ -800,7 +838,8 @@ async function submitGenLimits() {
   }
   const ok = await saveGenLimits(next)
   if (ok) {
-    Object.assign(genForm, next)
+    genForm.unitMaxChars = next.unitMaxChars
+    genForm.unitOverlapChars = next.unitOverlapChars
     genMsg.value = { kind: 'ok', text: '已保存到本地,下次生成世界时生效' }
   } else {
     genMsg.value = { kind: 'error', text: '保存失败,请检查网络' }
@@ -828,8 +867,8 @@ const narrTemp = ref(loadNarrTemp())
 const narrTempTierInfo = computed(() => narrTempTier(narrTemp.value))
 watch(narrTemp, v => saveNarrTemp(v))
 
-/** 叙事速度(IndexedDB 持久化):回合正文流式显示的速率档位,即时保存,新回合生效 */
-const narrSpeed = ref(60)
+/** 叙事速度(IndexedDB 持久化):回合正文流式显示的速率档位,即时保存,新回合生效;支持自定义字符/秒 */
+const narrSpeed = ref(NARR_SPEED_DEFAULT.cps)
 const narrSpeedLoaded = ref(false)
 void loadNarrSpeed().then((cps) => {
   narrSpeed.value = cps
@@ -839,6 +878,14 @@ const narrSpeedTierInfo = computed(() => NARR_SPEED_TIERS.find(t => t.cps === na
 watch(narrSpeed, (v) => {
   if (narrSpeedLoaded.value) void saveNarrSpeed(v)
 })
+/** 自定义速度输入(数字,回车/按钮应用;即时保存) */
+const narrSpeedCustom = ref('')
+function applyNarrSpeedCustom(): void {
+  const n = Number(narrSpeedCustom.value)
+  if (!Number.isFinite(n) || n <= 0) return
+  narrSpeed.value = clampNarrCps(n)
+  narrSpeedCustom.value = ''
+}
 
 /** 每回合生成字数(本地偏好,默认 400 字):回合正文目标篇幅,滑动条即时保存,新回合生效 */
 const narrLength = ref(loadNarrLength())
@@ -942,6 +989,7 @@ watch(narrLength, v => saveNarrLength(v))
         variant="soft"
         icon="i-lucide-circle-alert"
         title="充值系统维护中"
+        description="可私聊作者购买token,维护期间额外赠送30%, 以兑换码形式发放。"
         class="mt-5"
       />
       <UButton
@@ -1086,14 +1134,14 @@ watch(narrLength, v => saveNarrLength(v))
                   模型配置
                 </p>
                 <p class="text-xs text-neutral-500">
-                  默认配置用平台密钥、按量扣 token;自建配置用你的 Key 不扣平台配额,可保存多套随时切换
+                  默认配置用平台密钥、按量扣 token;自建配置用你的 Key 不扣平台配额,最多保存 {{ AI_USER_CONFIG_LIMIT }} 套随时切换
                 </p>
               </div>
               <UButton
                 color="primary"
                 variant="outline"
                 icon="i-lucide-plus"
-                :disabled="aiBusy"
+                :disabled="aiBusy || aiAtLimit"
                 @click="openAiModal"
               >
                 新建配置
@@ -1221,7 +1269,7 @@ watch(narrLength, v => saveNarrLength(v))
             </p>
           </UCard>
 
-          <!-- 生成参数:单次调用的输入/输出上限(本地偏好) -->
+          <!-- 生成参数:只保留分段(本地偏好);输出上限/超时走平台默认 -->
           <UCard class="mb-6">
             <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -1229,7 +1277,7 @@ watch(narrLength, v => saveNarrLength(v))
                   生成参数
                 </p>
                 <p class="text-xs text-neutral-500">
-                  调大数值,单次提取覆盖更全、消耗更大,一般保持默认即可
+                  只控制正文怎么切段上传;输出上限与超时由平台默认,不再单独限制
                 </p>
               </div>
               <UButton
@@ -1275,23 +1323,23 @@ watch(narrLength, v => saveNarrLength(v))
                 </UFieldGroup>
               </UFormField>
               <UFormField
-                label="提取输出上限"
-                :help="`提取输出的封顶;当前 ${fmtCurrent(genForm.extractMaxTokens)}`"
+                label="单元切段重叠"
+                :help="`长章切段时保留的重叠,减少边界遗漏;0=关闭;当前 ${fmtCurrent(genForm.unitOverlapChars)}`"
               >
                 <UFieldGroup class="w-full">
                   <UInput
-                    v-model.number="genForm.extractMaxTokens"
+                    v-model.number="genForm.unitOverlapChars"
                     type="number"
-                    :min="GEN_LIMIT_RANGE.extractMaxTokens.min"
-                    :max="GEN_LIMIT_RANGE.extractMaxTokens.max"
-                    :step="GEN_LIMIT_RANGE.extractMaxTokens.step"
-                    :placeholder="String(DEFAULT_GEN_LIMITS.extractMaxTokens)"
+                    :min="GEN_LIMIT_RANGE.unitOverlapChars.min"
+                    :max="GEN_LIMIT_RANGE.unitOverlapChars.max"
+                    :step="GEN_LIMIT_RANGE.unitOverlapChars.step"
+                    :placeholder="String(DEFAULT_GEN_LIMITS.unitOverlapChars)"
                     class="w-full"
                   />
                   <UButton
                     color="neutral"
                     variant="subtle"
-                    label="tokens"
+                    label="字符"
                     aria-hidden="true"
                     tabindex="-1"
                     class="pointer-events-none select-none"
@@ -1299,124 +1347,6 @@ watch(narrLength, v => saveNarrLength(v))
                 </UFieldGroup>
               </UFormField>
             </div>
-            <UCollapsible
-              :unmount-on-hide="false"
-              class="mt-6"
-            >
-              <UButton
-                color="neutral"
-                variant="outline"
-                size="sm"
-                block
-                icon="i-lucide-sliders-horizontal"
-                trailing-icon="i-lucide-chevron-down"
-              >
-                高级设置
-              </UButton>
-              <template #content>
-                <div class="mt-3 grid gap-x-4 gap-y-6 sm:grid-cols-2">
-                  <UFormField
-                    label="单元切段重叠"
-                    :help="`长章切段时保留的重叠,减少边界遗漏;0=关闭;当前 ${fmtCurrent(genForm.unitOverlapChars)}`"
-                  >
-                    <UFieldGroup class="w-full">
-                      <UInput
-                        v-model.number="genForm.unitOverlapChars"
-                        type="number"
-                        :min="GEN_LIMIT_RANGE.unitOverlapChars.min"
-                        :max="GEN_LIMIT_RANGE.unitOverlapChars.max"
-                        :step="GEN_LIMIT_RANGE.unitOverlapChars.step"
-                        :placeholder="String(DEFAULT_GEN_LIMITS.unitOverlapChars)"
-                        class="w-full"
-                      />
-                      <UButton
-                        color="neutral"
-                        variant="subtle"
-                        label="字符"
-                        aria-hidden="true"
-                        tabindex="-1"
-                        class="pointer-events-none select-none"
-                      />
-                    </UFieldGroup>
-                  </UFormField>
-                  <UFormField
-                    label="一致性检查输出上限"
-                    :help="`检查设定的输出封顶;当前 ${fmtCurrent(genForm.checkMaxTokens)}`"
-                  >
-                    <UFieldGroup class="w-full">
-                      <UInput
-                        v-model.number="genForm.checkMaxTokens"
-                        type="number"
-                        :min="GEN_LIMIT_RANGE.checkMaxTokens.min"
-                        :max="GEN_LIMIT_RANGE.checkMaxTokens.max"
-                        :step="GEN_LIMIT_RANGE.checkMaxTokens.step"
-                        :placeholder="String(DEFAULT_GEN_LIMITS.checkMaxTokens)"
-                        class="w-full"
-                      />
-                      <UButton
-                        color="neutral"
-                        variant="subtle"
-                        label="tokens"
-                        aria-hidden="true"
-                        tabindex="-1"
-                        class="pointer-events-none select-none"
-                      />
-                    </UFieldGroup>
-                  </UFormField>
-                  <UFormField
-                    label="成书输出上限"
-                    :help="`简介与人物卡的输出封顶;当前 ${fmtCurrent(genForm.synthMaxTokens)}`"
-                  >
-                    <UFieldGroup class="w-full">
-                      <UInput
-                        v-model.number="genForm.synthMaxTokens"
-                        type="number"
-                        :min="GEN_LIMIT_RANGE.synthMaxTokens.min"
-                        :max="GEN_LIMIT_RANGE.synthMaxTokens.max"
-                        :step="GEN_LIMIT_RANGE.synthMaxTokens.step"
-                        :placeholder="String(DEFAULT_GEN_LIMITS.synthMaxTokens)"
-                        class="w-full"
-                      />
-                      <UButton
-                        color="neutral"
-                        variant="subtle"
-                        label="tokens"
-                        aria-hidden="true"
-                        tabindex="-1"
-                        class="pointer-events-none select-none"
-                      />
-                    </UFieldGroup>
-                  </UFormField>
-                  <UFormField
-                    label="单次调用超时"
-                    :help="`单次调用的等待上限;当前 ${fmtCurrent(genForm.relayTimeoutSec)}`"
-                  >
-                    <UFieldGroup class="w-full">
-                      <UInput
-                        v-model.number="genForm.relayTimeoutSec"
-                        type="number"
-                        :min="GEN_LIMIT_RANGE.relayTimeoutSec.min"
-                        :max="GEN_LIMIT_RANGE.relayTimeoutSec.max"
-                        :step="GEN_LIMIT_RANGE.relayTimeoutSec.step"
-                        :placeholder="String(DEFAULT_GEN_LIMITS.relayTimeoutSec)"
-                        class="w-full"
-                      />
-                      <UButton
-                        color="neutral"
-                        variant="subtle"
-                        label="秒"
-                        aria-hidden="true"
-                        tabindex="-1"
-                        class="pointer-events-none select-none"
-                      />
-                    </UFieldGroup>
-                  </UFormField>
-                </div>
-                <p class="mt-3 text-xs text-neutral-400">
-                  默认值适合大多数场景;调大输出后建议同步调大超时
-                </p>
-              </template>
-            </UCollapsible>
             <div class="mt-4 flex items-center gap-3">
               <UButton
                 color="primary"
@@ -1522,6 +1452,28 @@ watch(narrLength, v => saveNarrLength(v))
                 当前 {{ narrSpeed }} 字符/秒
               </span>
             </div>
+            <div class="mt-2 flex items-center gap-2">
+              <UInput
+                v-model="narrSpeedCustom"
+                type="number"
+                :min="1"
+                :max="200"
+                size="sm"
+                class="w-28"
+                placeholder="自定义"
+                @keyup.enter="applyNarrSpeedCustom"
+              />
+              <UButton
+                size="sm"
+                variant="soft"
+                @click="applyNarrSpeedCustom"
+              >
+                自定义字/秒
+              </UButton>
+              <span class="text-xs text-neutral-500">
+                1~200,回车或点击应用
+              </span>
+            </div>
             <div class="mt-2 space-y-1 text-xs text-neutral-400">
               <p
                 v-for="t in NARR_SPEED_TIERS"
@@ -1573,6 +1525,7 @@ watch(narrLength, v => saveNarrLength(v))
                 <UTextarea
                   v-model="scenePrefs.prefer"
                   :rows="3"
+                  autoresize
                   placeholder="留空不生效,可填写多个场景,用逗号分隔"
                   class="w-full"
                 />
@@ -1584,6 +1537,7 @@ watch(narrLength, v => saveNarrLength(v))
                 <UTextarea
                   v-model="scenePrefs.avoid"
                   :rows="3"
+                  autoresize
                   placeholder="留空不生效,可填写多个场景,用逗号分隔"
                   class="w-full"
                 />
@@ -1887,6 +1841,7 @@ watch(narrLength, v => saveNarrLength(v))
             variant="soft"
             icon="i-lucide-circle-alert"
             title="充值系统维护中"
+            description="可私聊作者购买,维护期间额外赠送 30% , token以兑换码形式发放。"
           />
           <p class="text-sm text-neutral-500">
             选择加油包套餐:
@@ -2179,18 +2134,6 @@ watch(narrLength, v => saveNarrLength(v))
             <UInput
               v-model="aiModal.model"
               :placeholder="aiFormatMeta(aiModal.format).placeholderModel"
-              class="w-full"
-            />
-          </UFormField>
-
-          <UFormField
-            v-if="aiFormatMeta(aiModal.format).supportsThinking"
-            label="请求模式"
-          >
-            <USelect
-              v-model="aiModal.thinking"
-              :items="[{ label: '思考关闭(快/省)', value: false }, { label: '思考开启(深度推理)', value: true }]"
-              value-key="value"
               class="w-full"
             />
           </UFormField>

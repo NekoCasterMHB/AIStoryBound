@@ -3,7 +3,7 @@
 // 首次发布:创建商品主表(status=pending)+ 版本 v1,均为待审核。
 // 更新:在原商品下追加新版本(版本号自动递增,独立 R2 文件,旧文件保留),新版本待审核;
 //      审核通过前商店继续售卖旧版本(主表保持原在售快照,通过后由审核接口同步)。
-// 校验:txt 可解码(UTF-8 优先,回退 GBK)、字数 ≥ MIN_NOVEL_CHARS、可预览字数 ≤ 全书字数且 ≤ 上限。
+// 校验:txt 可解码(编码自动识别,统一归一化为 UTF-8 后存 R2)、字数 ≥ MIN_NOVEL_CHARS、可预览字数 ≤ 全书字数且 ≤ 上限。
 import { readMultipartFormData } from 'h3'
 import { useD1 } from '../../utils/d1'
 import { getSkillBucket } from '../../utils/r2'
@@ -19,9 +19,9 @@ import {
   MAX_NOVEL_PREVIEW_CHARS,
   MIN_NOVEL_CHARS,
   NOVEL_TXT_EXTENSIONS,
-  decodeNovelText,
   countNovelChars
 } from '../../../shared/store-novel'
+import { normalizeNovelToUtf8 } from '../../../shared/novel-encoding'
 
 const textOf = (bytes: Uint8Array | undefined) => new TextDecoder().decode(bytes ?? new Uint8Array())
 
@@ -66,8 +66,12 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: `小说正文超过 ${MAX_NOVEL_TXT_BYTES / 1024 / 1024}MB 上限` })
   }
 
-  // 解码 + 字数校验:UTF-8 优先,回退 GBK(国内 TXT 常见编码)
-  const text = decodeNovelText(fileData)
+  // 编码自动识别 + UTF-8 归一化(兜底:客户端可能未转码)。
+  // 库内文件统一为 UTF-8;Workers 不支持的编码(如 Big5)按宽松 UTF-8 兜底解码,
+  // 客户端已在浏览器端转换的场景这里解码结果与原文一致。
+  const normalized = normalizeNovelToUtf8(fileData)
+  const storeBytes = normalized.bytes
+  const text = normalized.text
   const totalChars = countNovelChars(text)
   if (totalChars < MIN_NOVEL_CHARS) {
     throw createError({ statusCode: 400, statusMessage: `小说正文过短(至少 ${MIN_NOVEL_CHARS} 字才能上架)` })
@@ -106,8 +110,8 @@ export default defineEventHandler(async (event) => {
   const fileKey = version === 1
     ? `novels/${user.id}/${productId}.txt`
     : `novels/${user.id}/${productId}-v${version}.txt`
-  await bucket.put(fileKey, fileData, {
-    httpMetadata: { contentType: 'text/plain' }
+  await bucket.put(fileKey, storeBytes, {
+    httpMetadata: { contentType: 'text/plain; charset=utf-8' }
   })
 
   const now = new Date()
@@ -123,7 +127,8 @@ export default defineEventHandler(async (event) => {
       totalChars,
       fileKey,
       fileName,
-      fileSize: fileData.length,
+      fileSize: storeBytes.length,
+      sourceEncoding: normalized.sourceEncoding,
       status: 'pending',
       featured: 0,
       downloadCount: 0,
@@ -145,10 +150,11 @@ export default defineEventHandler(async (event) => {
     totalChars,
     fileKey,
     fileName,
-    fileSize: fileData.length,
+    fileSize: storeBytes.length,
+    sourceEncoding: normalized.sourceEncoding,
     status: 'pending',
     createdAt: now
   }).run()
 
-  return { ok: true, id: productId, version, status: 'pending' }
+  return { ok: true, id: productId, version, status: 'pending', sourceEncoding: normalized.sourceEncoding }
 })

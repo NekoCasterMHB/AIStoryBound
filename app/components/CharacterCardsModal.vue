@@ -2,6 +2,7 @@
 // 编辑角色卡弹窗:修改/新增/删除本地作品 overlay.characters,保存回 IndexedDB works
 // 入口:书架「本地作品」卡片上的「角色卡」按钮;保存后由父组件刷新列表
 import { getWork, saveWork } from '../utils/worldGen'
+import { listLocalGames, saveLocalGame } from '../utils/gameStore'
 import { desireTierName, DESIRE_TIERS, SEX_TEXT_KEYS } from '#shared/novel'
 import type { CharacterCard, SexAttrs, SexTextField } from '#shared/novel'
 
@@ -218,6 +219,8 @@ function normalizeCards(): CharacterCard[] {
     }
     if (c.sex?.condom === true || c.sex?.condom === false) sex.condom = c.sex.condom
     if (Object.keys(sex).length) patch.sex = sex
+    // 章节变体不进编辑表单(生成流水线产物),保存时原样保留,避免被丢弃
+    if ((c.chapterVariants ?? []).length) patch.chapterVariants = c.chapterVariants
     return patch
   })
 }
@@ -240,9 +243,12 @@ async function onSave() {
     if (!work) throw new Error('本地未找到该作品')
     await saveWork({
       ...work,
-      overlay: { ...work.overlay, title: work.overlay?.title, genre: work.overlay?.genre, summary: work.overlay?.summary, characters: cards },
+      overlay: { ...work.overlay, characters: cards },
+      // 云端已有对应作品时标记待同步,书架卡片会显示「待同步」徽章
+      syncStatus: work.syncStatus === 'synced' ? 'dirty' : work.syncStatus,
       updatedAt: new Date().toISOString()
     })
+    await clearOverlappingPatches(work.overlay?.characters ?? [], cards)
     emit('saved')
     open.value = false
   } catch (e) {
@@ -250,6 +256,74 @@ async function onSave() {
   } finally {
     saving.value = false
   }
+}
+
+/** 卡片可被局内 AI 补丁覆盖的人物卡字段(与 CharacterDynamicState.patch 允许的键对应) */
+const PATCHABLE_KEYS = [
+  'alias', 'gender', 'age', 'identity', 'appearance', 'background', 'first_appearance',
+  'personality', 'speech_style', 'abilities', 'goals', 'fears', 'secrets', 'relationships',
+  'dead', 'patience', 'softness', 'desire', 'kinks', 'sex'
+] as const
+
+/** 编辑保存后,清除进行中游戏里该角色动态补丁中与本次被编辑字段重叠的键:
+ *  有效卡=基础卡+局内补丁,不清理的话用户改的卡字段会被 AI 玩出来的旧补丁一直覆盖 */
+async function clearOverlappingPatches(prevCards: CharacterCard[], cards: CharacterCard[]) {
+  const editedFields = new Map<string, Set<string>>()
+  for (const c of cards) {
+    const prev = prevCards.find(p => p.name === c.name)
+    if (!prev) continue
+    const fields = new Set<string>()
+    for (const k of PATCHABLE_KEYS) {
+      if (JSON.stringify(prev[k] ?? null) !== JSON.stringify(c[k] ?? null)) fields.add(k)
+    }
+    if (fields.size) editedFields.set(c.name, fields)
+  }
+  if (!editedFields.size) return
+  const games = await listLocalGames()
+  let touched = 0
+  for (const g of games) {
+    if (g.workId !== props.workId) continue
+    const states = g.state?.characterStates
+    if (!states) continue
+    let dirty = false
+    for (const [name, fields] of editedFields) {
+      const patch = states[name]?.patch
+      if (!patch || !Object.keys(patch).length) continue
+      // 重建补丁对象只保留未重叠键(避免动态 delete)
+      const kept: Partial<NonNullable<typeof patch>> = {}
+      let removed = false
+      for (const [k, v] of Object.entries(patch)) {
+        if (fields.has(k)) {
+          removed = true
+          continue
+        }
+        ;(kept as Record<string, unknown>)[k] = v
+      }
+      if (removed) {
+        states[name]!.patch = kept
+        dirty = true
+      }
+    }
+    if (dirty) {
+      await saveLocalGame(g)
+      touched++
+    }
+  }
+  if (touched) {
+    toast.add({ title: '已同步清理游戏状态', description: `${touched} 局游戏中该角色的相关动态变化已按新卡重置`, color: 'neutral' })
+  }
+}
+
+// ---- 删除角色确认(误删后点保存即不可逆) ----
+const removeConfirmOpen = ref(false)
+
+function askRemoveCard() {
+  removeConfirmOpen.value = true
+}
+
+function confirmRemoveCard() {
+  removeConfirmOpen.value = false
+  removeCard(selIdx.value)
 }
 </script>
 
@@ -328,7 +402,7 @@ async function onSave() {
                   color="error"
                   variant="subtle"
                   size="xs"
-                  @click="removeCard(selIdx)"
+                  @click="askRemoveCard"
                 />
               </h4>
               <div class="grid grid-cols-2 gap-3">
@@ -726,6 +800,36 @@ async function onSave() {
           color="primary"
           :loading="saving"
           @click="onSave"
+        />
+      </div>
+    </template>
+  </UModal>
+
+  <!-- 删除角色确认(草稿删除;点「保存」后不可逆) -->
+  <UModal
+    v-model:open="removeConfirmOpen"
+    title="删除角色"
+    description="从当前编辑中移除该角色"
+  >
+    <template #body>
+      <p class="text-sm text-neutral-600 dark:text-neutral-300">
+        确定删除角色「{{ sel?.name || '未命名' }}」?
+        删除后需点击「保存」才会生效;保存后无法恢复。
+      </p>
+    </template>
+    <template #footer>
+      <div class="flex justify-end gap-2">
+        <UButton
+          label="取消"
+          color="neutral"
+          variant="outline"
+          @click="removeConfirmOpen = false"
+        />
+        <UButton
+          label="删除"
+          icon="i-lucide-trash-2"
+          color="error"
+          @click="confirmRemoveCard"
         />
       </div>
     </template>

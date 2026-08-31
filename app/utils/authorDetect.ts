@@ -65,7 +65,7 @@ export async function detectAuthor(
         + '- 无法确定时输出 null;不要编造。\n'
         + `文本:\n${textSnip}`
     }
-  ], { maxTokens: 200, temperature: 0, thinking: false }, { onLive, signal })
+  ], { maxTokens: 200, temperature: 0, purpose: 'worldGen' }, { onLive, signal })
   if (signal?.aborted) throw new CancelledError()
   // 失败(如 502 非 JSON)也已产生输出,如实入账
   out.tokensUsed += aiRes.usage?.totalTokens ?? 0
@@ -97,7 +97,7 @@ export async function detectAuthor(
             + '- 结果与本书无关、署名相互矛盾或无法确定时输出 null;不要编造。\n'
             + `搜索结果:\n${list}`
         }
-      ], { maxTokens: 200, temperature: 0, thinking: false }, { onLive, signal })
+      ], { maxTokens: 200, temperature: 0, purpose: 'worldGen' }, { onLive, signal })
       if (signal?.aborted) throw new CancelledError()
       out.tokensUsed += webRes.usage?.totalTokens ?? 0
       if (webRes.ok && webRes.data) {

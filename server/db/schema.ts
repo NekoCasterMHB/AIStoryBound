@@ -288,6 +288,8 @@ export const novelProducts = sqliteTable('novel_products', {
   fileName: text('file_name').notNull(),
   /** 字节数 */
   fileSize: integer('file_size').notNull(),
+  /** 来源编码(utf-8/gbk/big5/utf-8-recovered…;utf-8=原生 UTF-8,历史数据为 null) */
+  sourceEncoding: text('source_encoding'),
   /** pending=待审核 | approved=已上架 | rejected=已拒绝 | removed=已下架 */
   status: text('status').notNull().default('pending'),
   /** 审核驳回原因 */
@@ -326,6 +328,8 @@ export const novelProductVersions = sqliteTable('novel_product_versions', {
   fileName: text('file_name').notNull(),
   /** 字节数 */
   fileSize: integer('file_size').notNull(),
+  /** 来源编码(utf-8/gbk/big5/utf-8-recovered…;utf-8=原生 UTF-8,历史数据为 null) */
+  sourceEncoding: text('source_encoding'),
   /** pending=待审核 | approved=已上架 | rejected=已拒绝(版本级状态) */
   status: text('status').notNull().default('pending'),
   /** 审核驳回原因 */
@@ -518,6 +522,8 @@ export const appConfig = sqliteTable('app_config', {
 export const aiUsage = sqliteTable('ai_usage', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** 关联的云端世界生成任务 id(仅云端流水线的调用携带;chat 中继为 null) */
+  taskId: text('task_id'),
   /** 本次消耗 token 数 */
   tokens: integer('tokens').notNull(),
   /** 输入 token(金额估算用) */
@@ -529,6 +535,77 @@ export const aiUsage = sqliteTable('ai_usage', {
   index('idx_ai_usage_time').on(t.createdAt),
   index('idx_ai_usage_user').on(t.userId)
 ])
+
+// ---- 云端世界生成任务(txt 上传 R2,Workflows 执行管线,见 server/workflows/world-gen.ts) ----
+// key_ciphertext/key_iv 为用户自建 key 的 AES-GCM 暂存(encryptJson):任务终态即置 NULL,防静态泄露。
+export const worldGenTasks = sqliteTable('world_gen_tasks', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** uploaded=已建任务待执行 | running=管线执行中 | completed=成书可下载 | failed | cancelled */
+  status: text('status').notNull().default('uploaded'),
+  /** 管线阶段:parse|author|extract|merge|check|synthesize|done */
+  stage: text('stage').notNull().default('parse'),
+  /** JSON:{ doneUnits, totalUnits } extract 阶段进度 */
+  stageDetail: text('stage_detail'),
+  /** 原文 sha-256(去重共享缓存的键) */
+  sourceHash: text('source_hash').notNull(),
+  /** R2 key:world-gen/sources/<hash>.txt */
+  sourceKey: text('source_key').notNull(),
+  fileSize: integer('file_size').notNull(),
+  title: text('title'),
+  author: text('author'),
+  encoding: text('encoding'),
+  /** full | eco */
+  mode: text('mode').notNull().default('full'),
+  /** platform=平台 key(预授权计费)| user=用户自建 key(加密暂存,零扣费仅记账) */
+  keySource: text('key_source').notNull().default('platform'),
+  keyCiphertext: text('key_ciphertext'),
+  keyIv: text('key_iv'),
+  /** 平台模式预估额(展示/预检参考;新计费为真实消耗逐笔扣费,创建时不预扣) */
+  estimatedTokens: integer('estimated_tokens').notNull().default(0),
+  /** 创建时是否预扣了估算额(旧任务=1,结束退差额;逐笔实扣模式=0,无退款) */
+  reserveTaken: integer('reserve_taken').notNull().default(1),
+  /** 实耗累计(两种模式都记,展示用) */
+  tokensUsed: integer('tokens_used').notNull().default(0),
+  /** 成书 world json 的 R2 key:world-cache/<hash>-<mode>.json */
+  resultKey: text('result_key'),
+  error: text('error'),
+  /** JSON:string[] 生成告警 */
+  warnings: text('warnings'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  index('idx_wgt_user').on(t.userId),
+  index('idx_wgt_status').on(t.status)
+])
+
+// ---- 提取单元明细(断点续跑与幂等:重跑时已完成单元直接读取跳过) ----
+export const worldGenUnits = sqliteTable('world_gen_units', {
+  taskId: text('task_id').notNull().references(() => worldGenTasks.id, { onDelete: 'cascade' }),
+  unitIndex: integer('unit_index').notNull(),
+  /** JSON:ChapterExtraction(规范化后) */
+  result: text('result').notNull(),
+  tokens: integer('tokens').notNull().default(0)
+}, t => [uniqueIndex('idx_wgu_unique').on(t.taskId, t.unitIndex)])
+
+// ---- 跨用户世界缓存(相同 txt + 相同模式共享一份成书;拉取扣记录消耗的一半) ----
+export const worldCache = sqliteTable('world_cache', {
+  id: text('id').primaryKey(),
+  sourceHash: text('source_hash').notNull(),
+  /** full | eco */
+  mode: text('mode').notNull(),
+  fileSize: integer('file_size').notNull(),
+  title: text('title'),
+  author: text('author'),
+  /** R2 key:world-cache/<hash>-<mode>.json */
+  worldKey: text('world_key').notNull(),
+  /** 该份成书的生成消耗总 token(拉取时按一半扣费) */
+  tokensUsed: integer('tokens_used').notNull().default(0),
+  downloads: integer('downloads').notNull().default(0),
+  createdBy: text('created_by'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [uniqueIndex('idx_world_cache_hash_mode').on(t.sourceHash, t.mode)])
 
 // ---- 平台 AI 模型配置(管理员后台维护,多套并存、至多一条启用;替代环境变量 AI_BASE_URL/AI_API_KEY/AI_MODEL) ----
 // apiKey 用 server/utils/crypto.ts(AES-256-GCM,密钥由 BETTER_AUTH_SECRET 派生)加密落库,防库文件泄露;
@@ -555,6 +632,16 @@ export const aiProviderConfigs = sqliteTable('ai_provider_configs', {
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
 }, t => [index('idx_aipc_active').on(t.active)])
+
+// ---- 用户自建 AI 配置验证记录(个人中心测试连接通过后留痕;/api/ai/chat 用户模式凭指纹准入) ----
+// 指纹 = HMAC-SHA256(userId|format|baseUrl|apiKey|model),见 server/utils/ai-fingerprint.ts;
+// 每用户滚动保留至多 AI_USER_CONFIG_LIMIT 条(shared/ai-config.ts),改 key/baseUrl/model 任一字段需重新测试。
+export const aiConfigVerifications = sqliteTable('ai_config_verifications', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  fingerprint: text('fingerprint').notNull(),
+  verifiedAt: integer('verified_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [index('idx_acv_user').on(t.userId)])
 
 // ---- 公告(管理员后台发布;客户端弹窗展示,localStorage 记已读游标,有新公告才再次提示) ----
 export const announcements = sqliteTable('announcements', {

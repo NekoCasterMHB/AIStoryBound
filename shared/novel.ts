@@ -1,5 +1,7 @@
 // shared/novel.ts
 // AI Word2World 共享类型与工具(不依赖运行时,前后端/服务端均可引用)
+import { detectNovelEncoding } from './novel-encoding'
+import type { NovelEncoding } from './novel-encoding'
 
 /** 小说解析状态 */
 export type NovelStatus = 'uploaded' | 'parsing' | 'ready' | 'failed'
@@ -126,6 +128,39 @@ export interface CharacterCard {
   kinks?: { theme: string, view: string | null, role: string | null, detail: string | null }[]
   /** 成人性爱向属性(体位/语言挑逗/尺寸/持久等,影响叙事细节演绎) */
   sex?: SexAttrs
+  /** 阶段变体:按细纲段与基础卡的差异(生成流水线从原著提取;游玩时按当前段叠加,stage 为 0-based 段下标)。
+   *  字段名保留 chapterVariants 旧名是为兼容 IndexedDB 旧数据,语义已从"章节"改为"段" */
+  chapterVariants?: CharacterChapterVariant[]
+}
+
+/** 角色在某阶段(细纲段/提取单元)与基础卡(或上一段快照)的差异;patch 只记录变化的字段 */
+export interface CharacterChapterVariant {
+  /** 0-based 阶段段号(对应 storyline 细纲段下标,与提取单元一一对应) */
+  stage: number
+  /** @deprecated 旧章节下标(仅旧存档数据存在;读取时以 stage 优先,缺失时兜底) */
+  chapter?: number
+  /** 段标签(展示用,如「第3段」;旧数据为章节标题) */
+  title?: string | null
+  /** 本段处境/状态一句话(身份转变、受伤、被囚、身亡等) */
+  status?: string | null
+  /** 与基础卡(或上一段快照)的差异:仅记录该段发生变化的字段 */
+  patch: Partial<Omit<CharacterCard, 'name' | 'role' | 'chapterVariants'>>
+}
+
+/** 角色运行时动态状态(随互动演进;LLM 每回合回报,白名单合并) */
+export interface CharacterDynamicState {
+  /** 当前处境/状态一句话 */
+  status?: string | null
+  /** 当前位置 */
+  location?: string | null
+  /** 当前情绪 */
+  mood?: string | null
+  /** 生死 */
+  dead?: boolean | null
+  /** 其余人物卡字段补丁(全字段可变;字符串/数组整体替换) */
+  patch?: Partial<Omit<CharacterCard, 'name' | 'role' | 'chapterVariants'>>
+  /** 变化履历(代码按每回合 delta 生成摘要;章节时间线展示用) */
+  log?: { idx: number, text: string }[]
 }
 
 /** 性欲强度 0-100 的五档位(展示与提示词共用;区间 0-19 / 20-39 / 40-59 / 60-79 / 80-100) */
@@ -144,12 +179,37 @@ export function desireTierName(v: number | null | undefined): string | null {
   return tier?.label ?? null
 }
 
+/** 全书玩法聚合(成书写入 overlay;本地聚合也可直接产出) */
+export interface KinkProfileEntry {
+  theme: string
+  count: number
+  /** 该玩法最常见态度:喜欢/厌恶/接受/无感 */
+  dominantView: string | null
+}
+
+/** 尺度档位(成书/本地聚合写入 overlay.heat) */
+export type HeatLevel = '淡' | '中' | '烈'
+
 /** 世界观速览(规划 §5),整体存于 novels.world_state */
 export interface WorldOverlay {
   title?: string
   genre?: string
   summary?: string
   characters?: CharacterCard[]
+  /** 子类型 + 玩法 + 关系原型,8~12 个短标签 */
+  tags?: string[]
+  /** 全书主性向:男女/女女/男男/混合/不明 */
+  orientation?: string
+  /** 舞台 + 体系一句话 */
+  setting?: string
+  /** 整体尺度 */
+  heat?: HeatLevel
+  /** 内容警告(与 LocalWork.warnings 生成告警区分) */
+  contentWarnings?: string[]
+  /** 关系/剧情原型 */
+  tropes?: string[]
+  /** 全书玩法 Top N */
+  kinkProfile?: KinkProfileEntry[]
 }
 
 // ---- 世界观生成流水线(浏览器本地编排 + 服务器 AI 中继;实体库/冲突仅存 IndexedDB) ----
@@ -178,6 +238,8 @@ export interface ExtractedCharacter {
   secrets?: string[]
   relationships?: { name: string, type: string }[]
   dead?: boolean | null
+  /** 该角色在本提取单元的处境/状态一句话(身份转变、受伤、被囚、身亡等;章节变体素材) */
+  status?: string | null
   /** 性欲强度,0-100 整数(提取时按原文行为推断) */
   desire?: number | null
   /** 成人题材玩法喜好(theme=玩法,view=喜欢/厌恶/接受,role=承受/施予/双方;按原文行为与对话推断) */
@@ -228,6 +290,35 @@ export interface ExtractedForeshadow {
   quote?: string | null
 }
 
+/** 单提取单元的情节纪要(按字数切段,不依赖章节标题) */
+export interface PlotBeat {
+  /** 本段发生了什么(80-150 字,按时间顺序) */
+  summary: string
+  /** 出场人名 */
+  cast?: string[]
+  /** 主要地点 */
+  place?: string | null
+  /** 本段相对上一段的推进/转折 */
+  turn?: string | null
+  /** 段末未完成的悬念 */
+  hook?: string | null
+}
+
+/** 合并后的故事线一拍(按提取单元顺序,失败单元跳过不编造) */
+export interface StoryBeat {
+  /** 0-based 段序(对应提取单元下标) */
+  index: number
+  /** 本段在全书中的起始字符偏移 */
+  startChar: number
+  /** 展示标签(沿用提取单元 label,仅展示) */
+  label: string
+  summary: string
+  cast: string[]
+  place?: string | null
+  turn?: string | null
+  hook?: string | null
+}
+
 /** 一个提取单元(一章或超长章节的一段)输出的结构化结果 */
 export interface ChapterExtraction {
   characters: ExtractedCharacter[]
@@ -237,12 +328,22 @@ export interface ChapterExtraction {
   world_rules: ExtractedWorldRule[]
   items: ExtractedItem[]
   foreshadowing: ExtractedForeshadow[]
+  /** 本段情节纪要(按字数切段;失败/旧缓存可缺) */
+  plot_beat?: PlotBeat | null
 }
 
 /** 合并后的实体(Merge 阶段产物,sources 携带全文溯源) */
 export interface MergedCharacter extends ExtractedCharacter {
   sources: EntitySource[]
   mentionCount: number
+  /** 章节变体(传入 chapters 合并时生成;成卡阶段挂到卡上) */
+  chapterVariants?: CharacterChapterVariant[]
+  /** 身份在各章节的全部不同表述(可并存,如 留学生/作家;成书 AI 据此合并出完整人设) */
+  identityVariants?: string[]
+  /** 外貌在各章节的全部不同表述(不同侧面/阶段描述) */
+  appearanceVariants?: string[]
+  /** 背景在各章节的全部不同表述(同一件事的不同说法或不同侧面) */
+  backgroundVariants?: string[]
 }
 export interface MergedLocation extends ExtractedLocation {
   sources: EntitySource[]
@@ -378,16 +479,15 @@ export interface LocalWork {
   syncStatus: 'local' | 'synced' | 'dirty'
   /** 生成消耗的平台 token 总量(展示用;AI 配置走用户 key 时为 0) */
   tokensUsed?: number
+  /** 来源云端生成任务 id(云端成书手动下载安装时写入;用于判定"该任务是否已安装",防重复落库) */
+  sourceTaskId?: string
   /** 生成产物(entities/conflicts/overlay 一起生成,一起保存) */
   entities?: WorldEntities
   conflicts?: EntityConflict[]
   warnings?: string[]
-  overlay?: {
-    title?: string
-    genre?: string
-    summary?: string
-    characters?: CharacterCard[]
-  }
+  overlay?: WorldOverlay
+  /** 按字数切段合并的完整故事线(与 overlay 并列,避免人物卡保存踩到大数组) */
+  storyline?: StoryBeat[]
 }
 
 /** 本地游戏会话(浏览器驱动回合,本地落盘;登录用户可手动同步云端) */
@@ -400,24 +500,27 @@ export interface LocalGame {
   messages: { id: string, idx: number, role: string, speaker: string | null, content: string }[]
   /** 每条旁白消息挂载的选项(回合结束后生成,回滚时一并恢复) */
   optionsByMessage?: Record<string, { idx: number, text: string }[]>
-  currentChapter?: string | null
+  /** 剧情当前推进到的细纲段下标(0-based;由收尾器按回回报,用于阶段变体与回注;旧存档无此字段) */
+  currentBeat?: number | null
   summary?: { idx: number, text: string } | null
   /** 云端同步进度:上次成功同步的最后一条消息 idx(-1=从未同步;回滚后失效,下次同步自动转全量重建) */
   lastSyncedIdx?: number
   /** 开局设定(仅对首回合生效;旧存档无此字段=原有自由开场) */
   opening?: {
-    /** ai=AI 生成开场供选择 chapter=从小说章节开始 custom=玩家输入背景故事 */
-    mode: 'ai' | 'chapter' | 'custom'
-    /** mode=chapter:所选章节标题 */
-    chapterTitle?: string
-    /** mode=chapter:所选章节在作品 chapters 中的索引(定期回注定位用;旧存档缺省按标题匹配) */
-    chapterIndex?: number
-    /** mode=chapter:该章节完整正文 */
-    chapterText?: string
-    /** mode=chapter:上一章(背景;选了中间章节时注入,把握前情与人物关系) */
-    prevChapter?: { title?: string, text: string }
-    /** mode=chapter:下一章(情节走向;非末章时注入,供后续回合自然衔接) */
-    nextChapter?: { title?: string, text: string }
+    /** ai=AI 生成开场供选择 beat=按细纲段开始 custom=玩家输入背景故事 */
+    mode: 'ai' | 'beat' | 'custom'
+    /** mode=beat:细纲段在 storyline 中的下标(0-based) */
+    beatIndex?: number
+    /** mode=beat:细纲段标题,如「第3段」 */
+    beatTitle?: string
+    /** mode=beat:细纲段情节摘要 */
+    beatSummary?: string
+    /** mode=beat:该段起始章节正文(供开场演绎,约 2500 字窗口) */
+    beatText?: string
+    /** mode=beat:前一段情节(背景;非首段时注入) */
+    prevBeat?: { title?: string, text: string }
+    /** mode=beat:后一段情节(走向;非末段时注入) */
+    nextBeat?: { title?: string, text: string }
     /** mode=ai:玩家选定的开场设定;mode=custom:玩家输入的背景故事 */
     scene?: string
     /** 是否已按起始情节初始化过性欲值(避免回滚开局后重复调用) */
@@ -453,6 +556,8 @@ export interface GameState {
   relationships?: Record<string, number>
   /** 角色名 -> 性欲值(0-100,动态状态:随心情/情景/挑逗变化,戳中嗜好大幅加速,低强度角色波动小、高值后上涨加速) */
   desires?: Record<string, number>
+  /** 角色名 -> 运行时动态状态(处境/位置/情绪/生死及人物卡字段补丁;随互动演进) */
+  characterStates?: Record<string, CharacterDynamicState>
   quests?: string[]
   flags?: Record<string, boolean | string | number>
   /** AI 内部状态(不展示给玩家,仅进 prompt) */
@@ -517,8 +622,11 @@ export interface TurnStructured {
     relationships?: Record<string, number>
     /** 角色名 -> 性欲值增量(0-100 区间内);可附触发玩法名与场景,引擎按人物卡嗜好放大 */
     desires?: Record<string, number | { delta: number, kink?: string, scene?: 'reward' | 'punish' }>
+    /** 角色名 -> 动态状态变化(status/location/mood/dead + 任意人物卡字段补丁;无变化的角色省略) */
+    character_states?: Record<string, CharacterDynamicState>
   }
-  current_chapter?: string | null
+  /** 剧情当前推进到的细纲段序号(1-based,每回合报告;仍在同段保持同值;不确定可省略) */
+  current_beat?: number | null
   /** 整局剧情摘要(覆盖式更新:基于旧摘要+近期剧情压缩,保留关键关系/伏笔/进展) */
   summary?: string
 }
@@ -674,19 +782,7 @@ export function segmentChapters(raw: string): ChapterSegment[] {
   return segments
 }
 
-/** 编码检测辅助(UTF-8 vs GBK/GB18030) */
-export function detectEncoding(bytes: Uint8Array): 'utf-8' | 'gbk' | 'gb18030' {
-  // 有 UTF-8 BOM 直接判定
-  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
-    return 'utf-8'
-  }
-  // 尝试严格 UTF-8 解码,失败则为 GB 系
-  try {
-    // TextDecoder fatal 模式下,非法 UTF-8 会抛错
-    new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-    return 'utf-8'
-  } catch {
-    // 有 GB18030 的四个字节扩展则判 gb18030,否则 gbk
-    return 'gb18030'
-  }
+/** 编码检测辅助:按乱码特征评分择优(UTF-8/UTF-16/GB18030/GBK/Big5/二重乱码修复),详见 novel-encoding.ts */
+export function detectEncoding(bytes: Uint8Array): NovelEncoding {
+  return detectNovelEncoding(bytes).encoding
 }
