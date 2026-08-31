@@ -117,7 +117,12 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
   if (input.maxTokens) body.max_tokens = input.maxTokens
   // chat 格式必须显式带 thinking 字段:DeepSeek 等模型默认可能开启思考,
   // 不传等于让模型自行决定;传 {type:'disabled'} 才是明确关闭。
-  if (input.thinking !== undefined) body.thinking = { type: input.thinking ? 'enabled' : 'disabled' }
+  // OpenRouter 关思考认 reasoning 而非 thinking,两者都发:OpenRouter 读 reasoning,
+  // DeepSeek 官方读 thinking,其它供应商忽略未知字段(不按供应商区分)。
+  if (input.thinking !== undefined) {
+    body.thinking = { type: input.thinking ? 'enabled' : 'disabled' }
+    body.reasoning = { enabled: input.thinking }
+  }
   return {
     url: `${base}/chat/completions`,
     headers: {

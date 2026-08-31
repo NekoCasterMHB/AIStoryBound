@@ -12,7 +12,7 @@
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "lint": "eslint .",
-    "test": "tsx --test shared/token-estimate.test.ts",
+    "test": "tsx --test shared/token-estimate.test.ts shared/json.test.ts",
     "typecheck": "nuxt typecheck",
     "build:cf": "nuxt build --preset cloudflare_module",
     "deploy:cf": "nuxt build --preset cloudflare_module && wrangler deploy",

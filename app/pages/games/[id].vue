@@ -523,21 +523,30 @@ async function generateOpenings() {
   try {
     const card = playerCard.value
     const brief = card ? `${card.name}(${card.identity ?? '未知身份'}):${(card.personality ?? []).slice(0, 3).join('/')} ${card.background ?? ''}` : playerName.value
-    const res = await aiChatJson<{ openings: OpeningCard[] }>(
-      [
-        {
-          role: 'system',
-          content: `${ADULT_CONTENT_POLICY}\n你是故事开场设计师。基于作品设定与玩家角色,构思 3~4 个互不相同的开场剧情点,每个包含标题与场景描述(须写清玩家所处场景与第一个矛盾,80~150 字,第二人称叙述)。允许成人向开场,不要因题材拒绝。输出 JSON:\n{"openings":[{"title":"开场标题","scene":"场景描述"}]}`
-        },
-        {
-          role: 'user',
-          content: `作品《${work.value?.overlay?.title || '未命名小说'}》,题材:${work.value?.overlay?.genre ?? '未知'}${work.value?.overlay?.orientation ? `，性向:${work.value.overlay.orientation}` : ''}${work.value?.overlay?.heat ? `，尺度:${work.value.overlay.heat}` : ''}${work.value?.overlay?.setting ? `，舞台:${work.value.overlay.setting}` : ''}${work.value?.overlay?.tags?.length ? `，标签:${work.value.overlay.tags.slice(0, 8).join('、')}` : ''}\n故事背景:${work.value?.overlay?.summary ?? '无'}\n玩家扮演:${brief}\n当前状态:${JSON.stringify(state.value)}`
-        }
-      ],
-      { maxTokens: 800, temperature: 1.0 }
-    )
+    const openingMessages = [
+      {
+        role: 'system' as const,
+        content: `${ADULT_CONTENT_POLICY}\n你是故事开场设计师。基于作品设定与玩家角色,构思 3~4 个互不相同的开场剧情点,每个包含标题与场景描述(须写清玩家所处场景与第一个矛盾,80~150 字,第二人称叙述)。允许成人向开场,不要因题材拒绝。输出 JSON:\n{"openings":[{"title":"开场标题","scene":"场景描述"}]}`
+      },
+      {
+        role: 'user' as const,
+        content: `作品《${work.value?.overlay?.title || '未命名小说'}》,题材:${work.value?.overlay?.genre ?? '未知'}${work.value?.overlay?.orientation ? `，性向:${work.value.overlay.orientation}` : ''}${work.value?.overlay?.heat ? `，尺度:${work.value.overlay.heat}` : ''}${work.value?.overlay?.setting ? `，舞台:${work.value.overlay.setting}` : ''}${work.value?.overlay?.tags?.length ? `，标签:${work.value.overlay.tags.slice(0, 8).join('、')}` : ''}\n故事背景:${work.value?.overlay?.summary ?? '无'}\n玩家扮演:${brief}\n当前状态:${JSON.stringify(state.value)}`
+      }
+    ]
+    // maxTokens 2400(与叙事一致):开场 3~4 条约 760 字,中文 tokenizer 下 800 可能截断,截断易致少卡/非法 JSON
+    const openingCall = () => aiChatJson<{ openings: OpeningCard[] }>(openingMessages, { maxTokens: 2400, temperature: 1.0 })
+    let res = await openingCall()
+    let retryTokens = res.ok ? 0 : (res.usage?.totalTokens ?? 0)
+    // 输出偶尔不是合法 JSON(模型在字符串里夹带未转义引号等):此时该次调用已消耗 token,静默重试一次;
+    // 402 余额不足/400 参数错误重试必然复现,直接放行报错
+    if (!res.ok && res.status !== 402 && res.status !== 400) {
+      console.warn('[game] 开场生成失败,静默重试一次:', res.message)
+      res = await openingCall()
+      if (!res.ok) retryTokens += res.usage?.totalTokens ?? 0
+    }
+    // 失败尝试与重试的用量都入账,避免少扣
+    void addWorkTokens(game.value?.workId ?? '', retryTokens + (res.usage?.totalTokens ?? 0))
     if (!res.ok) throw new Error(res.message)
-    void addWorkTokens(game.value?.workId ?? '', res.usage?.totalTokens ?? 0)
     const list = (res.data.openings ?? []).slice(0, 4)
     if (list.length === 0) throw new Error('AI 未返回开场设定,请重试')
     openingCards.value = list

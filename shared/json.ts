@@ -16,7 +16,72 @@ export function extractJson<T = unknown>(text: string): T | null {
     // 尝试修复被截断的 JSON(流式输出被 max_tokens 截断等):补全未闭合的字符串与括号
     const repaired = tryRepairTruncated(candidate)
     if (repaired !== undefined) return repaired as T
+    // 尝试修复字符串内未转义的双引号(模型把台词写成 "我爱你" 等,非截断型非法 JSON)
+    const quoteRepaired = tryRepairInnerQuotes(candidate)
+    if (quoteRepaired !== undefined) return quoteRepaired as T
     return null
+  }
+}
+
+/** 修复字符串内未转义的双引号(模型把台词写成 "我爱你" 时 JSON 非法):
+ *  字符串内的引号只有在其后(跳过空白)紧接 , } ] : 或文本末尾时才视为闭合,否则判定为内部引号转义为 \"。
+ *  与 tryRepairTruncated 相同,也处理尾部的未闭合字符串/括号(内部引号常与截断并存);仅在严格解析全部失败后调用。 */
+function tryRepairInnerQuotes(text: string): unknown | undefined {
+  if (!/^[{[]/.test(text)) return undefined
+  const stack: string[] = []
+  let out = ''
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inStr) {
+      if (esc) {
+        out += ch
+        esc = false
+        continue
+      }
+      if (ch === '\\') {
+        out += ch
+        esc = true
+        continue
+      }
+      if (ch === '"') {
+        const after = text.slice(i + 1).trimStart()[0]
+        if (after === undefined || after === ',' || after === '}' || after === ']' || after === ':') {
+          out += ch
+          inStr = false
+        } else {
+          out += '\\' + ch
+        }
+        continue
+      }
+      out += ch
+      continue
+    }
+    out += ch
+    if (ch === '"') inStr = true
+    else if (ch === '{' || ch === '[') stack.push(ch)
+    else if (ch === '}' || ch === ']') {
+      const top = stack[stack.length - 1]
+      if (!top || (top === '{' && ch !== '}') || (top === '[' && ch !== ']')) {
+        // 括号失配:不是这种可修复形态,交由外层判定失败
+        return undefined
+      }
+      stack.pop()
+    }
+  }
+  let repaired = out
+  if (inStr) {
+    if (esc) repaired = repaired.slice(0, -1) + '\\\\' // 尾部反斜杠改为转义自身,再闭合引号
+    repaired += '"'
+  }
+  for (let i = stack.length - 1; i >= 0; i--) {
+    repaired += stack[i] === '{' ? '}' : ']'
+  }
+  try {
+    return JSON.parse(repaired)
+  } catch {
+    return undefined
   }
 }
 
