@@ -8,6 +8,7 @@
 //   不支持的平台不发请求、由前端显示「不支持」。
 import { requireAdmin } from '../../utils/authz'
 import { useD1 } from '../../utils/d1'
+import { isPaymentDisabled } from '../../utils/config'
 import { getAiConfig, getEnvConfig, getAiPurposeRouting } from '../../utils/ai'
 import { AI_ROUTE_ENV } from '../../../shared/ai-config'
 import { FREE_TOKEN_GRANT } from '../../utils/auth'
@@ -275,6 +276,7 @@ export default defineEventHandler(async (event) => {
   }
 
   const effective = await getAiConfig(event)
+  const paymentDisabled = await isPaymentDisabled(db)
   return {
     users: {
       total: totalUsersN,
@@ -308,6 +310,8 @@ export default defineEventHandler(async (event) => {
         worldGen: resolveRouting(routing.worldGen),
         chat: resolveRouting(routing.chat)
       }
-    }
+    },
+    /** 充值是否处于维护(关闭)状态:false=开放可充值,true=维护中(每小时健康检查/管理端手动切换) */
+    paymentDisabled
   }
 })

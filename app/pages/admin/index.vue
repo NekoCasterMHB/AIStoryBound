@@ -38,6 +38,8 @@ interface DashboardData {
     totalCount: number
     routing: { worldGen: string | null, chat: string | null }
   }
+  /** 充值是否处于维护(关闭)状态:false=开放可充值,true=维护中 */
+  paymentDisabled: boolean
 }
 
 const isAdmin = ref(false)
@@ -206,6 +208,52 @@ const pendingItems = computed(() => {
               class="size-4 shrink-0 text-neutral-400"
             />
           </NuxtLink>
+        </div>
+      </UCard>
+
+      <!-- 充值开放状态(每小时健康检查自动切换 / 管理端手动设置) -->
+      <UCard class="mt-4">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <p class="flex items-center gap-2 font-semibold">
+            <UIcon
+              name="i-lucide-wallet"
+              class="size-4 text-emerald-600"
+            />
+            充值开放状态
+          </p>
+          <UBadge
+            v-if="!loading"
+            size="sm"
+            :color="data?.paymentDisabled ? 'error' : 'success'"
+            variant="soft"
+          >
+            {{ data?.paymentDisabled ? '充值维护中' : '充值开放' }}
+          </UBadge>
+        </div>
+        <div
+          v-if="loading"
+          class="py-6 text-center text-sm text-neutral-500"
+        >
+          加载中…
+        </div>
+        <div
+          v-else-if="data"
+          class="flex flex-wrap items-center justify-between gap-3"
+        >
+          <p class="text-sm text-neutral-600 dark:text-neutral-300">
+            {{ data.paymentDisabled
+              ? '用户端充值下单已关闭(兑换码通道不受影响),由每小时健康检查在网关恢复后自动开启'
+              : '用户可正常下单充值;每小时健康检查会在网关异常时自动切换为维护' }}
+          </p>
+          <UButton
+            size="sm"
+            color="neutral"
+            variant="outline"
+            icon="i-lucide-settings-2"
+            to="/admin/recharge"
+          >
+            充值管理
+          </UButton>
         </div>
       </UCard>
 

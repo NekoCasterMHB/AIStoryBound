@@ -56,3 +56,7 @@ ADMIN_EMAIL = "2575525962@qq.com"
 [assets]
 directory = ".output/public"
 binding = "ASSETS"
+
+# 定时任务:每小时整点触发充值健康检查(失败自动进维护,恢复自动开放;见 server/utils/recharge-health.ts)
+[triggers]
+crons = ["0 * * * *"]
