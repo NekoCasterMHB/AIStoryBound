@@ -672,7 +672,12 @@ async function runOptionsPhase(
     },
     {
       role: 'user' as const,
-      content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(state.value)}\n上文剧情:\n${messages.value.slice(-12).map(m => m.content).join('\n')}`
+      content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(state.value)}\n上文剧情:\n${(
+        // 并行调用时旁白尚未入列(见 sendTurn),显式补入,保证上下文与串行时一致
+        messages.value.at(-1)?.id === narratorMsg.id
+          ? messages.value.slice(-12)
+          : [...messages.value.slice(-12), { role: 'narrator', content: narratorText }]
+      ).map(m => m.content).join('\n')}`
     }
   ]
   // 不设 maxTokens:高温下收尾输出(3 个选项 + state_delta + 500 字摘要)会顶到 1200 截断,
@@ -923,26 +928,10 @@ async function sendTurn(choice?: string) {
       for (let attempt = 0; ; attempt++) {
         const narr = await tryNarrOnce()
         if (narr.ok) {
-          // 流结束:解析器收尾(丢弃未闭合指令)→ 推送剩余 token,打字机按原速继续播完
-          // (不再立即上屏全部;点击流式正文仍可跳过,播完后再生成选项)
+          // 流结束:解析器收尾(丢弃未闭合指令)→ 推送剩余 token。此时正文已完整
+          // (typewriter.fullText 即时可读),选项收尾与播放并行,不必等播完再返回。
           const tail = narrParser?.finish() ?? []
           typewriter?.push(tail)
-          // 流结束后在途请求的 abort 监听已随 fetch 拆除,播放阶段要自行监听停止信号:
-          // 点击「停止」立即冻结播放并中止本回合(撤销行动),不能等到播完才响应
-          await new Promise<void>((resolve, reject) => {
-            const sig = turnAbort?.signal
-            const stop = () => {
-              sig?.removeEventListener('abort', stop)
-              typewriter?.dispose()
-              reject(new CancelledError())
-            }
-            if (!sig || sig.aborted) return stop()
-            sig.addEventListener('abort', stop, { once: true })
-            ;(typewriter ? typewriter.done() : Promise.resolve()).then(() => {
-              sig.removeEventListener('abort', stop)
-              resolve()
-            })
-          })
           const text = (typewriter?.fullText ?? streamDisplay.value).trim()
           if (text) return { usage: narr.usage, retryTokens, narratorText: text }
           retryTokens += narr.usage?.totalTokens ?? 0
@@ -976,12 +965,42 @@ async function sendTurn(choice?: string) {
     ]
     const narratorText = narrResult.narratorText
     const narratorMsg = { id: uuid(), idx: messages.value.length, role: 'narrator', speaker: null, content: narratorText }
-    messages.value.push(narratorMsg)
-    // 叙事已上屏,进入选项生成阶段:显示骨架屏等待
-    awaitingOptions.value = true
+    // 叙事正文流已结束(完整可得):立即并行发起收尾(选项+状态+摘要),与打字机播放重叠,
+    // 播完即可直接显示选项,无需再等收尾。旁白消息推迟到播完再入列(模板按 messages 渲染,
+    // 提前入列会与流式文本重复显示);收尾上下文显式补入 narratorText(见 runOptionsPhase)。
+    let optionsOk = false
+    let optionsErr: unknown = null
+    const optionsTask = runOptionsPhase(narratorMsg, narratorText, narrResult.retryTokens + (narrResult.usage?.totalTokens ?? 0))
+      .then(() => { optionsOk = true })
+      .catch((e: unknown) => {
+        // 收尾失败/被取消:不打断播放;错误播完后统一抛出(取消视为回合完成,可重新生成选项)
+        optionsErr = e instanceof CancelledError ? null : e
+      })
 
-    // 2) 选项 + 状态变化 + 剧情摘要(结构化);设备控制已走叙事流内联指令,收尾器不含设备字段
-    await runOptionsPhase(narratorMsg, narratorText, narrResult.retryTokens + (narrResult.usage?.totalTokens ?? 0))
+    // 等打字机播完。流结束后在途请求的 abort 监听已随 fetch 拆除,播放阶段自行监听停止信号:
+    // 点击「停止」立即冻结播放;收尾已结算(成功或失败)时保留剧情正常走后续(失败走错误路径重试),
+    // 未结算时撤销本回合(行动未获回应)。
+    await new Promise<void>((resolve, reject) => {
+      const sig = turnAbort?.signal
+      const stop = () => {
+        sig?.removeEventListener('abort', stop)
+        typewriter?.dispose()
+        if (optionsOk || optionsErr) resolve()
+        else reject(new CancelledError())
+      }
+      if (!sig || sig.aborted) return stop()
+      sig.addEventListener('abort', stop, { once: true })
+      ;(typewriter ? typewriter.done() : Promise.resolve()).then(() => {
+        sig.removeEventListener('abort', stop)
+        resolve()
+      })
+    })
+
+    // 播放结束:旁白上屏;收尾未就绪时显示选项骨架屏(等待时长已与播放重叠,通常即刻可用)
+    messages.value.push(narratorMsg)
+    if (!optionsOk) awaitingOptions.value = true
+    await optionsTask
+    if (optionsErr) throw optionsErr
   } catch (e) {
     if (e instanceof CancelledError) {
       // 玩家停止/页面卸载:不当作失败。未获回应的行动弹出撤销,恢复上一决策点选项
