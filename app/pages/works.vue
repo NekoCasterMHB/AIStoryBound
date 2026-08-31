@@ -2,6 +2,7 @@
 // /works — 我的书架(登录后):推荐书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
 import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments, isLegacyChapteredWork } from '../utils/worldGen'
+import { NOVEL_ENCODING_LABELS } from '#shared/novel-encoding'
 import { listLocalGames, saveLocalGame, deleteLocalGame } from '../utils/gameStore'
 import { deleteGamePoints } from '../utils/gameSaveStore'
 import { importWorkFromZip } from '../utils/shareZip'
@@ -579,6 +580,22 @@ function onPickFile() {
   fileInput.value?.click()
 }
 
+/** 上传 TXT 导入预览(自动识别编码 → UTF-8,确认后入库) */
+interface ImportPreview {
+  title: string
+  encodingLabel: string
+  preview: string
+  truncated: boolean
+  charCount: number
+  chapters: ChapterSegment[]
+}
+const importPreview = ref<ImportPreview | null>(null)
+/** 导入预览模态框开关(由预览内容驱动) */
+const importPreviewOpen = computed({
+  get: () => importPreview.value !== null,
+  set: (v: boolean) => { if (!v) importPreview.value = null }
+})
+
 async function onFileChosen(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
@@ -587,7 +604,30 @@ async function onFileChosen(e: Event) {
   importing.value = true
   try {
     const parsed = await parseLocalNovel(file)
-    await saveImported(parsed.title, parsed.chapters, parsed.encoding)
+    const content = parsed.chapters[0]?.content ?? ''
+    importPreview.value = {
+      title: parsed.title,
+      encodingLabel: NOVEL_ENCODING_LABELS[parsed.encoding as keyof typeof NOVEL_ENCODING_LABELS] ?? parsed.encoding,
+      preview: content.slice(0, 400),
+      truncated: content.length > 400,
+      charCount: content.length,
+      chapters: parsed.chapters
+    }
+  } catch (err) {
+    toast.add({ title: '导入失败', description: err instanceof Error ? err.message : String(err), color: 'error' })
+  } finally {
+    importing.value = false
+  }
+}
+
+/** 确认导入预览的作品(编码转换后的正文入库) */
+async function confirmImportPreview() {
+  const p = importPreview.value
+  if (!p) return
+  importing.value = true
+  try {
+    await saveImported(p.title, p.chapters)
+    importPreview.value = null
   } catch (err) {
     toast.add({ title: '导入失败', description: err instanceof Error ? err.message : String(err), color: 'error' })
   } finally {
@@ -1272,6 +1312,65 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
             :loading="importing"
             :disabled="!pasteTitle.trim() || !pasteAuthor.trim() || !pasteText.trim()"
             @click="onPasteConfirm"
+          />
+        </div>
+      </template>
+    </UModal>
+
+    <!-- 上传 TXT 导入确认:自动识别编码转为 UTF-8,预览后确认入库 -->
+    <UModal
+      v-model:open="importPreviewOpen"
+      title="导入确认"
+      description="已自动识别编码并转换为 UTF-8,确认后加入本地书架"
+    >
+      <template #body>
+        <div
+          v-if="importPreview"
+          class="space-y-3"
+        >
+          <div class="flex flex-wrap items-center gap-2">
+            <p class="truncate text-sm font-semibold">
+              《{{ importPreview.title }}》
+            </p>
+            <UBadge
+              size="sm"
+              color="info"
+              variant="soft"
+              icon="i-lucide-languages"
+            >
+              {{ importPreview.encodingLabel }} 已转换为 UTF-8
+            </UBadge>
+            <span class="text-xs text-neutral-400">
+              共 {{ fmtChars(importPreview.charCount) }}
+            </span>
+          </div>
+          <div class="rounded-lg border border-neutral-200 bg-neutral-50/60 p-3 dark:border-neutral-800 dark:bg-neutral-900/40">
+            <p class="line-clamp-6 whitespace-pre-wrap text-xs leading-relaxed text-neutral-600 dark:text-neutral-300">
+              {{ importPreview.preview }}
+            </p>
+            <p
+              v-if="importPreview.truncated"
+              class="mt-1 text-xs text-neutral-400"
+            >
+              …(预览截断)
+            </p>
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="取消"
+            color="neutral"
+            variant="outline"
+            @click="importPreview = null"
+          />
+          <UButton
+            label="确认导入"
+            icon="i-lucide-upload"
+            color="primary"
+            :loading="importing"
+            @click="confirmImportPreview"
           />
         </div>
       </template>

@@ -1,7 +1,8 @@
 // server/api/world-gen/upload.post.ts
 // 上传原文并创建云端世界生成任务(multipart):
 //   file=<txt> & mode=full|eco & charCount=<客户端解析字数> & config=<可选自建配置 JSON>
-// 流程:服务端重算 sha-256 → R2 按 hash 去重存原文 → 平台模式预授权扣费 → 建任务行 → 启动 Workflow。
+// 流程:服务端自动识别编码 → 转为 UTF-8 文本 → 按转换后内容重算 sha-256 → R2 按 hash 去重存转换后 UTF-8
+// → 平台模式预授权扣费 → 建任务行 → 启动 Workflow。
 // 自建 key:格式校验 + 指纹准入(与 /api/ai/chat 同门槛)→ AES-GCM 加密暂存到任务行,
 // 任务终态即清空(clearTaskKey / 孤儿清扫兜底);用户 key 模式不扣平台额度、只记账。
 // 本地 dev(env.WORLD_GEN 缺失)回退 waitUntil 内联执行同一套管线,保证可调试。
@@ -18,6 +19,7 @@ import { aiConfigFingerprint } from '../../utils/ai-fingerprint'
 import { worldSourceKey } from '../../utils/world-gen-pipeline'
 import { startWorldGenTask } from '../../utils/world-gen-start'
 import { worldGenTaskToDTO } from '../../utils/world-gen-dto'
+import { parseNovelBytes } from '../../utils/novel-parser'
 
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024
 
@@ -51,8 +53,12 @@ export default defineEventHandler(async (event) => {
   }
 
   const bytes = new Uint8Array(filePart.data)
-  const hash = await sha256Hex(bytes)
   const title = (filePart.filename ?? '未命名').replace(/\.(txt|text)$/i, '').slice(0, 200) || '未命名'
+  // 自动识别编码并转为 UTF-8:特征码与 R2 存储均基于转换后内容(与客户端同口径)
+  const parsed = parseNovelBytes(bytes, title)
+  const utf8Bytes = new TextEncoder().encode(parsed.text)
+  const hash = await sha256Hex(utf8Bytes)
+  const sourceChars = parsed.text.length
 
   // ---- 自建 key:格式校验 + 指纹准入 + 加密暂存(与 /api/ai/chat 用户模式同一门槛) ----
   let escrow: { ciphertext: string, iv: string } | null = null
@@ -90,19 +96,19 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  // ---- R2 存原文(按 hash 去重:同内容全站只存一份) ----
+  // ---- R2 存转换后的 UTF-8 文本(按 hash 去重:同内容全站只存一份) ----
   const bucket = getSkillBucket(event)
   const sourceKey = worldSourceKey(hash)
   const existing = await bucket.head(sourceKey)
   if (!existing) {
-    await bucket.put(sourceKey, bytes)
+    await bucket.put(sourceKey, utf8Bytes)
   }
 
   // ---- 平台模式:余额充足性预检(不预扣;真实消耗在管线中逐笔原子扣费,余额不足任务中止) ----
   const db = useD1(event)
   const chars = Number.isFinite(charCountRaw) && charCountRaw > 0
-    ? Math.min(Math.round(charCountRaw), bytes.length) // 字符数不可能超过字节数,防客户端虚报
-    : bytes.length
+    ? Math.min(Math.round(charCountRaw), sourceChars) // 转换后字符数不可能超过原文长度,防客户端虚报
+    : sourceChars
   const estimatedTokens = estimateWorldGenTokens(chars, mode === 'eco')
   if (!escrow && estimatedTokens > 0) {
     const me = await db.select({ aiTokenBalance: usersTable.aiTokenBalance })

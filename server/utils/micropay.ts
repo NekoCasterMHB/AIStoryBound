@@ -105,3 +105,79 @@ export function generateOutTradeNo(): string {
   const rand = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0')
   return `${ts}${rand}`
 }
+
+/** 网关订单查询接口地址(参考 docs/payment-integration.md 与 scripts/query-order.mjs) */
+export const GATEWAY_QUERY_URL = 'https://pay.microgg.cn/api/pay/query'
+
+/** 回调/响应时间戳允许的最大偏差(秒,与官方 SDK verify() 一致,防重放) */
+export const SIGN_TIMESTAMP_MAX_SKEW_S = 300
+
+/** 秒级时间戳是否在允许偏差内 */
+export function isTimestampFresh(timestamp: unknown): boolean {
+  const ts = Number(timestamp)
+  return Number.isFinite(ts) && Math.abs(Date.now() / 1000 - ts) <= SIGN_TIMESTAMP_MAX_SKEW_S
+}
+
+export interface GatewayOrderInfo {
+  /** 平台订单号 */
+  tradeNo: string
+  /** 商户订单号 */
+  outTradeNo: string
+  /** 1=已支付 */
+  status: number
+  /** 金额(元,字符串) */
+  money: string
+}
+
+/**
+ * 主动查询网关订单状态:商户私钥签名请求,平台公钥验签响应(含时间戳新鲜度)。
+ * 请求/验签失败、响应过期、订单不存在均返回 null(调用方按"未确认"处理,不阻塞)。
+ */
+export async function queryGatewayOrder(event: H3Event, outTradeNo: string): Promise<GatewayOrderInfo | null> {
+  const cfg = getMicropayConfig(event)
+  if (!cfg.pid || !cfg.privateKey || !cfg.publicKey) return null
+
+  const params: Record<string, string> = {
+    pid: cfg.pid,
+    out_trade_no: outTradeNo,
+    timestamp: String(Math.floor(Date.now() / 1000))
+  }
+  params.sign = await signRSA(buildSignStr(params), cfg.privateKey)
+  params.sign_type = 'RSA'
+
+  let res: Response
+  try {
+    res = await fetch(GATEWAY_QUERY_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(params)
+    })
+  } catch {
+    return null
+  }
+  if (!res.ok) return null
+
+  let data: Record<string, unknown>
+  try {
+    data = JSON.parse(await res.text()) as Record<string, unknown>
+  } catch {
+    return null
+  }
+  if (data.code !== 0 || typeof data.sign !== 'string') return null
+  if (!isTimestampFresh(data.timestamp)) return null
+
+  // 平台签名验签(字段集合与签名绑定一致,与 scripts/query-order.mjs 相同)
+  const signParams: Record<string, string | number> = {}
+  for (const [k, v] of Object.entries(data)) {
+    if (typeof v === 'string' || typeof v === 'number') signParams[k] = v
+  }
+  const ok = await verifyRSA(buildSignStr(signParams), data.sign, cfg.publicKey)
+  if (!ok) return null
+
+  return {
+    tradeNo: String(data.trade_no ?? ''),
+    outTradeNo: String(data.out_trade_no ?? ''),
+    status: Number(data.status ?? 0),
+    money: String(data.money ?? '')
+  }
+}

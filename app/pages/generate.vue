@@ -14,13 +14,14 @@ import type { PrebuiltWorld } from '../utils/prebuiltWorld'
 import { setAdultModeEnabled } from '../utils/adultMode'
 import { getActiveRelayConfig } from '../utils/aiConfigStore'
 import {
-  hashFile, checkWorldDuplicate, uploadWorldGenTask, pullCachedWorld,
+  hashText, checkWorldDuplicate, uploadWorldGenTask, pullCachedWorld,
   pollWorldGenTask, downloadAndInstallWorldTask, cancelWorldGenTask
 } from '../utils/worldGenCloud'
 import type { WorldCacheHit, WorldGenTaskDTO } from '../utils/worldGenCloud'
 import { useAuthModal } from '~/composables/useAuthModal'
 import { useAuthSession } from '../utils/auth-client'
 import type { LocalWork, ChapterSegment, PresetNovelRow } from '#shared/novel'
+import { NOVEL_ENCODING_LABELS } from '#shared/novel-encoding'
 import type { GenerateProgress } from '../utils/worldGen'
 import type { TokenQuotaInfo } from '../utils/tokenQuota'
 
@@ -194,8 +195,10 @@ let runSeq = 0
 
 /** 原始 File(云端任务上传需要;确认页选定后保留,重新选择时清空) */
 const cloudFile = ref<File | null>(null)
-/** 文件内容 sha-256(选文件后异步计算;共享缓存查重键) */
+/** 文件内容 sha-256(选文件后按转换后文本计算;共享缓存查重键) */
 const cloudHash = ref<string | null>(null)
+/** 上传文件的编码识别与预览(转换后 UTF-8 文本;仅上传 txt 路径展示) */
+const uploadMeta = ref<{ encodingLabel: string, preview: string, truncated: boolean, charCount: number } | null>(null)
 /** 相同 txt 的历史成书(缓存命中时确认页提供「拉取已有世界」) */
 const dupHit = ref<WorldCacheHit | null>(null)
 const dupChecking = ref(false)
@@ -216,9 +219,12 @@ async function refreshDupHit() {
   }
   dupChecking.value = true
   try {
-    const hash = cloudHash.value ?? await hashFile(file)
-    cloudHash.value = hash
-    dupHit.value = await checkWorldDuplicate(hash, ecoMode.value ? 'eco' : 'full')
+    // 特征码基于转换后的 UTF-8 文本(handleFile 解析时已算好),非原始文件字节
+    if (!cloudHash.value) {
+      dupHit.value = null
+      return
+    }
+    dupHit.value = await checkWorldDuplicate(cloudHash.value, ecoMode.value ? 'eco' : 'full')
   } catch {
     dupHit.value = null
   } finally {
@@ -247,6 +253,7 @@ function resetCloudState() {
   cloudFile.value = null
   cloudHash.value = null
   dupHit.value = null
+  uploadMeta.value = null
   cloudTask.value = null
   cloudUploadPct.value = 0
 }
@@ -491,11 +498,23 @@ async function handleFile(file: File) {
     pendingGen.value = { title: parsed.title, chapters: parsed.chapters, frontMatter: parsed.frontMatter }
     // 生成前预检平台 token 额度(不足时提示,不阻断)
     quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco: ecoMode.value })
-    // 云端任务:保留原始文件,异步计算哈希并查重(相同 txt 的历史成书可拉取)
+    // 云端任务:保留原始文件,特征码基于转换后的 UTF-8 文本(与后端同口径)并查重
     cloudFile.value = file
     cloudHash.value = null
     dupHit.value = null
-    void refreshDupHit()
+    // 预览与编码识别:展示自动转换结果(识别编码 → UTF-8 文本前 400 字)
+    const convertedText = parsed.chapters[0]?.content ?? ''
+    uploadMeta.value = {
+      encodingLabel: NOVEL_ENCODING_LABELS[parsed.encoding as keyof typeof NOVEL_ENCODING_LABELS] ?? parsed.encoding,
+      preview: convertedText.slice(0, 400),
+      truncated: convertedText.length > 400,
+      charCount: convertedText.length
+    }
+    void hashText(convertedText).then((h) => {
+      if (seq !== runSeq) return
+      cloudHash.value = h
+      void refreshDupHit()
+    })
     // 先展示字数与预估消耗,用户确认后才进入生成管线
     genState.value.phase = 'confirm'
   } catch (err) {
@@ -1026,6 +1045,35 @@ const features = [
               <span class="font-semibold text-neutral-700 dark:text-neutral-200">{{ estimatedTokens.toLocaleString() }}</span>
               tokens
             </span>
+          </div>
+
+          <!-- 内容预览:自动识别编码并转为 UTF-8 后的正文(仅上传 txt 路径展示) -->
+          <div
+            v-if="uploadMeta"
+            class="flex flex-col gap-2 rounded-xl border border-neutral-200/70 bg-neutral-50/80 px-3.5 py-2.5 dark:border-neutral-800 dark:bg-neutral-900/40"
+          >
+            <div class="flex flex-wrap items-center gap-2">
+              <UBadge
+                size="sm"
+                color="info"
+                variant="soft"
+                icon="i-lucide-languages"
+              >
+                {{ uploadMeta.encodingLabel }} 已转换为 UTF-8
+              </UBadge>
+              <span class="text-xs text-neutral-400">
+                特征码按转换后内容生成 · 共 {{ formatChars(uploadMeta.charCount) }}
+              </span>
+            </div>
+            <p class="line-clamp-6 whitespace-pre-wrap text-xs leading-relaxed text-neutral-600 dark:text-neutral-300">
+              {{ uploadMeta.preview }}
+            </p>
+            <p
+              v-if="uploadMeta.truncated"
+              class="text-xs text-neutral-400"
+            >
+              …(预览截断,完整正文以生成结果为准)
+            </p>
           </div>
 
           <!-- 云端生成说明(仅上传 txt 的确认页) -->

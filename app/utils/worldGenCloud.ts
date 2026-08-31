@@ -11,6 +11,13 @@ export type { WorldCacheHit, WorldGenMode, WorldGenTaskDTO }
 
 export const WORLD_GEN_TASKS_URL = '/api/world-gen/tasks'
 
+/** 文本内容 sha-256(hex;查重与共享缓存键,基于转换后的 UTF-8 文本而非原始文件字节) */
+export async function hashText(text: string): Promise<string> {
+  const buf = new TextEncoder().encode(text)
+  const digest = await crypto.subtle.digest('SHA-256', buf)
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 /** 文件内容 sha-256(十六进制;查重与共享缓存键,不含文件名) */
 export async function hashFile(file: File): Promise<string> {
   const buf = await file.arrayBuffer()
