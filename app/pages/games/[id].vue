@@ -1169,15 +1169,16 @@ watch([messages, streamDisplay], async () => {
               v-if="streaming && liveTokens > 0"
               class="text-xs text-neutral-400 tabular-nums"
             >≈ {{ liveTokens }} tokens · {{ liveSpeed }}/s</span>
-            <button
+            <UButton
               v-else-if="turnUsage && turnCostReport"
-              type="button"
-              class="text-xs text-neutral-400 tabular-nums underline decoration-dotted underline-offset-2 hover:text-neutral-600 dark:hover:text-neutral-200"
+              size="sm"
+              color="neutral"
+              variant="soft"
+              icon="i-lucide-chart-pie"
+              :label="turnUsage"
               title="查看本回合 token 消耗构成"
               @click="costModalOpen = true"
-            >
-              {{ turnUsage }}
-            </button>
+            />
             <UButton
               v-if="cloudSaveEnabled"
               label="同步"
