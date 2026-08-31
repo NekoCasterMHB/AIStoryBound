@@ -3,6 +3,7 @@
 //   状态白名单合并(LLM 只产建议,引擎应用)、人物卡摘要、回合提示词组装、选项 schema。
 import { skillPromptBlocks } from './ai-skills'
 import { desireTierName } from './novel'
+import { estimateTextTokens } from './token-estimate'
 import type { PluginBrief } from './plugin'
 import type { AiSkill } from './ai-skills'
 import type { CharacterCard, CharacterDynamicState, GameState, LocalGame, StoryBeat, TurnStructured, WorldEntities, EntityConflict, WorldOverlay } from './novel'
@@ -443,8 +444,16 @@ function plotTrackBlock(args: {
   return `【剧情轨道(设定内可选分支,按需触发)】\n${body}\n\n以上为本作品的故事线/世界设定/伏笔/设定裁决,情节推进时可择机触发或呼应,但不要每回合都抛出;与当前情节或玩家行动冲突时,以当前情节与玩家行动为准。世界设定(世界类型、舞台、体系)与人物定位是不可违背的硬设定;「以当前情节与玩家行动为准」仅指情节走向,不包括改变世界类型或人物定位。`
 }
 
-/** 组装叙事 prompt(系统规则 + 世界 + 人物卡 + 状态 + 摘要 + 历史 + 玩家本轮输入) */
-export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
+/** 叙事 prompt 分段(带统计标签;buildTurnPrompt 与消耗估算共用,保证同一份 prompt 两种用途) */
+export interface TurnPromptPart {
+  role: AiRole
+  /** 消耗统计展示名(如 角色卡与人设 / AI 技能规则) */
+  label: string
+  content: string
+}
+
+/** 组装叙事 prompt 分段:system 各块在前、user 各块在后,顺序即最终拼接顺序 */
+export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening, deviceSpec, narrLength, reinjectPlot, entities, conflicts, storyline, overlayMeta, stageIndex } = args
   // 有效卡:基础卡 + 阶段变体(≤当前段)+ 运行时动态状态,prompt 全程使用有效卡防 OOC
   const dyn = state.characterStates ?? {}
@@ -468,7 +477,8 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
       skillRules.push(`【技能:${s.name}】\n${blocks.join('\n')}`)
     }
   }
-  const rules = [
+  // 基础规则(不含技能与用户偏好/回避;按 kind 分组供消耗统计,顺序与编号保持不变)
+  const baseRules = [
     `以「${playerName}」的第一视角展开场景,用旁白叙事推进;对话行以「角色名:」开头,非玩家角色可自由说话/行动。`,
     '忠于各人物卡的性格与说话风格,不要 OOC。',
     '角色间的支配/服从定位(如 主/贝、攻/受、主奴、人物卡嗜好中的承受/施予)严格按人物卡与关系设定执行,不得因玩家行动、剧情需要或性欲强度而翻转、互换或重新分配。',
@@ -479,45 +489,63 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
     '本作品为成人向虚构题材,涉及管教、惩罚、亲密与支配互动等情节,按人物卡与原著设定如实描写;涉及此类情节时必须写下去,不要回避、拒绝或自行弱化。',
     ...(adultMode
       ? ['成人模式已开启:内容明显偏向训诫、BDSM、打屁股(spank)、捆绑、强制与支配等亚文化题材,此类互动出现频率大幅提升,可在连续数回合内推进,描写直白;按各角色人物卡的性欲强度档位、当前性欲值与人物卡中的关系设定把握分寸与推进节奏(如主从/师生关系对应支配与训诫),强制类情节依原作设定与人物关系推进,不需要等到剧情铺垫很久。性欲值(0-100,见游戏状态 desires)随心情、情景与被挑逗程度动态变化:性欲强度低的角色波动小、难以被挑起;性欲值低时上涨缓慢,一旦升高后续上涨加速;戳中角色嗜好「喜欢」的玩法会大幅加速性欲值累积;日常场景「厌恶」的玩法几乎无法累积,但惩罚场景故意使用「厌恶」玩法会因羞耻与服从叠加大幅加速。强度阶梯:技能「强度进阶」档位由 ①角色性格 ②性欲强度 ③当前性欲值 ④本回合犯错大小 ⑤认错态度 综合决定——性冷淡/低性欲值用低档,犯错大且认错态度差可跳高档(此时可故意挑角色厌恶的玩法惩罚,越讨厌罚越重),档位变化要有铺垫、逐级推进。']
-      : []),
-    ...(skillRules.length ? skillRules : []),
-    ...(avoidScenes?.trim()
-      ? [`玩家希望避免出现的场景:${avoidScenes.trim()}。除非剧情走向必要,否则不要展开这些内容;如与上述系统规则冲突,以上述规则为准。`]
-      : []),
-    ...(preferScenes?.trim()
-      ? [`玩家偏好场景:${preferScenes.trim()}。在剧情合理推进时可适度增加相关内容;如与上述系统规则冲突,以上述规则为准。`]
       : [])
   ]
+  const sceneRules: string[] = []
+  if (avoidScenes?.trim()) {
+    sceneRules.push(`玩家希望避免出现的场景:${avoidScenes.trim()}。除非剧情走向必要,否则不要展开这些内容;如与上述系统规则冲突,以上述规则为准。`)
+  }
+  if (preferScenes?.trim()) {
+    sceneRules.push(`玩家偏好场景:${preferScenes.trim()}。在剧情合理推进时可适度增加相关内容;如与上述系统规则冲突,以上述规则为准。`)
+  }
+  // 带 kind 标记的完整规则序列(编号全局连续,与旧拼接完全一致)
+  const ruleEntries: { text: string, kind: 'base' | 'skill' | 'scene' }[] = [
+    ...baseRules.map(t => ({ text: t, kind: 'base' as const })),
+    ...skillRules.map(t => ({ text: t, kind: 'skill' as const })),
+    ...sceneRules.map(t => ({ text: t, kind: 'scene' as const }))
+  ]
+  const numberedRules = ruleEntries.map((r, i) => `${i + 1}. ${r.text}`)
+  const baseRuleLines = numberedRules.filter((_, i) => ruleEntries[i]!.kind === 'base')
+  const skillRuleLines = numberedRules.filter((_, i) => ruleEntries[i]!.kind === 'skill')
+  const sceneRuleLines = numberedRules.filter((_, i) => ruleEntries[i]!.kind === 'scene')
 
   const track = plotTrackBlock({ entities, conflicts, storyline, opening })
-  const system: ChatMsg = {
-    role: 'system',
-    content: [
-      ADULT_CONTENT_POLICY,
-      `你是《${title}》的互动叙事引擎。玩家扮演「${playerName}」(${effPlayer ? cardBrief(effPlayer, dyn[playerName]) : '原著角色'})。`,
-      overlayToneLine(genre, summary, overlayMeta),
-      `可能出场的其他角色:\n${others.map(c => cardBrief(c, dyn[c.name])).join('\n')}`,
-      `当前游戏状态:${JSON.stringify(state, null, 0)}`,
-      ...(hasDynStates ? ['角色动态状态:state.characterStates 记录各角色随互动演进后的当前处境/位置/情绪及已变化的字段(卡上「当前状态/当前情绪/当前位置」同源),演绎时以此为准;人物卡其余字段被互动永久改变时(如身份、目标、秘密曝光),也一并写入收尾的 state_delta.character_states 回报。'] : []),
-      ...(deviceSpec?.trim() ? ['设备联动(指令对玩家不可见):', deviceSpec.trim()] : []),
-      '规则:',
-      ...rules.map((r, i) => `${i + 1}. ${r}`),
-      ...(track ? [track] : [])
-    ].join('\n')
-  }
+  const playerLine = `你是《${title}》的互动叙事引擎。玩家扮演「${playerName}」(${effPlayer ? cardBrief(effPlayer, dyn[playerName]) : '原著角色'})。`
+  const othersLine = `可能出场的其他角色:\n${others.map(c => cardBrief(c, dyn[c.name])).join('\n')}`
+  const stateLine = `当前游戏状态:${JSON.stringify(state, null, 0)}`
+  const dynLine = '角色动态状态:state.characterStates 记录各角色随互动演进后的当前处境/位置/情绪及已变化的字段(卡上「当前状态/当前情绪/当前位置」同源),演绎时以此为准;人物卡其余字段被互动永久改变时(如身份、目标、秘密曝光),也一并写入收尾的 state_delta.character_states 回报。'
+  const deviceLines = deviceSpec?.trim() ? ['设备联动(指令对玩家不可见):', deviceSpec.trim()] : []
 
-  const parts: string[] = []
+  // system 各块:保持原拼接物理顺序(ADULT 政策→玩家行→题材行→其他角色→状态→动态→设备→规则→轨道),
+  // 仅按统计标签分组;同标签可重复出现,估算时按 label 聚合
+  const sysGroups: { label: string, lines: string[] }[] = [
+    { label: '系统规则与内容政策', lines: [ADULT_CONTENT_POLICY] },
+    { label: '角色卡与人设', lines: [playerLine] },
+    { label: '世界设定与剧情轨道', lines: [overlayToneLine(genre, summary, overlayMeta)] },
+    { label: '角色卡与人设', lines: [othersLine] },
+    { label: '游戏状态', lines: [stateLine] },
+    ...(hasDynStates ? [{ label: '游戏状态', lines: [dynLine] }] : []),
+    ...(deviceLines.length ? [{ label: '系统规则与内容政策', lines: deviceLines }] : []),
+    { label: '系统规则与内容政策', lines: ['规则:', ...baseRuleLines] },
+    ...(skillRuleLines.length ? [{ label: 'AI 技能规则', lines: skillRuleLines }] : []),
+    ...(sceneRuleLines.length ? [{ label: '用户偏好与回避场景', lines: sceneRuleLines }] : []),
+    ...(track ? [{ label: '世界设定与剧情轨道', lines: [track] }] : [])
+  ]
+  const systemParts = sysGroups.map(g => ({ role: 'system' as const, label: g.label, content: g.lines.join('\n') }))
+
+  // user 各块(与原 parts 一一对应)
+  const userParts: { label: string, content: string }[] = []
   // 开场判定基于剧情上下文(摘要/历史),与人设提醒是否注入无关——
   // 人设提醒只要有角色卡就总会注入,若用它挡在开场前面,首回合开场指令会被吞掉
   const hasStoryContext = !!summaryText || history.length > 0
   if (summaryText) {
-    parts.push(`【剧情回顾】${summaryText}`)
+    userParts.push({ label: '剧情回顾与历史消息', content: `【剧情回顾】${summaryText}` })
   }
   const recent = history.slice(-12)
   // 本轮行动已在尾部「玩家本轮行动」单独强调,历史里去重,避免同一行动重复出现稀释指令
   if (choice && recent.at(-1)?.role === 'user' && recent.at(-1)!.content === choice) recent.pop()
   if (recent.length > 0) {
-    parts.push(recent.map(m => (m.role === 'user' ? `【玩家】${m.content}` : `【剧情】${m.content}`)).join('\n'))
+    userParts.push({ label: '剧情回顾与历史消息', content: recent.map(m => (m.role === 'user' ? `【玩家】${m.content}` : `【剧情】${m.content}`)).join('\n') })
   }
   // 首回合(无摘要/无历史)的开场:按开局设定注入对应背景,缺省维持原有自由开场
   if (!hasStoryContext) {
@@ -534,13 +562,13 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
         beatParts.push(`【后段走向】${opening.nextBeat.title ? `「${opening.nextBeat.title}」:` : ''}${opening.nextBeat.text.trim()}\n(本段之后的情节走向,供后续回合自然衔接;除非本段情节已推进完毕,否则不要提前跳转到该部分)`)
       }
       beatParts.push('请从本段情节的开头开始演绎:场景环境、在场人物、他们的话语与情绪、正在发生的事件都必须与本段细纲及正文一致,逐段推进本段情节;本段推进完毕后,可自然衔接后段的走向。不要忽略本段中已建立的人物关系与状态。')
-      parts.push(beatParts.join('\n\n'))
+      userParts.push({ label: '剧情回顾与历史消息', content: beatParts.join('\n\n') })
     } else if (opening?.mode === 'custom' && opening.scene?.trim()) {
-      parts.push(`【开场】玩家提供的背景设定:${opening.scene.trim()}\n\n请以此为出发点展开,描写玩家「${playerName}」所处的场景,引入剧情与第一个矛盾。`)
+      userParts.push({ label: '剧情回顾与历史消息', content: `【开场】玩家提供的背景设定:${opening.scene.trim()}\n\n请以此为出发点展开,描写玩家「${playerName}」所处的场景,引入剧情与第一个矛盾。` })
     } else if (opening?.mode === 'ai' && opening.scene?.trim()) {
-      parts.push(`【开场】本局开场设定:${opening.scene.trim()}\n\n请从该设定的场景与氛围出发展开,描写玩家「${playerName}」所处的场景,引入剧情与第一个矛盾。`)
+      userParts.push({ label: '剧情回顾与历史消息', content: `【开场】本局开场设定:${opening.scene.trim()}\n\n请从该设定的场景与氛围出发展开,描写玩家「${playerName}」所处的场景,引入剧情与第一个矛盾。` })
     } else {
-      parts.push(`【开场】故事刚开始,请描写玩家「${playerName}」所处的开场场景,引入剧情与第一个矛盾。`)
+      userParts.push({ label: '剧情回顾与历史消息', content: `【开场】故事刚开始,请描写玩家「${playerName}」所处的开场场景,引入剧情与第一个矛盾。` })
     }
   }
   // 段回注(每 N 回合):按细纲段注入当前段情节 + 段起始原文窗口,防止长局偏离故事线
@@ -556,7 +584,7 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
       reinjectParts.push(`接下来的情节走向(后段${reinjectPlot.nextBeat.title ? `「${reinjectPlot.nextBeat.title}」` : ''}):\n${reinjectPlot.nextBeat.summary}`)
     }
     reinjectParts.push('上述内容是故事线对照参考,帮助你把握本段设定细节与人物动向;玩家自由行动已使剧情偏离故事线时,顺着玩家行动继续演绎,不要生硬跳到原文事件或把窗口里的情节硬接上来;仅在剧情自然走到对应节点时才呼应情节线。')
-    parts.push(reinjectParts.join('\n\n'))
+    userParts.push({ label: '世界设定与剧情轨道', content: reinjectParts.join('\n\n') })
   }
   // 防人设漂移:核心人设复述在 user 尾部(长对话后注意力偏离开头 system 的设定,社区验证
   // 此处重贴可显著降低 OOC/指令衰减);位置放在玩家本轮行动之前,不稀释当前指令的注意力
@@ -565,17 +593,37 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
     ...others.map(c => cardBrief(c, dyn[c.name]))
   ].filter((x): x is string => !!x)
   if (anchors.length > 0) {
-    parts.push(`【人设提醒】再次强调,以下核心角色严格忠于设定,勿 OOC:\n${anchors.map((a, i) => `${i + 1}. ${a}`).join('\n')}`)
+    userParts.push({ label: '角色卡与人设', content: `【人设提醒】再次强调,以下核心角色严格忠于设定,勿 OOC:\n${anchors.map((a, i) => `${i + 1}. ${a}`).join('\n')}` })
   }
   // 开场设定防稀释:非首回合时压缩复述开场背景(首回合已全量注入),世界前提不随对话推移丢失
   if (hasStoryContext && opening?.scene?.trim()) {
-    parts.push(`【开场设定提醒】本局开场背景:${clampText(opening.scene.trim(), 160)}\n(剧情须在此设定的世界与前提下展开,不得偏离)`)
+    userParts.push({ label: '剧情回顾与历史消息', content: `【开场设定提醒】本局开场背景:${clampText(opening.scene.trim(), 160)}\n(剧情须在此设定的世界与前提下展开,不得偏离)` })
   }
   if (choice) {
     // 自由输入的行动不像选项按钮那样贴合剧情走向,需显式声明其最高优先级,
     // 否则容易被前文的全量细纲/回注原文窗口带跑,输出与行动无关的情节
-    parts.push(`【玩家本轮行动】${choice}\n(此行动是下一幕的直接起点:剧情必须具体回应此行动及其后果;除非该行动在当前场景明显不可能成立,否则不得忽略它、不得转向与本行动无关的情节线。若需要衔接前述故事线,应在本行动引起的因果链上自然发生。)`)
+    userParts.push({ label: '玩家本轮行动', content: `【玩家本轮行动】${choice}\n(此行动是下一幕的直接起点:剧情必须具体回应此行动及其后果;除非该行动在当前场景明显不可能成立,否则不得忽略它、不得转向与本行动无关的情节线。若需要衔接前述故事线,应在本行动引起的因果链上自然发生。)` })
   }
 
-  return [system, { role: 'user', content: `${parts.join('\n\n')}\n\n请以此为接续,生成下一段剧情。` }]
+  return [...systemParts, ...userParts.map(p => ({ role: 'user' as const, label: p.label, content: p.content }))]
+}
+
+/** 组装叙事 prompt(系统规则 + 世界 + 人物卡 + 状态 + 摘要 + 历史 + 玩家本轮输入) */
+export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
+  const parts = buildTurnPromptParts(args)
+  const system = parts.filter(p => p.role === 'system').map(p => p.content).join('\n')
+  const user = parts.filter(p => p.role === 'user').map(p => p.content).join('\n\n')
+  return [{ role: 'system', content: system }, { role: 'user', content: `${user}\n\n请以此为接续,生成下一段剧情。` }]
+}
+
+/** 叙事 prompt 输入 token 估算:按统计标签聚合分段字符估算(与真实 usage 有偏差,仅用于构成占比) */
+export function estimateTurnPromptBreakdown(args: TurnPromptArgs): { label: string, tokens: number, pct: number }[] {
+  const parts = buildTurnPromptParts(args)
+  const byLabel = new Map<string, number>()
+  for (const p of parts) {
+    byLabel.set(p.label, (byLabel.get(p.label) ?? 0) + estimateTextTokens(p.content))
+  }
+  const rows = [...byLabel.entries()].map(([label, tokens]) => ({ label, tokens }))
+  const total = rows.reduce((s, r) => s + r.tokens, 0) || 1
+  return rows.map(r => ({ label: r.label, tokens: r.tokens, pct: Math.round((r.tokens / total) * 1000) / 10 }))
 }

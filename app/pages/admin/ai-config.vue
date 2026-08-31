@@ -392,6 +392,9 @@ async function onDelete() {
                 名称
               </th>
               <th class="py-2 pr-3 font-medium">
+                使用状态
+              </th>
+              <th class="py-2 pr-3 font-medium">
                 启用
               </th>
               <th class="py-2 pr-3 font-medium">
@@ -414,7 +417,7 @@ async function onDelete() {
           <tbody>
             <tr v-if="loading">
               <td
-                colspan="7"
+                colspan="8"
                 class="py-6 text-center text-neutral-500"
               >
                 加载中…
@@ -422,7 +425,7 @@ async function onDelete() {
             </tr>
             <tr v-else-if="!rows.length">
               <td
-                colspan="7"
+                colspan="8"
                 class="py-6 text-center text-neutral-500"
               >
                 暂无配置,点击右上角「新建配置」添加第一条(将自动启用)
@@ -436,14 +439,10 @@ async function onDelete() {
               <td class="py-2.5 pr-3">
                 <div class="flex items-center gap-2">
                   <span class="font-medium">{{ c.name }}</span>
-                  <UBadge
-                    v-if="c.active"
-                    size="sm"
-                    color="success"
-                    variant="soft"
-                  >
-                    已启用
-                  </UBadge>
+                </div>
+              </td>
+              <td class="py-2.5 pr-3">
+                <div class="flex flex-col items-start gap-1">
                   <UBadge
                     v-for="b in purposeBadges(c)"
                     :key="b"
@@ -453,6 +452,12 @@ async function onDelete() {
                   >
                     {{ b }}
                   </UBadge>
+                  <span
+                    v-if="purposeBadges(c).length === 0"
+                    class="text-xs text-neutral-400"
+                  >
+                    未使用
+                  </span>
                 </div>
               </td>
               <td class="py-2.5 pr-3">
@@ -507,6 +512,10 @@ async function onDelete() {
               <td class="py-2.5 pr-3">
                 <div class="flex items-center gap-2">
                   <span class="font-medium">环境变量(部署默认)</span>
+                </div>
+              </td>
+              <td class="py-2.5 pr-3">
+                <div class="flex flex-col items-start gap-1">
                   <UBadge
                     v-for="b in envBadges"
                     :key="b"
@@ -516,6 +525,12 @@ async function onDelete() {
                   >
                     {{ b }}
                   </UBadge>
+                  <span
+                    v-if="envBadges.length === 0"
+                    class="text-xs text-neutral-400"
+                  >
+                    未使用
+                  </span>
                 </div>
               </td>
               <td class="py-2.5 pr-3 text-xs text-neutral-400">

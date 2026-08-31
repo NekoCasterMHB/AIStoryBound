@@ -36,7 +36,7 @@ test('normalizeTokenUsage: 别名组内取最大(矛盾字段不采信 0)', () =
 })
 
 test('normalizeTokenUsage: 字符串数字字段也能解析', () => {
-  const u = normalizeTokenUsage({ prompt_tokens: '8000', completion_tokens: '2000', total_tokens: '10000' })
+  const u = normalizeTokenUsage({ prompt_tokens: '8000' as unknown as number, completion_tokens: '2000' as unknown as number, total_tokens: '10000' as unknown as number })
   assert.deepEqual(u, { promptTokens: 8000, completionTokens: 2000, totalTokens: 10000 })
 })
 

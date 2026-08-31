@@ -8,7 +8,7 @@ import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
 import { loadScenePrefs, saveScenePrefs } from '../../utils/scenePrefs'
 import { loadNarrTemp, saveNarrTemp, NARR_TEMP_MIN, NARR_TEMP_MAX, NARR_TEMP_STEP } from '../../utils/narrPrefs'
 import { loadEnabledAiSkillObjects, listInstalledSkills, loadEnabledAiSkills, saveEnabledAiSkills } from '../../utils/aiSkills'
-import { ADULT_CONTENT_POLICY, buildTurnPrompt, cardBrief, effectiveCards, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, REINJECT_CHAPTER_EVERY, REINJECT_WINDOW_CHARS } from '#shared/game'
+import { ADULT_CONTENT_POLICY, buildTurnPrompt, cardBrief, effectiveCards, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, estimateTurnPromptBreakdown, REINJECT_CHAPTER_EVERY, REINJECT_WINDOW_CHARS } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { CharacterDynamicState, GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
 import { getLocalGame, saveLocalGame, syncGameToCloud } from '../../utils/gameStore'
@@ -24,7 +24,7 @@ import { loadAllPluginSpecs } from '../../toy/runtime/adapter-loader'
 import { isAdapterEnabled, DEFAULT_TOY_SETTINGS } from '#shared/toy'
 import type { ToySettings } from '#shared/toy'
 import { describePlugin } from '#shared/plugin'
-import { loadNarrSpeed, saveNarrSpeed, narrSpeedTierOf, NARR_SPEED_TIERS, NARR_SPEED_DEFAULT } from '../../utils/narrSpeed'
+import { loadNarrSpeed, saveNarrSpeed, narrSpeedTierOf, clampNarrCps, NARR_SPEED_TIERS, NARR_SPEED_DEFAULT } from '../../utils/narrSpeed'
 import { loadNarrLength, saveNarrLength, NARR_LENGTH_MIN, NARR_LENGTH_MAX, NARR_LENGTH_STEP } from '../../utils/narrLength'
 import { createNarrParser } from '../../utils/narrStream'
 import { createTypewriter } from '../../utils/typewriter'
@@ -67,8 +67,16 @@ void loadNarrSpeed().then((cps) => {
   narrSpeedLoaded.value = true
 })
 function pickNarrSpeed(cps: number): void {
-  narrSpeed.value = cps
-  if (narrSpeedLoaded.value) void saveNarrSpeed(cps)
+  narrSpeed.value = clampNarrCps(cps)
+  if (narrSpeedLoaded.value) void saveNarrSpeed(clampNarrCps(cps))
+}
+/** 自定义速度输入(数字,回车/按钮应用;即时保存) */
+const narrSpeedCustom = ref('')
+function applyNarrSpeedCustom(): void {
+  const n = Number(narrSpeedCustom.value)
+  if (!Number.isFinite(n) || n <= 0) return
+  pickNarrSpeed(n)
+  narrSpeedCustom.value = ''
 }
 
 // ---- 游戏内设置弹窗(个人中心「模型设置」成人模式往下的游玩偏好项,改动即时保存/新回合生效) ----
@@ -202,6 +210,44 @@ const liveTokens = ref(0)
 const liveSpeed = ref(0)
 let liveStartedAt = 0
 const turnUsage = ref<string | null>(null)
+/** 本回合 token 消耗统计(模态框展示;各阶段真实 usage + 叙事输入细项估算) */
+interface TurnCostPart { label: string, tokens: number }
+interface TurnCostItem { stage: 'narrative' | 'options' | 'desires', label: string, prompt: number, completion: number, total: number, details?: TurnCostPart[] }
+const turnCostReport = ref<TurnCostItem[] | null>(null)
+const costModalOpen = ref(false)
+/** 饼图色板(按序循环取色;与阶段/细项共用,保证图例颜色一致) */
+const PIE_COLORS = ['#60a5fa', '#f472b6', '#fbbf24', '#34d399', '#a78bfa', '#f87171', '#22d3ee', '#fb923c', '#a3e635', '#f472b6', '#2dd4bf', '#c084fc']
+/** 由 token 数值生成 conic-gradient(跳过 ≤0 的扇区;全 0 返回中性色环) */
+function pieGradient(values: number[]): string {
+  const total = values.reduce((s, v) => s + Math.max(0, v), 0)
+  if (total <= 0) return 'conic-gradient(#e5e7eb 0deg 360deg)'
+  let acc = 0
+  const stops: string[] = []
+  values.forEach((v, i) => {
+    if (v <= 0) return
+    const start = (acc / total) * 360
+    acc += v
+    stops.push(`${PIE_COLORS[i % PIE_COLORS.length]} ${start}deg ${(acc / total) * 360}deg`)
+  })
+  return `conic-gradient(${stops.join(',')})`
+}
+/** 阶段消耗饼图:各阶段大项 total */
+const costStageRows = computed(() => (turnCostReport.value ?? []).map(c => ({ label: c.label, value: c.total })))
+const costStageGradient = computed(() => pieGradient(costStageRows.value.map(r => r.value)))
+const costStageTotal = computed(() => costStageRows.value.reduce((s, r) => s + r.value, 0))
+/** 输入构成饼图:叙事细项(估算)+ 正文输出(真实 completion);其余阶段无细项 */
+const costInputRows = computed(() => {
+  const narr = (turnCostReport.value ?? []).find(c => c.stage === 'narrative')
+  if (!narr) return []
+  const rows: { label: string, value: number }[] = (narr.details ?? []).map(d => ({ label: d.label, value: d.tokens }))
+  if (narr.completion > 0) rows.push({ label: '正文(输出)', value: narr.completion })
+  return rows
+})
+const costInputGradient = computed(() => pieGradient(costInputRows.value.map(r => r.value)))
+const costInputTotal = computed(() => costInputRows.value.reduce((s, r) => s + r.value, 0))
+/** 汇总:各阶段真实 total 之和(与 turnUsage 数字同口径) */
+const costGrandTotal = computed(() => (turnCostReport.value ?? []).reduce((s, c) => s + c.total, 0))
+const costPct = (v: number, total: number) => (total > 0 ? Math.round((v / total) * 1000) / 10 : 0)
 const error = ref<string | null>(null)
 const input = ref('')
 const chatRef = ref<HTMLElement | null>(null)
@@ -538,6 +584,14 @@ async function seedDesiresByOpening(): Promise<void> {
   )
   if (!res.ok) return
   void addWorkTokens(game.value?.workId ?? '', res.usage?.totalTokens ?? 0)
+  // 消耗统计:开局性欲初始化大项(首回合,真实 usage;叙事大项稍后覆盖写入)
+  turnCostReport.value = [{
+    stage: 'desires',
+    label: '开局性欲初始化',
+    prompt: res.usage?.promptTokens ?? 0,
+    completion: res.usage?.completionTokens ?? 0,
+    total: res.usage?.totalTokens ?? 0
+  }]
   const desires = { ...(state.value.desires ?? {}) }
   let changed = false
   for (const c of cards.value) {
@@ -644,6 +698,15 @@ async function runOptionsPhase(
 
   const total = narrTokens + (retryTokens + (optRes.usage?.totalTokens ?? 0))
   turnUsage.value = `本回合 ${total.toLocaleString()} tokens`
+  // 消耗统计:追加选项收尾大项(真实 usage,含重试;叙事大项已在叙事成功后写入)
+  const optTotal = retryTokens + (optRes.usage?.totalTokens ?? 0)
+  turnCostReport.value = [...(turnCostReport.value ?? []), {
+    stage: 'options',
+    label: '选项与状态收尾',
+    prompt: optRes.usage?.promptTokens ?? 0,
+    completion: optRes.usage?.completionTokens ?? 0,
+    total: optTotal
+  }]
   persist()
   await savePointNow()
   // 开启「本地存档上云」时,每回合结束自动同步(未登录或失败静默跳过)
@@ -705,6 +768,7 @@ async function sendTurn(choice?: string) {
   failedTurn.value = null
   turnAbort = new AbortController()
   turnUsage.value = null
+  turnCostReport.value = null
   streamDisplay.value = ''
   options.value = []
   liveTokens.value = 0
@@ -785,7 +849,7 @@ async function sendTurn(choice?: string) {
       ? buildBeatReinject()
       : undefined
     // 1) 叙事流式(中继 SSE)
-    const prompt = buildTurnPrompt({
+    const promptArgs = {
       title: work.value?.overlay?.title || '未命名小说',
       genre: work.value?.overlay?.genre,
       summary: work.value?.overlay?.summary,
@@ -816,7 +880,8 @@ async function sendTurn(choice?: string) {
           }
         : undefined,
       reinjectPlot
-    })
+    }
+    const prompt = buildTurnPrompt(promptArgs)
     // 1) 叙事流式(中继 SSE)。失败静默重试一次(HTTP 5xx/网络/超时/空输出):
     //    中途失败时流式可能已上屏半截,重试前 startNarrStream 重建从零开始;
     //    402 余额不足/400 参数错误重试必然复现,直接抛出;玩家取消(CancelledError)不重试
@@ -865,6 +930,23 @@ async function sendTurn(choice?: string) {
     const narrResult = await runNarrative()
     // 游玩消耗累计到作品计量(含失败重试已消耗的部分)
     void addWorkTokens(game.value.workId, narrResult.retryTokens + (narrResult.usage?.totalTokens ?? 0))
+    // 消耗统计:叙事大项(真实 usage,含重试)+ 输入细项(按字符估算);保留首回合欲望大项
+    const narrUsage = narrResult.usage
+    const narrTotal = narrResult.retryTokens + (narrUsage?.totalTokens ?? 0)
+    const narrDetails: TurnCostPart[] = estimateTurnPromptBreakdown(promptArgs).map(d => ({ label: d.label, tokens: d.tokens }))
+    if (narrResult.retryTokens > 0) narrDetails.push({ label: '失败重试', tokens: narrResult.retryTokens })
+    const prior: TurnCostItem[] = (turnCostReport.value ?? [] as TurnCostItem[]).filter(c => c.stage !== 'narrative')
+    turnCostReport.value = [
+      ...prior,
+      {
+        stage: 'narrative',
+        label: '叙事生成(正文流式)',
+        prompt: narrUsage?.promptTokens ?? 0,
+        completion: narrUsage?.completionTokens ?? 0,
+        total: narrTotal,
+        details: narrDetails
+      }
+    ]
     const narratorText = narrResult.narratorText
     const narratorMsg = { id: uuid(), idx: messages.value.length, role: 'narrator', speaker: null, content: narratorText }
     messages.value.push(narratorMsg)
@@ -1087,10 +1169,15 @@ watch([messages, streamDisplay], async () => {
               v-if="streaming && liveTokens > 0"
               class="text-xs text-neutral-400 tabular-nums"
             >≈ {{ liveTokens }} tokens · {{ liveSpeed }}/s</span>
-            <span
-              v-else-if="turnUsage"
-              class="text-xs text-neutral-400"
-            >{{ turnUsage }}</span>
+            <button
+              v-else-if="turnUsage && turnCostReport"
+              type="button"
+              class="text-xs text-neutral-400 tabular-nums underline decoration-dotted underline-offset-2 hover:text-neutral-600 dark:hover:text-neutral-200"
+              title="查看本回合 token 消耗构成"
+              @click="costModalOpen = true"
+            >
+              {{ turnUsage }}
+            </button>
             <UButton
               v-if="cloudSaveEnabled"
               label="同步"
@@ -1595,6 +1682,28 @@ watch([messages, streamDisplay], async () => {
                   当前 {{ narrSpeed }} 字符/秒
                 </span>
               </div>
+              <div class="flex items-center gap-2">
+                <UInput
+                  v-model="narrSpeedCustom"
+                  type="number"
+                  :min="1"
+                  :max="200"
+                  size="sm"
+                  class="w-28"
+                  placeholder="自定义"
+                  @keyup.enter="applyNarrSpeedCustom"
+                />
+                <UButton
+                  size="sm"
+                  variant="soft"
+                  @click="applyNarrSpeedCustom"
+                >
+                  自定义字/秒
+                </UButton>
+                <span class="text-xs text-neutral-500">
+                  1~200,回车或点击应用
+                </span>
+              </div>
             </div>
 
             <!-- 每回合生成字数 -->
@@ -1628,12 +1737,14 @@ watch([messages, streamDisplay], async () => {
               <UTextarea
                 v-model="scenePrefs.prefer"
                 :rows="2"
+                autoresize
                 placeholder="偏好场景,可填写多个,用逗号分隔,留空不生效"
                 class="w-full"
               />
               <UTextarea
                 v-model="scenePrefs.avoid"
                 :rows="2"
+                autoresize
                 placeholder="避免出现的场景,可填写多个,用逗号分隔,留空不生效"
                 class="w-full"
               />
@@ -1656,6 +1767,96 @@ watch([messages, streamDisplay], async () => {
               </div>
             </div>
           </div>
+        </template>
+      </UModal>
+
+      <!-- 本回合 token 消耗统计:点击顶部「本回合 N tokens」打开;阶段真实占比 + 叙事输入构成(估算) -->
+      <UModal
+        :open="costModalOpen"
+        :ui="{ content: 'sm:max-w-md!' }"
+        @update:open="costModalOpen = $event"
+      >
+        <template #title>
+          本回合 token 消耗
+        </template>
+        <template #body>
+          <div
+            v-if="turnCostReport"
+            class="flex flex-col gap-5"
+          >
+            <!-- 阶段消耗:各阶段真实 usage 占比 -->
+            <div class="flex flex-col gap-2">
+              <p class="text-sm font-semibold">
+                阶段消耗
+              </p>
+              <div class="flex items-center gap-4">
+                <div
+                  class="relative h-28 w-28 shrink-0 rounded-full"
+                  :style="{ background: costStageGradient }"
+                >
+                  <div class="absolute inset-3 flex flex-col items-center justify-center rounded-full bg-white dark:bg-neutral-900">
+                    <span class="text-sm font-semibold tabular-nums">{{ costGrandTotal.toLocaleString() }}</span>
+                    <span class="text-[10px] text-neutral-500">tokens</span>
+                  </div>
+                </div>
+                <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <div
+                    v-for="(c, i) in costStageRows"
+                    :key="c.label"
+                    class="flex items-center gap-2 text-xs"
+                  >
+                    <span
+                      class="h-2.5 w-2.5 shrink-0 rounded-full"
+                      :style="{ background: PIE_COLORS[i % PIE_COLORS.length] }"
+                    />
+                    <span class="min-w-0 flex-1 truncate text-neutral-600 dark:text-neutral-300">{{ c.label }}</span>
+                    <span class="shrink-0 tabular-nums text-neutral-500">{{ c.value.toLocaleString() }} · {{ costPct(c.value, costStageTotal) }}%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 输入构成:叙事 prompt 细项(估算)+ 正文输出;回答「为什么几百字对话上万 token」 -->
+            <div
+              v-if="costInputRows.length > 1"
+              class="flex flex-col gap-2"
+            >
+              <p class="text-sm font-semibold">
+                输入构成(估算)
+              </p>
+              <div class="flex items-center gap-4">
+                <div
+                  class="relative h-28 w-28 shrink-0 rounded-full"
+                  :style="{ background: costInputGradient }"
+                >
+                  <div class="absolute inset-3 flex flex-col items-center justify-center rounded-full bg-white dark:bg-neutral-900">
+                    <span class="text-sm font-semibold tabular-nums">{{ costInputTotal.toLocaleString() }}</span>
+                    <span class="text-[10px] text-neutral-500">tokens</span>
+                  </div>
+                </div>
+                <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <div
+                    v-for="(r, i) in costInputRows"
+                    :key="r.label"
+                    class="flex items-center gap-2 text-xs"
+                  >
+                    <span
+                      class="h-2.5 w-2.5 shrink-0 rounded-full"
+                      :style="{ background: PIE_COLORS[i % PIE_COLORS.length] }"
+                    />
+                    <span class="min-w-0 flex-1 truncate text-neutral-600 dark:text-neutral-300">{{ r.label }}</span>
+                    <span class="shrink-0 tabular-nums text-neutral-500">{{ r.value.toLocaleString() }} · {{ costPct(r.value, costInputTotal) }}%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p
+            v-else
+            class="py-4 text-center text-sm text-neutral-400"
+          >
+            本回合无消耗记录
+          </p>
         </template>
       </UModal>
 

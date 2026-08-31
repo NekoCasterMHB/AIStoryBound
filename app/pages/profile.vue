@@ -26,7 +26,7 @@ import type { ToyAdapter, ToySettings } from '#shared/toy'
 import { toyController } from '../toy/api'
 import { listImportedAdapters, loadToySettings, saveToySettings, clearLegacyImportedAdapters } from '../toy/store'
 import { loadAllAdapters, removeImportedAdapter, importAdapterFiles } from '../toy/runtime/adapter-loader'
-import { loadNarrSpeed, saveNarrSpeed, NARR_SPEED_TIERS } from '../utils/narrSpeed'
+import { loadNarrSpeed, saveNarrSpeed, clampNarrCps, NARR_SPEED_TIERS, NARR_SPEED_DEFAULT } from '../utils/narrSpeed'
 import { loadNarrLength, saveNarrLength, NARR_LENGTH_MIN, NARR_LENGTH_MAX, NARR_LENGTH_STEP } from '../utils/narrLength'
 
 useHead({ title: 'AI Word2World · 个人中心' })
@@ -867,8 +867,8 @@ const narrTemp = ref(loadNarrTemp())
 const narrTempTierInfo = computed(() => narrTempTier(narrTemp.value))
 watch(narrTemp, v => saveNarrTemp(v))
 
-/** 叙事速度(IndexedDB 持久化):回合正文流式显示的速率档位,即时保存,新回合生效 */
-const narrSpeed = ref(60)
+/** 叙事速度(IndexedDB 持久化):回合正文流式显示的速率档位,即时保存,新回合生效;支持自定义字符/秒 */
+const narrSpeed = ref(NARR_SPEED_DEFAULT.cps)
 const narrSpeedLoaded = ref(false)
 void loadNarrSpeed().then((cps) => {
   narrSpeed.value = cps
@@ -878,6 +878,14 @@ const narrSpeedTierInfo = computed(() => NARR_SPEED_TIERS.find(t => t.cps === na
 watch(narrSpeed, (v) => {
   if (narrSpeedLoaded.value) void saveNarrSpeed(v)
 })
+/** 自定义速度输入(数字,回车/按钮应用;即时保存) */
+const narrSpeedCustom = ref('')
+function applyNarrSpeedCustom(): void {
+  const n = Number(narrSpeedCustom.value)
+  if (!Number.isFinite(n) || n <= 0) return
+  narrSpeed.value = clampNarrCps(n)
+  narrSpeedCustom.value = ''
+}
 
 /** 每回合生成字数(本地偏好,默认 400 字):回合正文目标篇幅,滑动条即时保存,新回合生效 */
 const narrLength = ref(loadNarrLength())
@@ -1444,6 +1452,28 @@ watch(narrLength, v => saveNarrLength(v))
                 当前 {{ narrSpeed }} 字符/秒
               </span>
             </div>
+            <div class="mt-2 flex items-center gap-2">
+              <UInput
+                v-model="narrSpeedCustom"
+                type="number"
+                :min="1"
+                :max="200"
+                size="sm"
+                class="w-28"
+                placeholder="自定义"
+                @keyup.enter="applyNarrSpeedCustom"
+              />
+              <UButton
+                size="sm"
+                variant="soft"
+                @click="applyNarrSpeedCustom"
+              >
+                自定义字/秒
+              </UButton>
+              <span class="text-xs text-neutral-500">
+                1~200,回车或点击应用
+              </span>
+            </div>
             <div class="mt-2 space-y-1 text-xs text-neutral-400">
               <p
                 v-for="t in NARR_SPEED_TIERS"
@@ -1495,6 +1525,7 @@ watch(narrLength, v => saveNarrLength(v))
                 <UTextarea
                   v-model="scenePrefs.prefer"
                   :rows="3"
+                  autoresize
                   placeholder="留空不生效,可填写多个场景,用逗号分隔"
                   class="w-full"
                 />
@@ -1506,6 +1537,7 @@ watch(narrLength, v => saveNarrLength(v))
                 <UTextarea
                   v-model="scenePrefs.avoid"
                   :rows="3"
+                  autoresize
                   placeholder="留空不生效,可填写多个场景,用逗号分隔"
                   class="w-full"
                 />
