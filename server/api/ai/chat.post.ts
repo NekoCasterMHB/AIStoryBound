@@ -21,7 +21,7 @@ import { getAiConfig } from '../../utils/ai'
 import { buildUpstreamRequest, relaySse, maskApiKey } from '../../utils/ai-relay'
 import { isAiApiFormat, RELAY_TIMEOUT_DEFAULT_MS, RELAY_TIMEOUT_MIN_MS, RELAY_TIMEOUT_MAX_MS } from '../../../shared/ai-config'
 import { aiConfigFingerprint } from '../../utils/ai-fingerprint'
-import { estimateMessagesTokens } from '../../../shared/token-estimate'
+import { billedTokens, estimateMessagesTokens } from '../../../shared/token-estimate'
 import { user as usersTable, aiUsage, aiConfigVerifications } from '../../db/schema'
 import { uuid } from '../../../shared/novel'
 
@@ -180,7 +180,7 @@ export default defineEventHandler(async (event) => {
   if (!relay.userKey) {
     const reserve = reserveTokens
     event.waitUntil(usage.then(async (u) => {
-      const cost = u?.totalTokens ?? 0
+      const cost = billedTokens(u)
       try {
         await db.update(usersTable)
           .set({ aiTokenBalance: sql`MAX(${usersTable.aiTokenBalance} + ${reserve} - ${cost}, 0)` })

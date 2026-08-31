@@ -479,6 +479,8 @@ export interface LocalWork {
   syncStatus: 'local' | 'synced' | 'dirty'
   /** 生成消耗的平台 token 总量(展示用;AI 配置走用户 key 时为 0) */
   tokensUsed?: number
+  /** 来源云端生成任务 id(云端成书手动下载安装时写入;用于判定"该任务是否已安装",防重复落库) */
+  sourceTaskId?: string
   /** 生成产物(entities/conflicts/overlay 一起生成,一起保存) */
   entities?: WorldEntities
   conflicts?: EntityConflict[]

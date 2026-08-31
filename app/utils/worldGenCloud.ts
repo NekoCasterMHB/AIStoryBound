@@ -3,7 +3,7 @@
 // 服务端负责全部 AI 调用(Workflows),本模块只做传输、进度展示与结果安装;
 // 自建 key 配置随上传表单上送云端加密暂存(任务结束即删),任务执行期间无需客户端在线。
 import type { WorldCacheHit, WorldGenMode, WorldGenTaskDTO } from '#shared/world-gen-task'
-import { saveWork } from './worldGen'
+import { saveWork, getWorkBySourceTask } from './worldGen'
 import { importWorkFromBytes } from './shareZip'
 import type { LocalWork } from '#shared/novel'
 
@@ -127,11 +127,28 @@ export async function pollWorldGenTask(
   }
 }
 
-/** 下载成书 zip 并安装进本地书架(IndexedDB works);返回新作品 */
-export async function downloadAndInstallWorldTask(task: WorldGenTaskDTO): Promise<LocalWork> {
+export interface InstallOptions {
+  /** 本地已有同一任务的作品时由调用方弹确认框决定是否覆盖;未传则静默返回已存在作品(不重复落库) */
+  onDuplicate?: (existing: LocalWork) => Promise<boolean>
+}
+
+/**
+ * 下载成书 zip 并安装进本地书架(IndexedDB works);返回新作品。
+ * 同一任务只允许落一本:先按 sourceTaskId 查已安装作品,已存在则按调用方意愿覆盖或跳过,
+ * 防止生成页/书架页/多标签页对同一任务重复安装出多本一样的书。
+ */
+export async function downloadAndInstallWorldTask(task: WorldGenTaskDTO, opts?: InstallOptions): Promise<LocalWork> {
+  const existing = await getWorkBySourceTask(task.id)
+  if (existing) {
+    if (!opts?.onDuplicate) return existing
+    const overwrite = await opts.onDuplicate(existing)
+    if (!overwrite) return existing
+  }
   const url = task.downloadUrl ?? `${WORLD_GEN_TASKS_URL}/${task.id}/download`
   const buf = await $fetch<ArrayBuffer>(url, { responseType: 'arrayBuffer' })
   const work = await importWorkFromBytes(new Uint8Array(buf))
+  if (existing) work.id = existing.id // 覆盖:保留原记录 id,用新内容替换,书架不新增一条
+  work.sourceTaskId = task.id
   await saveWork(work)
   return work
 }

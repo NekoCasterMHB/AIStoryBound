@@ -34,3 +34,112 @@ export function estimateMessagesTokens(messages: { role: string, content: string
   for (const m of messages) sum += estimateTextTokens(m.content ?? '')
   return sum
 }
+
+/** 上游 SSE / 非流式 usage 的常见字段别名(OpenAI chat + Anthropic/Responses) */
+export interface RawModelUsage {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  input_tokens?: number
+  output_tokens?: number
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+}
+
+/** 归一化后的用量(扣费与展示都用这三项) */
+export interface NormalizedTokenUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
+function nonNegInt(v: unknown): number {
+  // 数字或数字字符串(部分网关把 usage 字段当字符串返回)都接受
+  const n = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN)
+  if (!Number.isFinite(n)) return 0
+  return Math.max(0, Math.round(n))
+}
+
+/**
+ * 把上游 usage 收成 prompt/completion/total。
+ * 网关偶尔把 total_tokens 报成只含一边,或用 input_tokens/output_tokens:
+ * total 取 reported 与 prompt+completion 的较大值,避免漏计输入或输出。
+ */
+export function normalizeTokenUsage(raw: RawModelUsage | null | undefined): NormalizedTokenUsage {
+  if (!raw) return { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+  const promptTokens = Math.max(
+    nonNegInt(raw.promptTokens),
+    nonNegInt(raw.prompt_tokens),
+    nonNegInt(raw.input_tokens)
+  )
+  const completionTokens = Math.max(
+    nonNegInt(raw.completionTokens),
+    nonNegInt(raw.completion_tokens),
+    nonNegInt(raw.output_tokens)
+  )
+  const reportedTotal = Math.max(nonNegInt(raw.totalTokens), nonNegInt(raw.total_tokens))
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: Math.max(reportedTotal, promptTokens + completionTokens)
+  }
+}
+
+/** 跨 SSE 分片合并:各字段取更大值(第一帧常只有 prompt,流尾才有 completion) */
+export function mergeTokenUsage(
+  a: { promptTokens?: number, completionTokens?: number, totalTokens?: number } | undefined,
+  b: { promptTokens?: number, completionTokens?: number, totalTokens?: number }
+): NormalizedTokenUsage {
+  const promptTokens = Math.max(a?.promptTokens ?? 0, b.promptTokens ?? 0)
+  const completionTokens = Math.max(a?.completionTokens ?? 0, b.completionTokens ?? 0)
+  const totalTokens = Math.max(a?.totalTokens ?? 0, b.totalTokens ?? 0, promptTokens + completionTokens)
+  return { promptTokens, completionTokens, totalTokens }
+}
+
+/** 实际扣费/入账 token 数:优先 total,缺省用 prompt+completion */
+export function billedTokens(usage: { promptTokens?: number, completionTokens?: number, totalTokens?: number } | null | undefined): number {
+  if (!usage) return 0
+  const total = nonNegInt(usage.totalTokens)
+  const sum = nonNegInt(usage.promptTokens) + nonNegInt(usage.completionTokens)
+  return total || sum
+}
+
+/**
+ * 流结束时定稿。无 usage 则按 messages+输出估算;
+ * 只报了一边(prompt=0 或 completion=0)时用估算补缺,再让 total ≥ prompt+completion。
+ */
+export function finalizeStreamUsage(
+  usage: { promptTokens?: number, completionTokens?: number, totalTokens?: number } | undefined,
+  messages: { role: string, content: string }[],
+  outputText: string
+): NormalizedTokenUsage {
+  if (!usage || billedTokens(usage) <= 0) {
+    const promptTokens = estimateMessagesTokens(messages)
+    const completionTokens = estimateTextTokens(outputText)
+    return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens }
+  }
+  const reportedPrompt = nonNegInt(usage.promptTokens)
+  const reportedCompletion = nonNegInt(usage.completionTokens)
+  let totalTokens = nonNegInt(usage.totalTokens)
+  const promptTokens = reportedPrompt > 0
+    ? reportedPrompt
+    : (messages.length > 0 ? estimateMessagesTokens(messages) : 0)
+  const completionTokens = reportedCompletion > 0
+    ? reportedCompletion
+    : (outputText ? estimateTextTokens(outputText) : 0)
+  if (reportedPrompt > 0 && reportedCompletion > 0) {
+    // 两边都是上游实数:total 至少等于两者之和
+    totalTokens = Math.max(totalTokens, reportedPrompt + reportedCompletion)
+  } else if (reportedPrompt <= 0 && reportedCompletion > 0 && totalTokens <= reportedCompletion) {
+    // total 看起来只含输出,把估算输入加进扣费
+    totalTokens = promptTokens + reportedCompletion
+  } else if (reportedCompletion <= 0 && reportedPrompt > 0 && totalTokens <= reportedPrompt) {
+    totalTokens = reportedPrompt + completionTokens
+  } else if (reportedPrompt <= 0 && reportedCompletion <= 0 && totalTokens > 0 && promptTokens > 0) {
+    // 只有 total、没有拆分字段:仅当 total 不超过输出估算(即 total 不含输入)时才补输入,
+    // 避免把「已含输入的正确 total」再算一遍输入(小输入大输出的聊天调用尤需保守)
+    if (completionTokens > 0 && totalTokens <= completionTokens + 32) totalTokens = promptTokens + totalTokens
+  }
+  return { promptTokens, completionTokens, totalTokens }
+}

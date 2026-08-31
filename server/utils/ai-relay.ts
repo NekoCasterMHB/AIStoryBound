@@ -6,7 +6,14 @@
 // 浏览器端 aiRelay 只认 OpenAI 兼容 SSE,因此上游差异在此收敛。
 import type { AiApiFormat } from '../../shared/ai-config'
 import type { TokenUsage } from '../../shared/novel'
-import { estimateMessagesTokens, estimateTextTokens } from '../../shared/token-estimate'
+import {
+  estimateMessagesTokens,
+  estimateTextTokens,
+  finalizeStreamUsage,
+  mergeTokenUsage,
+  normalizeTokenUsage,
+  type NormalizedTokenUsage
+} from '../../shared/token-estimate'
 
 export interface RelayTarget {
   format: AiApiFormat
@@ -184,15 +191,15 @@ export async function relaySse(
 ): Promise<RelayStreamResult> {
   const reader = upstream.body?.getReader()
 
-  // Chat Completions:原样透传字节,同时按行解析流尾 usage
+  // Chat Completions:原样透传字节,同时按行解析 usage(跨分片合并,不锁第一帧)
   if (cfg.format === 'chat' && reader) {
     let usagePromiseResolve: (u: TokenUsage) => void = () => {}
     const usage = new Promise<TokenUsage>((resolve) => {
       usagePromiseResolve = resolve
     })
-    let usageResolved = false
     /** 已转发的输出文本(取消/无 usage 时估算兜底) */
     let outputText = ''
+    let mergedUsage: NormalizedTokenUsage | undefined
     const sse = new ReadableStream<Uint8Array>({
       async start(controller) {
         if (!reader) {
@@ -217,19 +224,13 @@ export async function relaySse(
               try {
                 const d = JSON.parse(json) as {
                   choices?: { delta?: { content?: string } }[]
-                  usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
+                  usage?: Record<string, unknown>
                 }
-                if (d.usage?.total_tokens && !usageResolved) {
-                  usageResolved = true
-                  usagePromiseResolve({
-                    promptTokens: d.usage.prompt_tokens ?? 0,
-                    completionTokens: d.usage.completion_tokens ?? 0,
-                    totalTokens: d.usage.total_tokens
-                  })
-                } else if (!usageResolved) {
-                  const delta = d.choices?.[0]?.delta?.content
-                  if (typeof delta === 'string' && delta) outputText += delta
+                if (d.usage) {
+                  mergedUsage = mergeTokenUsage(mergedUsage, normalizeTokenUsage(d.usage))
                 }
+                const delta = d.choices?.[0]?.delta?.content
+                if (typeof delta === 'string' && delta) outputText += delta
               } catch {
                 // 非 JSON 分片忽略
               }
@@ -239,7 +240,7 @@ export async function relaySse(
         } catch (e) {
           controller.error(e)
         } finally {
-          if (!usageResolved) usagePromiseResolve(estimateUsage(messages, outputText))
+          usagePromiseResolve(finalizeStreamUsage(mergedUsage, messages, outputText))
         }
       }
     })
@@ -271,11 +272,14 @@ export async function relaySse(
         done = true
         if (prompt > 0 || completion > 0) emit(emitUsage(prompt, completion))
         emit('data: [DONE]\n\n')
-        // 上游事件带 usage 用真实值;缺省(0/0)按已转发内容估算兜底
-        const u = prompt > 0 || completion > 0
-          ? { promptTokens: prompt, completionTokens: completion, totalTokens: prompt + completion }
-          : estimateUsage(messages, outputText)
-        usageResolve(u)
+        // 上游事件带 usage 用真实值;缺省(0/0)按已转发内容估算兜底;一边缺失时补估算
+        usageResolve(finalizeStreamUsage(
+          prompt > 0 || completion > 0
+            ? { promptTokens: prompt, completionTokens: completion, totalTokens: prompt + completion }
+            : undefined,
+          messages,
+          outputText
+        ))
       }
       try {
         for (;;) {

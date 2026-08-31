@@ -60,6 +60,10 @@ const { requireLogin } = useAuthModal()
 
 const resultWork = ref<LocalWork | null>(null)
 
+/** 云端任务已完成但尚未安装的快照(完成页「下载安装并进入」用;本地生成/拉取缓存不经过) */
+const completedCloudTask = ref<WorldGenTaskDTO | null>(null)
+const installingCloudWork = ref(false)
+
 // ---- 世界详情弹窗(完成页查看生成产物/编辑概览元数据) ----
 const worldDetailOpen = ref(false)
 const worldDetailWorkId = ref('')
@@ -298,14 +302,15 @@ async function startCloudGeneration() {
     if (final.status !== 'completed') {
       throw new Error(final.error || (final.status === 'cancelled' ? '任务已取消' : '云端生成任务失败'))
     }
-    // 完成即自动下载安装进本地书架
-    const work = await downloadAndInstallWorldTask(final)
     if (seq !== runSeq) return
+    // 云端任务已完成:不自动安装,由用户点击「下载安装并进入」手动落库。
+    // 若生成页与书架页对同一任务各自自动安装,会各落一条出现两本一样的书,故统一收敛到手动安装。
+    completedCloudTask.value = final
     genState.value.phase = 'done'
     genState.value.progress = null
-    genState.value.resultId = work.id
-    genState.value.tokensUsed = work.tokensUsed ?? final.tokensUsed
-    resultWork.value = work
+    genState.value.resultId = null
+    genState.value.tokensUsed = final.tokensUsed
+    resultWork.value = null
     abortCtrl.value = null
     lastFailedGen.value = null
     await clearExtractCache().catch(() => { /* 清缓存失败不影响结果展示 */ })
@@ -349,6 +354,58 @@ async function startPullCached(hit: WorldCacheHit) {
     })
   } finally {
     pullingCached.value = false
+  }
+}
+
+// ---- 完成页「下载安装并进入」:手动落库后跳选角页;已装过同一任务则提示是否覆盖 ----
+const overwriteOpen = ref(false)
+const overwriteTarget = ref<LocalWork | null>(null)
+let overwriteResolve: ((overwrite: boolean) => void) | null = null
+
+/** 已存在同一任务的作品:弹确认框,resolve 用户是否覆盖 */
+function askOverwriteCloudWork(existing: LocalWork): Promise<boolean> {
+  return new Promise((resolve) => {
+    overwriteTarget.value = existing
+    overwriteResolve = resolve
+    overwriteOpen.value = true
+  })
+}
+
+function onOverwriteConfirm(overwrite: boolean) {
+  overwriteOpen.value = false
+  overwriteResolve?.(overwrite)
+  overwriteResolve = null
+  overwriteTarget.value = null
+}
+
+async function installCompletedCloudTask() {
+  const task = completedCloudTask.value
+  if (!task || installingCloudWork.value) return
+  const seq = ++runSeq
+  installingCloudWork.value = true
+  try {
+    const work = await downloadAndInstallWorldTask(task, {
+      onDuplicate: askOverwriteCloudWork
+    })
+    if (seq !== runSeq) return
+    completedCloudTask.value = null
+    genState.value.phase = 'done'
+    genState.value.progress = null
+    genState.value.resultId = work.id
+    genState.value.tokensUsed = work.tokensUsed ?? task.tokensUsed
+    resultWork.value = work
+    lastFailedGen.value = null
+    await navigateTo(`/play/${work.id}`)
+  } catch (e) {
+    if (seq !== runSeq) return
+    toast.add({
+      color: 'error',
+      icon: 'i-lucide-triangle-alert',
+      title: '下载安装失败',
+      description: e instanceof Error ? e.message : String(e)
+    })
+  } finally {
+    installingCloudWork.value = false
   }
 }
 
@@ -1200,7 +1257,7 @@ const features = [
               v-else
               class="mt-1 text-neutral-400"
             >
-              暂无告警。若进度停在 15% 且估算 tokens 一直为 0,多半是上游请求尚未返回或被拒绝。
+              暂无告警。
             </p>
           </div>
         </div>
@@ -1217,7 +1274,12 @@ const features = [
             />
           </div>
           <p class="mt-5 text-lg font-semibold text-highlighted">
-            《{{ genState.title }}》世界已生成
+            <template v-if="completedCloudTask">
+              {{ installingCloudWork ? '正在下载安装…' : `《${genState.title}》云端生成已完成` }}
+            </template>
+            <template v-else>
+              《{{ genState.title }}》世界已生成
+            </template>
           </p>
           <div class="mt-3 flex flex-wrap items-center justify-center gap-2 text-xs">
             <span
@@ -1306,32 +1368,54 @@ const features = [
             </ol>
           </details>
           <div class="mt-8 flex flex-wrap justify-center gap-3">
-            <UButton
-              color="primary"
-              size="lg"
-              icon="i-lucide-arrow-right"
-              @click="navigateTo(`/play/${genState.resultId}`)"
-            >
-              选择角色进入故事
-            </UButton>
-            <UButton
-              color="neutral"
-              size="lg"
-              variant="outline"
-              icon="i-lucide-globe"
-              @click="openWorldDetail(genState.resultId!)"
-            >
-              查看世界详情
-            </UButton>
-            <UButton
-              color="neutral"
-              size="lg"
-              variant="outline"
-              icon="i-lucide-library"
-              to="/works"
-            >
-              返回书架
-            </UButton>
+            <template v-if="completedCloudTask">
+              <UButton
+                color="primary"
+                size="lg"
+                icon="i-lucide-download"
+                :loading="installingCloudWork"
+                @click="installCompletedCloudTask"
+              >
+                {{ installingCloudWork ? '正在下载安装…' : '下载安装并进入' }}
+              </UButton>
+              <UButton
+                color="neutral"
+                size="lg"
+                variant="outline"
+                icon="i-lucide-library"
+                to="/works"
+              >
+                返回书架
+              </UButton>
+            </template>
+            <template v-else>
+              <UButton
+                color="primary"
+                size="lg"
+                icon="i-lucide-arrow-right"
+                @click="navigateTo(`/play/${genState.resultId}`)"
+              >
+                选择角色进入故事
+              </UButton>
+              <UButton
+                color="neutral"
+                size="lg"
+                variant="outline"
+                icon="i-lucide-globe"
+                @click="openWorldDetail(genState.resultId!)"
+              >
+                查看世界详情
+              </UButton>
+              <UButton
+                color="neutral"
+                size="lg"
+                variant="outline"
+                icon="i-lucide-library"
+                to="/works"
+              >
+                返回书架
+              </UButton>
+            </template>
           </div>
         </div>
 
@@ -1456,5 +1540,35 @@ const features = [
       v-model:open="worldDetailOpen"
       :work-id="worldDetailWorkId"
     />
+
+    <!-- 手动下载安装时本地已有同一任务的作品:确认是否覆盖(不覆盖则不重复添加) -->
+    <UModal
+      v-model:open="overwriteOpen"
+      title="已安装过该任务"
+      description="本地已有同一云端任务的成书"
+    >
+      <template #body>
+        <p class="text-sm text-neutral-600 dark:text-neutral-300">
+          本地已有《{{ overwriteTarget?.title }}》,来源与本次下载为同一云端任务。
+          是否用最新内容覆盖它?选择「保留现有」则跳过下载,不重复添加。
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="保留现有"
+            color="neutral"
+            variant="outline"
+            @click="onOverwriteConfirm(false)"
+          />
+          <UButton
+            label="覆盖"
+            icon="i-lucide-refresh-cw"
+            color="primary"
+            @click="onOverwriteConfirm(true)"
+          />
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

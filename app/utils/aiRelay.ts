@@ -3,7 +3,13 @@
 // - aiChat: 流式(回合叙事等),onDelta 逐片回调,返回总 usage
 // - aiChatJson: 请求 json:true,累积所有 delta 后抽取 JSON(生成管线/选项结构化用)
 import { extractJson } from '#shared/json'
-import { estimateMessagesTokens, estimateTextTokens } from '#shared/token-estimate'
+import {
+  estimateMessagesTokens,
+  estimateTextTokens,
+  finalizeStreamUsage,
+  mergeTokenUsage,
+  normalizeTokenUsage
+} from '#shared/token-estimate'
 import { getActiveRelayConfig } from './aiConfigStore'
 
 export interface RelayedUsage {
@@ -70,13 +76,13 @@ interface UpstreamDelta {
   reasoning_content?: string
 }
 
-function parseUpstreamChunk(json: string): { delta?: UpstreamDelta, usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number } } | null {
+function parseUpstreamChunk(json: string): { delta?: UpstreamDelta, usage?: RelayedUsage } | null {
   try {
     const d = JSON.parse(json) as {
       choices?: { delta?: UpstreamDelta }[]
-      usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }
+      usage?: Record<string, unknown>
     }
-    return { delta: d.choices?.[0]?.delta, usage: d.usage }
+    return { delta: d.choices?.[0]?.delta, usage: d.usage ? normalizeTokenUsage(d.usage) : undefined }
   } catch {
     return null
   }
@@ -133,6 +139,7 @@ export async function aiChat(
     }
 
     let usage: RelayedUsage | undefined
+    let outputText = ''
     try {
       await readSseDataLines(res, (json) => {
         const chunk = parseUpstreamChunk(json)
@@ -140,13 +147,16 @@ export async function aiChat(
         const delta = chunk.delta
         // 正文增量优先;content 为空但 reasoning_content 有内容时兜底(推理模型场景)
         const text = delta?.content || delta?.reasoning_content
-        if (text) handlers.onDelta?.(text)
+        if (text) {
+          outputText += text
+          handlers.onDelta?.(text)
+        }
         if (chunk.usage) {
-          usage = {
-            promptTokens: chunk.usage.prompt_tokens,
-            completionTokens: chunk.usage.completion_tokens,
-            totalTokens: chunk.usage.total_tokens
-          }
+          usage = mergeTokenUsage(usage, {
+            promptTokens: chunk.usage.promptTokens ?? 0,
+            completionTokens: chunk.usage.completionTokens ?? 0,
+            totalTokens: chunk.usage.totalTokens ?? 0
+          })
           handlers.onUsage?.(usage)
         }
       })
@@ -155,6 +165,8 @@ export async function aiChat(
       if ((e as Error)?.name === 'AbortError') throw timeoutError()
       throw e
     }
+    usage = finalizeStreamUsage(usage, messages, outputText)
+    handlers.onUsage?.(usage)
     return { usage, ok: true }
   } finally {
     clearTimeout(timer)

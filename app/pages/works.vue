@@ -366,11 +366,9 @@ async function onCardsSaved() {
   toast.add({ title: '角色卡已更新', color: 'success' })
 }
 
-// ---- 云端生成任务(进度条轮询;完成自动下载安装进本地书架) ----
+// ---- 云端生成任务(进度条轮询;安装由用户手动点击,防同一任务被多处自动安装出重复成书) ----
 const cloudTasks = ref<WorldGenTaskDTO[]>([])
 const cloudTasksLoaded = ref(false)
-/** 已自动安装过的任务 id(防轮询期间重复下载) */
-const installedTaskIds = new Set<string>()
 let cloudPollTimer: ReturnType<typeof setInterval> | null = null
 
 const hasActiveCloudTasks = computed(() =>
@@ -378,36 +376,43 @@ const hasActiveCloudTasks = computed(() =>
 
 async function loadCloudTasks() {
   try {
-    const prev = new Map(cloudTasks.value.map(t => [t.id, t.status]))
     cloudTasks.value = await fetchWorldGenTasks()
     cloudTasksLoaded.value = true
-    // 轮询期间发现有任务从进行中转为完成:自动下载安装进书架
-    for (const t of cloudTasks.value) {
-      const before = prev.get(t.id)
-      if (t.status === 'completed' && before && before !== 'completed' && !installedTaskIds.has(t.id)) {
-        installedTaskIds.add(t.id)
-        void installCloudTask(t)
-      }
-    }
   } catch {
     // 未登录/网络失败:静默(书架本身要求登录,此处仅容错)
   }
 }
 
-/** 下载成书 zip 并安装进本地书架(完成后自动触发 + 卡片按钮手动触发共用) */
+/** 下载成书 zip 并安装进本地书架(仅任务卡「下载安装」按钮手动触发;已装过同一任务则确认是否覆盖) */
 const installingTaskId = ref<string | null>(null)
+/** 本次下载是否命中已安装作品及用户选择:null=首次安装,true=覆盖,false=保留现有 */
+let duplicateDecision: boolean | null = null
 
 async function installCloudTask(t: WorldGenTaskDTO) {
   if (installingTaskId.value) return
   installingTaskId.value = t.id
+  duplicateDecision = null
   try {
-    const work = await downloadAndInstallWorldTask(t)
+    const work = await downloadAndInstallWorldTask(t, {
+      onDuplicate: async (existing) => {
+        const overwrite = await askOverwriteCloudTask(existing)
+        duplicateDecision = overwrite
+        return overwrite
+      }
+    })
     await refreshLocal()
-    toast.add({ title: '云端世界已安装', description: `《${work.title}》已加入本地书架`, color: 'success' })
+    if (duplicateDecision === null) {
+      toast.add({ title: '云端世界已安装', description: `《${work.title}》已加入本地书架`, color: 'success' })
+    } else if (duplicateDecision) {
+      toast.add({ title: '已覆盖更新', description: `《${work.title}》已用最新内容覆盖`, color: 'success' })
+    } else {
+      toast.add({ title: '已跳过', description: '保留本地已有作品,未重复添加', color: 'neutral' })
+    }
   } catch (e) {
     toast.add({ title: '下载安装失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
   } finally {
     installingTaskId.value = null
+    duplicateDecision = null
   }
 }
 
@@ -418,6 +423,26 @@ async function cancelCloudTask(t: WorldGenTaskDTO) {
   } catch (e) {
     toast.add({ title: '操作失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
   }
+}
+
+// ---- 手动下载安装命中已安装作品:确认是否覆盖(不覆盖则保留现有,不重复添加) ----
+const overwriteOpen = ref(false)
+const overwriteTarget = ref<LocalWork | null>(null)
+let overwriteResolve: ((overwrite: boolean) => void) | null = null
+
+function askOverwriteCloudTask(existing: LocalWork): Promise<boolean> {
+  return new Promise((resolve) => {
+    overwriteTarget.value = existing
+    overwriteResolve = resolve
+    overwriteOpen.value = true
+  })
+}
+
+function onOverwriteConfirm(overwrite: boolean) {
+  overwriteOpen.value = false
+  overwriteResolve?.(overwrite)
+  overwriteResolve = null
+  overwriteTarget.value = null
 }
 
 /** 继续暂停中的任务(充值后手动恢复;已完成单元自动复用,不重复扣费) */
@@ -1294,6 +1319,36 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
             icon="i-lucide-trash-2"
             color="error"
             @click="confirmDeleteWork"
+          />
+        </div>
+      </template>
+    </UModal>
+
+    <!-- 手动下载安装命中已安装作品:确认是否覆盖 -->
+    <UModal
+      v-model:open="overwriteOpen"
+      title="已安装过该任务"
+      description="本地已有同一云端任务的成书"
+    >
+      <template #body>
+        <p class="text-sm text-neutral-600 dark:text-neutral-300">
+          本地已有《{{ overwriteTarget?.title }}》,来源与本次下载为同一云端任务。
+          是否用最新内容覆盖它?选择「保留现有」则跳过下载,不重复添加。
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="保留现有"
+            color="neutral"
+            variant="outline"
+            @click="onOverwriteConfirm(false)"
+          />
+          <UButton
+            label="覆盖"
+            icon="i-lucide-refresh-cw"
+            color="primary"
+            @click="onOverwriteConfirm(true)"
           />
         </div>
       </template>

@@ -16,6 +16,7 @@ import { parseNovelBytes } from '../server/utils/novel-parser'
 import { buildUpstreamRequest } from '../server/utils/ai-relay'
 import type { RelayTarget } from '../server/utils/ai-relay'
 import { extractJson } from '../shared/json'
+import { billedTokens, finalizeStreamUsage, mergeTokenUsage, normalizeTokenUsage } from '../shared/token-estimate'
 import type { ChapterExtraction, ChapterSegment, EntityConflict, StoryBeat, WorldEntities, WorldOverlay } from '../shared/novel'
 import {
   assembleStoryline, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
@@ -128,7 +129,7 @@ async function callAI(
   const decoder = new TextDecoder()
   let buf = ''
   let content = ''
-  let totalTokens = 0
+  let mergedUsage: ReturnType<typeof normalizeTokenUsage> | undefined
   let done = false
   while (!done) {
     const read = await reader.read()
@@ -149,7 +150,7 @@ async function callAI(
         const delta = chunk.choices?.[0]?.delta?.content
         if (typeof delta === 'string' && delta) content += delta
         const u = chunk.usage
-        if (u) totalTokens = u.total_tokens ?? (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0)
+        if (u) mergedUsage = mergeTokenUsage(mergedUsage, normalizeTokenUsage(u))
       } catch {
         // 跳过无法解析的分片(心跳/注释行等)
       }
@@ -160,7 +161,7 @@ async function callAI(
     // 偶发非 JSON 输出:按瞬时错误处理(交由调用方重试)
     throw new Error('AI 返回非 JSON,已按失败处理')
   }
-  return { data, totalTokens }
+  return { data, totalTokens: billedTokens(finalizeStreamUsage(mergedUsage, messages, content)) }
 }
 
 /** 并发池:fn 抛错记为该单元失败(调用方决定跳过或中止) */

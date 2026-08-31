@@ -610,6 +610,13 @@ export async function getWork(id: string): Promise<LocalWork | null> {
   return (await db.table(STORE_WORKS).get(id)) ?? null
 }
 
+/** 按来源云端任务 id 查已安装作品(手动下载时判定"该任务是否已装过",防同一任务重复落库) */
+export async function getWorkBySourceTask(taskId: string): Promise<LocalWork | null> {
+  if (typeof indexedDB === 'undefined' || !taskId) return null
+  const all = await db.table(STORE_WORKS).toArray()
+  return all.find(w => w.sourceTaskId === taskId) ?? null
+}
+
 export async function saveWork(work: LocalWork): Promise<void> {
   if (typeof indexedDB === 'undefined') return
   await db.table(STORE_WORKS).put(JSON.parse(JSON.stringify(work)))

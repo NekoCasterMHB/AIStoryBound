@@ -32,6 +32,7 @@ import {
 } from '../../shared/world-build'
 import type { ExtractUnit, WorldLocalSummary } from '../../shared/world-build'
 import type { WorldGenMode, WorldGenStageDetail } from '../../shared/world-gen-task'
+import { billedTokens } from '../../shared/token-estimate'
 import { parseNovelBytes } from './novel-parser'
 
 /** 单本允许的最大提取失败率(超过则中止;与浏览器端 MAX_FAIL_RATIO 一致) */
@@ -159,7 +160,7 @@ export function parseStageDetail(raw: string | null): ExtendedStageDetail {
  * 扣费必须先于调用方的结果落库:余额不足时该次调用结果不计入,续跑会重跑该单元并重新扣费。
  */
 export async function recordTaskUsage(ctx: TaskRef, task: WorldGenTaskRow, usage: TokenUsage): Promise<void> {
-  const tokens = Math.max(0, Math.round(usage.totalTokens ?? 0))
+  const tokens = billedTokens(usage)
   if (tokens <= 0) return
   if (task.keySource === 'platform' && task.reserveTaken === 0) {
     const claimed = await ctx.db.update(usersTable)
@@ -499,12 +500,13 @@ export async function extractUnitAt(ctx: WorldGenCtx, plan: UnitPlan, index: num
       const extraction = normalizeExtraction(data)
       // 先扣费再落单元结果:余额不足抛出时本单元不落库,续跑会重跑该单元并重新扣费,不漏账
       await recordTaskUsage(ctx, task, usage)
+      const unitTokens = billedTokens(usage)
       await ctx.db.insert(worldGenUnits)
-        .values({ taskId: ctx.taskId, unitIndex: index, result: JSON.stringify(extraction), tokens: Math.max(0, Math.round(usage.totalTokens ?? 0)) })
+        .values({ taskId: ctx.taskId, unitIndex: index, result: JSON.stringify(extraction), tokens: unitTokens })
         .onConflictDoNothing()
         .run()
       await bumpExtractProgress(ctx, plan.units.length)
-      return { ok: true, tokens: Math.max(0, Math.round(usage.totalTokens ?? 0)) }
+      return { ok: true, tokens: unitTokens }
     } catch (e) {
       // 余额不足为致命错误:直接终止任务(带明确消息),不做单元级重试
       if (e instanceof InsufficientTokensError) throw e
