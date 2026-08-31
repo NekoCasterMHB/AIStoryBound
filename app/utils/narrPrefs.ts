@@ -1,5 +1,5 @@
 // app/utils/narrPrefs.ts
-// 叙事温度(本地偏好,默认 1.2):回合正文生成的随机性/文风多样性档位。
+// 叙事温度(本地偏好,默认 1.0):回合正文生成的随机性/文风多样性档位。
 // 范围 0~2.0、步进 0.1(与 DeepSeek 官方 temperature 参数范围一致);
 // 档位划分依据官方参数建议(创意写作/诗歌推荐 temperature=1.5)与社区常用区间。
 // 设置入口:个人中心滑动条(即时保存);游戏页每回合读入注入叙事调用。
@@ -8,7 +8,7 @@ const KEY = 'narr-temperature'
 export const NARR_TEMP_MIN = 0
 export const NARR_TEMP_MAX = 2.0
 export const NARR_TEMP_STEP = 0.1
-export const NARR_TEMP_DEFAULT = 1.2
+export const NARR_TEMP_DEFAULT = 1.0
 
 export interface TempTier {
   /** 档位名 */
@@ -21,8 +21,8 @@ export interface TempTier {
 
 export const NARR_TEMP_TIERS: TempTier[] = [
   { label: '稳定', range: [0, 0.6], desc: '严格遵循人物卡与设定,文风收敛,叙事保守' },
-  { label: '均衡', range: [0.7, 1.0], desc: '兼顾文笔与稳定性,叙事平稳' },
-  { label: '生动', range: [1.1, 1.5], desc: '文笔更丰富、角色更鲜活,偶有情节跳脱(默认档 1.2)' },
+  { label: '均衡', range: [0.7, 1.0], desc: '兼顾文笔与稳定性,叙事平稳(默认档 1.0)' },
+  { label: '生动', range: [1.1, 1.5], desc: '文笔更丰富、角色更鲜活,偶有情节跳脱' },
   { label: '创意', range: [1.6, 2.0], desc: '官方创意写作推荐区间,文风最自由,可能偏离原设定' }
 ]
 
