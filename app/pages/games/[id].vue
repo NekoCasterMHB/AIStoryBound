@@ -580,7 +580,8 @@ async function seedDesiresByOpening(): Promise<void> {
         content: `起始情节:\n${scene.trim().slice(0, 1500)}\n\n人物卡:\n${briefs.join('\n')}\n\n当前公式播种值(仅参考,请按情节覆盖):${JSON.stringify(state.value.desires ?? {})}`
       }
     ],
-    { maxTokens: 400, temperature: 0.4 }
+    { maxTokens: 400, temperature: 0.4 },
+    { signal: turnAbort?.signal }
   )
   if (!res.ok) return
   void addWorkTokens(game.value?.workId ?? '', res.usage?.totalTokens ?? 0)
@@ -917,7 +918,22 @@ async function sendTurn(choice?: string) {
           // (不再立即上屏全部;点击流式正文仍可跳过,播完后再生成选项)
           const tail = narrParser?.finish() ?? []
           typewriter?.push(tail)
-          await typewriter?.done()
+          // 流结束后在途请求的 abort 监听已随 fetch 拆除,播放阶段要自行监听停止信号:
+          // 点击「停止」立即冻结播放并中止本回合(撤销行动),不能等到播完才响应
+          await new Promise<void>((resolve, reject) => {
+            const sig = turnAbort?.signal
+            const stop = () => {
+              sig?.removeEventListener('abort', stop)
+              typewriter?.dispose()
+              reject(new CancelledError())
+            }
+            if (!sig || sig.aborted) return stop()
+            sig.addEventListener('abort', stop, { once: true })
+            ;(typewriter ? typewriter.done() : Promise.resolve()).then(() => {
+              sig.removeEventListener('abort', stop)
+              resolve()
+            })
+          })
           const text = (typewriter?.fullText ?? streamDisplay.value).trim()
           if (text) return { usage: narr.usage, retryTokens, narratorText: text }
           retryTokens += narr.usage?.totalTokens ?? 0
