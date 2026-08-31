@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // /works — 我的书架(登录后):推荐书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
 import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
-import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments } from '../utils/worldGen'
+import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments, isLegacyChapteredWork } from '../utils/worldGen'
 import { listLocalGames, saveLocalGame, deleteLocalGame } from '../utils/gameStore'
 import { deleteGamePoints } from '../utils/gameSaveStore'
 import { importWorkFromZip } from '../utils/shareZip'
@@ -108,7 +108,7 @@ const legacyStartOpen = computed({
 })
 
 function selectRole(w: LocalWork) {
-  if (w.chapters.length > 1) {
+  if (isLegacyChapteredWork(w)) {
     legacyStartWork.value = w
     return
   }
@@ -1363,6 +1363,9 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       <template #body>
         <p class="text-sm text-neutral-600 dark:text-neutral-300">
           《{{ legacyStartWork?.title }}》按旧版章节切分存储,章节识别可能不准,会影响细纲定位与开局体验。建议重新生成世界后再开始;也可以照常游玩。
+        </p>
+        <p class="mt-2 text-sm text-neutral-600 dark:text-neutral-300">
+          重新生成会保留已有产物并补齐内容;若想得到最完整的识别结果,推荐<strong>重新上传原始 txt 再生成</strong>,效果更佳。
         </p>
       </template>
       <template #footer>

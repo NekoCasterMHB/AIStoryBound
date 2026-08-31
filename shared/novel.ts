@@ -475,6 +475,9 @@ export interface LocalWork {
   updatedAt?: string
   chapters: ChapterSegment[]
   encoding?: string
+  /** 世界格式版本:2=新版(正文存单段全文,按字数切段,不依赖章节结构);
+   *  旧数据缺省视为 1(旧版按章节标题切分多段,章节识别可能不准)。书架据此判断是否建议重新生成 */
+  worldFormat?: 2
   /** syncStatus: synced=云端已有对应 novels 行 */
   syncStatus: 'local' | 'synced' | 'dirty'
   /** 生成消耗的平台 token 总量(展示用;AI 配置走用户 key 时为 0) */

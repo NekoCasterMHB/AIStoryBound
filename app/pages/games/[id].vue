@@ -666,7 +666,7 @@ async function runOptionsPhase(
     }
   ]
   const optionsCall = () => aiChatJson<TurnStructured>(optionsMessages, { maxTokens: 1200, temperature: narrTemp.value }, {
-    // 选项阶段继续更新头部实时 token(否则停留在叙事阶段末值,显示误导)
+    // 选项阶段继续接收实时估算回调(头部已改为常驻统计按钮,此数据保留供调试)
     onLive: (info) => {
       liveTokens.value = info.tokens
       liveSpeed.value = info.speed
@@ -1165,17 +1165,12 @@ watch([messages, streamDisplay], async () => {
             </p>
           </div>
           <div class="flex items-center gap-2">
-            <span
-              v-if="streaming && liveTokens > 0"
-              class="text-xs text-neutral-400 tabular-nums"
-            >≈ {{ liveTokens }} tokens · {{ liveSpeed }}/s</span>
             <UButton
-              v-else-if="turnUsage && turnCostReport"
-              size="sm"
-              color="neutral"
-              variant="soft"
+              label="统计"
               icon="i-lucide-chart-pie"
-              :label="turnUsage"
+              color="neutral"
+              variant="outline"
+              size="sm"
               title="查看本回合 token 消耗构成"
               @click="costModalOpen = true"
             />
@@ -1217,15 +1212,8 @@ watch([messages, streamDisplay], async () => {
               size="sm"
               @click="settingsOpen = true"
             />
-            <UButton
-              v-if="work?.chapters?.length"
-              label="阅读原著"
-              icon="i-lucide-book-open"
-              color="neutral"
-              variant="outline"
-              size="sm"
-              :to="`/read/work/${game?.workId}`"
-            />
+            <!-- 外部设备连接入口:顶栏按钮 + 弹出菜单(与顶栏按钮同款外观) -->
+            <ToyControlStrip />
             <UButton
               label="返回"
               icon="i-lucide-arrow-left"
@@ -1234,8 +1222,6 @@ watch([messages, streamDisplay], async () => {
               size="sm"
               :to="'/'"
             />
-            <!-- 外部设备连接入口:顶栏图标 + 弹出菜单 -->
-            <ToyControlStrip />
           </div>
         </div>
 
@@ -1268,14 +1254,6 @@ watch([messages, streamDisplay], async () => {
             </p>
             <p class="truncate font-semibold">
               {{ state.time || '—' }}
-            </p>
-          </div>
-          <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
-            <p class="text-neutral-500">
-              身体状况
-            </p>
-            <p class="truncate font-semibold">
-              {{ state.health || '—' }}
             </p>
           </div>
           <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">

@@ -581,6 +581,7 @@ export async function generateWorld(
     createdAt: now,
     updatedAt: now,
     chapters,
+    worldFormat: 2,
     syncStatus: 'local',
     tokensUsed,
     entities,
@@ -591,6 +592,12 @@ export async function generateWorld(
   }
   await saveWork(work)
   return { work, usage: { tokensUsed } }
+}
+
+/** 是否旧版分章格式作品:新版(worldFormat=2)恒为 false;旧数据缺省按章节数判定(多段=旧版) */
+export function isLegacyChapteredWork(w: { chapters: ChapterSegment[], worldFormat?: 2 }): boolean {
+  if (w.worldFormat === 2) return false
+  return w.chapters.length > 1
 }
 
 // ---- 本地作品库(IndexedDB works) ----

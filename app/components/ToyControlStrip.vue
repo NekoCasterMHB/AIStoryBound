@@ -73,8 +73,9 @@ async function doConnect(): Promise<void> {
     :content="{ align: 'end', sideOffset: 8 }"
   >
     <UButton
+      label="功能插件"
       color="neutral"
-      :variant="connected ? 'soft' : 'ghost'"
+      variant="outline"
       icon="i-lucide-plug-zap"
       size="sm"
       :title="connected ? `设备已连接:${toyController.state.deviceName ?? ''}` : '连接外部设备'"
