@@ -4,7 +4,7 @@
 import { getWork, saveWork } from '../utils/worldGen'
 import { listLocalGames, saveLocalGame } from '../utils/gameStore'
 import { desireTierName, DESIRE_TIERS, SEX_TEXT_KEYS } from '#shared/novel'
-import type { CharacterCard, SexAttrs, SexTextField } from '#shared/novel'
+import type { CharacterArc, CharacterCard, SexAttrs, SexTextField } from '#shared/novel'
 
 const props = defineProps<{ workId: string }>()
 const emit = defineEmits<{ saved: [] }>()
@@ -14,6 +14,7 @@ const open = defineModel<boolean>('open', { default: false })
 const toast = useToast()
 const workTitle = ref('')
 const draft = ref<CharacterCard[]>([])
+const characterArcs = ref<CharacterArc[]>([])
 const selIdx = ref(0)
 const saving = ref(false)
 const loaded = ref(false)
@@ -51,8 +52,25 @@ watch(open, async (v) => {
   }
   workTitle.value = work.title
   draft.value = JSON.parse(JSON.stringify(work.overlay?.characters ?? []))
+  characterArcs.value = work.characterArcs ?? []
   loaded.value = true
 })
+
+/** 名字归一化(去空白;弧线按角色名对齐用) */
+function arcKey(s: string | null | undefined): string {
+  return (s ?? '').replace(/\s+/g, '').trim()
+}
+
+/** 角色对应的独立故事线(只读;不随人物卡保存) */
+function arcOfCard(name: string | undefined): CharacterArc | undefined {
+  if (!name || !characterArcs.value.length) return undefined
+  const key = arcKey(name)
+  return characterArcs.value.find(a => arcKey(a.character) === key)
+    ?? characterArcs.value.find(a => arcKey(a.character).includes(key) || key.includes(arcKey(a.character)))
+}
+
+/** 当前选中角色对应的独立故事线 */
+const selArc = computed(() => arcOfCard(sel.value?.name))
 
 // ---- 角色列表操作 ----
 function addCard() {
@@ -374,6 +392,11 @@ function confirmRemoveCard() {
               >
                 {{ c.role || '配角' }}
               </span>
+              <span
+                v-if="arcOfCard(c.name)"
+                class="shrink-0 text-[10px] text-primary-600 dark:text-primary-400"
+                title="有独立故事线"
+              >线</span>
             </button>
             <UButton
               block
@@ -538,6 +561,44 @@ function confirmRemoveCard() {
                   placeholder="回车添加"
                 />
               </UFormField>
+            </section>
+
+            <!-- 独立故事线(生成产物只读;扮演该角色时作为主叙事线) -->
+            <section
+              v-if="selArc"
+              class="space-y-3"
+            >
+              <h4 class="text-xs font-semibold text-neutral-500">
+                独立故事线
+                <span class="ml-1 font-normal">{{ selArc.beats.length }} 段戏份</span>
+              </h4>
+              <p
+                v-if="selArc.summary"
+                class="text-sm text-neutral-600 dark:text-neutral-300"
+              >
+                {{ selArc.summary }}
+              </p>
+              <ul
+                v-if="selArc.beats.length"
+                class="max-h-56 space-y-1.5 overflow-y-auto text-xs text-neutral-600 dark:text-neutral-400"
+              >
+                <li
+                  v-for="b in selArc.beats"
+                  :key="b.beatIndex"
+                >
+                  <span class="font-medium text-highlighted">段{{ b.beatIndex + 1 }}</span>
+                  {{ b.summary }}<template v-if="b.status">
+                    （{{ b.status }}）
+                  </template>
+                </li>
+              </ul>
+              <p
+                v-if="selArc.ending"
+                class="text-xs text-neutral-500"
+              >
+                <span class="font-medium">结局:</span>
+                {{ selArc.ending }}
+              </p>
             </section>
 
             <!-- 关系与人设数值 -->

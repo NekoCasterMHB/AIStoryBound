@@ -5,7 +5,7 @@ import { createLocalGame } from '../../utils/gameStore'
 import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
 import { ensureDesires } from '#shared/game'
 import { uuid } from '#shared/novel'
-import type { GameState, LocalGame } from '#shared/novel'
+import type { CharacterArc, GameState, LocalGame } from '#shared/novel'
 
 useHead({ title: 'AI Word2World · 选择身份' })
 
@@ -31,11 +31,30 @@ onMounted(async () => {
 })
 
 const cards = computed(() => work.value?.overlay?.characters ?? [])
+const characterArcs = computed<CharacterArc[]>(() => work.value?.characterArcs ?? [])
 
-/** 名字归一化(去空白;cast 与人物卡名/别名匹配用) */
+/** 名字归一化(去空白;cast / 弧线与人物卡名匹配共用) */
 function normName(s: string | null | undefined): string {
   return (s ?? '').replace(/\s+/g, '').trim()
 }
+
+/** 该角色的独立故事线(有则扮演时以此为主叙事线) */
+function arcOf(name: string): CharacterArc | undefined {
+  if (!characterArcs.value.length) return undefined
+  const key = normName(name)
+  return characterArcs.value.find(a => normName(a.character) === key)
+    ?? characterArcs.value.find(a => normName(a.character).includes(key) || key.includes(normName(a.character)))
+}
+
+/** 选角卡片按角色名取弧线(避免模板里对同一角色调两次) */
+const arcByCardName = computed(() => {
+  const map: Record<string, CharacterArc> = {}
+  for (const c of cards.value) {
+    const arc = arcOf(c.name)
+    if (arc) map[c.name] = arc
+  }
+  return map
+})
 
 /** 判断角色是否在所选细纲段登场(cast 与卡名/别名/昵称做宽松匹配;cast 缺失时全部视为登场) */
 const isInBeatCast = (() => {
@@ -456,6 +475,14 @@ function dismissLegacyHint() {
               {{ c.role || '配角' }}
             </UBadge>
             <UBadge
+              v-if="arcByCardName[c.name]"
+              color="primary"
+              variant="outline"
+              size="sm"
+            >
+              故事线 {{ arcByCardName[c.name]!.beats.length }} 段
+            </UBadge>
+            <UBadge
               v-if="openingMode === 'beat' && !isInBeatCast(c)"
               color="neutral"
               variant="outline"
@@ -476,6 +503,12 @@ function dismissLegacyHint() {
           class="mt-2 line-clamp-3 text-sm text-neutral-600 dark:text-neutral-300"
         >
           {{ c.background }}
+        </p>
+        <p
+          v-if="arcByCardName[c.name]?.summary"
+          class="mt-2 line-clamp-3 text-xs text-neutral-500 dark:text-neutral-400"
+        >
+          {{ arcByCardName[c.name]!.summary }}
         </p>
         <div class="mt-auto flex items-center justify-between pt-3 text-xs text-neutral-400">
           <span>{{ c.relationships?.length ? `关系网 ${c.relationships.length} 条` : '' }}</span>
