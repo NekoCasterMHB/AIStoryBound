@@ -1,17 +1,18 @@
 <script setup lang="ts">
-// AnnouncementModal.vue — 全局公告弹窗(挂在 app.vue,全站生效)。
+// AnnouncementModal.vue — 全局公告弹窗(挂在 app.vue)。仅主页(/)弹出,其他页面不打扰。
 // 加载时拉取已发布公告,与 localStorage 已读游标比对:存在未读(createdAt 大于游标)才弹出,
 // 多条未读用 UAccordion 手风琴展示(默认展开最新一条,内容 markdown 由 MDC 渲染)。
-// 勾选「有新公告前不再提示」关闭 → 游标更新到最新公告,此后仅当出现更新的公告才再次弹出;
-// 不勾选直接关闭 → 本次页面会话不再自动弹,刷新后仍会提示。
+// 左下角「有新公告前不再提示」默认勾选:关闭即把游标更新到最新公告,此后仅新公告再次弹出;
+// 取消勾选直接关闭 → 本次页面会话不再自动弹,刷新后仍会提示。
 import { parseMarkdown } from '@nuxtjs/mdc/runtime'
 import type { AccordionItem } from '@nuxt/ui'
 import type { AnnouncementItem } from '#shared/announcement'
 
 type MarkdownBody = Awaited<ReturnType<typeof parseMarkdown>>['body']
 
+const route = useRoute()
 const open = ref(false)
-const dontShowAgain = ref(false)
+const dontShowAgain = ref(true)
 /** 未读公告(服务端已按 createdAt 倒序,最新在前) */
 const unread = ref<AnnouncementItem[]>([])
 /** 每条公告的 markdown 渲染树(与 unread 一一对应;解析失败为 null 时回退纯文本) */
@@ -34,6 +35,8 @@ function fmtDate(ts: number): string {
 }
 
 async function checkAndOpen() {
+  // 仅主页弹出;非主页不检查也不占会话次数,回到主页再查
+  if (route.path !== '/') return
   if (sessionChecked) return
   sessionChecked = true
   try {
@@ -59,6 +62,11 @@ async function checkAndOpen() {
 
 onMounted(() => {
   void checkAndOpen()
+  // SPA 路由切换:回到主页时再检查(会话内已查过则不再弹);离开主页顺手关掉弹窗
+  watch(() => route.path, (p) => {
+    if (p === '/') void checkAndOpen()
+    else open.value = false
+  })
 })
 
 /**
