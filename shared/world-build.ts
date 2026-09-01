@@ -639,7 +639,8 @@ export function mergeExtractions(
         for (const k of [...SEX_TEXT_KEYS, 'condom'] as const) {
           const v = c.sex[k]
           if (v === undefined || v === null || v === '') continue
-          accSex[k] = v // condom=false 也是有效值,需保留
+          // 成书模型偶尔把文本字段输出成数组/数字(与 alias 同类问题):统一归一为字符串,防下游 .trim 崩溃
+          accSex[k] = k === 'condom' ? v : (Array.isArray(v) ? v.filter(Boolean).join('、') : String(v))
         }
         acc.entity.sex = accSex
       }

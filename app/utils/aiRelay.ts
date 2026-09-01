@@ -41,7 +41,7 @@ export interface AiChatOptions {
   temperature?: number
   /** 单次中继调用超时(毫秒);缺省用平台默认 600s */
   timeoutMs?: number
-  /** 思考开关:不提供 UI,调用方也不得开启;服务端 chat 格式收到 false 会显式发送 thinking:{type:'disabled'} 强制关闭 */
+  /** 思考开关:已废弃,请求体固定 thinking:false 强制关闭(服务端 chat 格式显式发送 thinking:{type:'disabled'}) */
   thinking?: boolean
   /** 用途路由(仅平台模式生效):'worldGen'=生成世界流水线,'chat'=对话类(缺省)。
    *  服务端按管理员配置的用途路由选择对应配置行;自建 key 模式忽略此字段 */
@@ -119,8 +119,8 @@ export async function aiChat(
         headers: { 'Content-Type': 'application/json' },
         signal: ctrl.signal,
         // 浏览器本地自建配置随请求临时携带(不落库);未启用自建时为 undefined,平台模式
-        // 思考统一关闭:thinking 缺省 false,请求体始终带 thinking:false,让服务端显式禁用
-        body: JSON.stringify({ messages, ...opts, thinking: opts.thinking === true ? true : false, config: await getActiveRelayConfig() ?? undefined })
+        // 思考统一关闭:请求体固定带 thinking:false(忽略 opts.thinking),让服务端显式禁用
+        body: JSON.stringify({ messages, ...opts, thinking: false, config: await getActiveRelayConfig() ?? undefined })
       })
     } catch (e) {
       if (signal?.aborted) throw new CancelledError()

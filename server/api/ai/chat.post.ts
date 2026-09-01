@@ -122,13 +122,13 @@ export default defineEventHandler(async (event) => {
     relay = { format: ai.format, baseUrl: ai.baseUrl, apiKey: ai.apiKey, model: ai.model, userKey: false }
   }
 
-  // ---- 按格式构建上游请求并转发(思考统一关闭:缺省 false 也显式传,chat 格式会发 thinking:{type:'disabled'}) ----
+  // ---- 按格式构建上游请求并转发(思考强制关闭:chat 格式始终发 thinking:{type:'disabled'} 与 reasoning:{enabled:false}) ----
   const req = buildUpstreamRequest(relay, {
     messages,
     json: body.json,
     maxTokens,
     temperature: body.temperature,
-    thinking: body.thinking === true,
+    thinking: false,
     stream: true
   })
 

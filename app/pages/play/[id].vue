@@ -3,7 +3,7 @@
 import { getWork, touchWork } from '../../utils/worldGen'
 import { createLocalGame } from '../../utils/gameStore'
 import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
-import { ensureDesires } from '#shared/game'
+import { ensureDesires, isCharacterInCast } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { CharacterArc, GameState, LocalGame } from '#shared/novel'
 
@@ -56,25 +56,11 @@ const arcByCardName = computed(() => {
   return map
 })
 
-/** 判断角色是否在所选细纲段登场(cast 与卡名/别名/昵称做宽松匹配;cast 缺失时全部视为登场) */
-const isInBeatCast = (() => {
-  const match = (card: { name: string, alias?: string | null }, cast: string[]): boolean => {
-    if (!cast.length) return true // cast 缺失(旧作品/LLM 未填):不误伤,全部可选
-    // alias 兼容字符串与数组(成书模型偶尔输出数组):数组逐个别名参与匹配
-    const aliases = Array.isArray(card.alias) ? card.alias : [card.alias ?? '']
-    const cardNames = [card.name, ...aliases].map(normName).filter(Boolean)
-    return cast.some((c) => {
-      const k = normName(c)
-      return cardNames.includes(k)
-        || cardNames.some(n => n.includes(k) || k.includes(n))
-    })
-  }
-  return (card: { name: string, alias?: string | null }) => {
-    if (openingMode.value !== 'beat') return true
-    const cast = selectedBeat.value?.cast ?? []
-    return match(card, cast)
-  }
-})()
+/** 判断角色是否在所选细纲段登场(共享匹配见 #shared/game:isCharacterInCast;cast 缺失时全部视为登场) */
+function isInBeatCast(card: { name: string, alias?: string | null }): boolean {
+  if (openingMode.value !== 'beat') return true
+  return isCharacterInCast(card, selectedBeat.value?.cast ?? [])
+}
 
 /** 残缺作品拦截:角色卡过少或多数卡缺少基本人设信息时禁止开局。
  *  覆盖两类来源:本修复前生成的旧作品(成书输出被截断只留下主角)、用户手动删卡后的极端状态。 */

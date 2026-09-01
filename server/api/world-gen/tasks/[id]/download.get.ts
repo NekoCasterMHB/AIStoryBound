@@ -50,7 +50,8 @@ export default defineEventHandler(async (event) => {
     chapters: [{ title: '', content: text }],
     encoding: row.encoding ?? undefined,
     syncStatus: 'local' as const,
-    tokensUsed: world.tokensUsed ?? row.tokensUsed,
+    // 自建 key 任务不写 tokensUsed:消耗的是用户自己 key 的钱,与平台 token 无关,书架作品卡不应显示
+    tokensUsed: row.keySource === 'user' ? undefined : (world.tokensUsed ?? row.tokensUsed),
     entities: world.entities,
     conflicts: world.conflicts,
     warnings: world.warnings ?? [],

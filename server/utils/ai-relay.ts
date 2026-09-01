@@ -28,7 +28,7 @@ export interface RelayInput {
   json?: boolean
   maxTokens?: number
   temperature?: number
-  /** 思考开关:所有调用统一传 false(关闭)。chat 格式显式发送 thinking:{type:'disabled'} 强制关闭 */
+  /** 思考开关:调用方统一传 false。chat 格式忽略此值,始终发 thinking:{type:'disabled'} 与 reasoning:{enabled:false} */
   thinking?: boolean
   stream?: boolean
 }
@@ -115,14 +115,11 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
   }
   if (json) body.response_format = { type: 'json_object' }
   if (input.maxTokens) body.max_tokens = input.maxTokens
-  // chat 格式必须显式带 thinking 字段:DeepSeek 等模型默认可能开启思考,
-  // 不传等于让模型自行决定;传 {type:'disabled'} 才是明确关闭。
-  // OpenRouter 关思考认 reasoning 而非 thinking,两者都发:OpenRouter 读 reasoning,
-  // DeepSeek 官方读 thinking,其它供应商忽略未知字段(不按供应商区分)。
-  if (input.thinking !== undefined) {
-    body.thinking = { type: input.thinking ? 'enabled' : 'disabled' }
-    body.reasoning = { enabled: input.thinking }
-  }
+  // chat 格式必须始终带关闭字段:DeepSeek V4 默认开启思考,不传等于让模型自行决定。
+  // thinking 给 DeepSeek 官方;reasoning.enabled 给 OpenRouter。两者都强制 false,
+  // 不随 input.thinking 开关——世界生成、剧情对话、连接测试走同一条路径。
+  body.thinking = { type: 'disabled' }
+  body.reasoning = { enabled: false }
   return {
     url: `${base}/chat/completions`,
     headers: {

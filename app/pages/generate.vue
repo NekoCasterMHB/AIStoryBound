@@ -77,6 +77,19 @@ function openWorldDetail(id: string) {
 /** 平台 token 额度预检结果(不足时提示,不阻断生成) */
 const quotaWarn = ref<TokenQuotaInfo | null>(null)
 
+/** 自建 key 模式(用用户自己的 key 生成):不消耗平台 token,隐藏全部 token 消耗展示 */
+const usingUserKey = ref(false)
+
+/** 刷新自建 key 模式标志(与上传时上送 config 同一判断;页面加载与生成前各刷新一次) */
+async function refreshUserKeyMode() {
+  try {
+    usingUserKey.value = !!(await getActiveRelayConfig())
+  } catch {
+    usingUserKey.value = false
+  }
+}
+void refreshUserKeyMode()
+
 /** 解析完成、待用户确认的原稿(确认后才进入生成管线) */
 const pendingGen = ref<{ title: string, chapters: ChapterSegment[], frontMatter: string } | null>(null)
 
@@ -253,6 +266,7 @@ async function startCloudGeneration(opts: { charCount?: number, forceRegenerate?
     } catch {
       config = null
     }
+    usingUserKey.value = !!config
     const res = await uploadWorldGenTask({
       file,
       mode: ecoMode.value ? 'eco' : 'full',
@@ -916,7 +930,7 @@ const features = [
                 class="size-4 shrink-0 text-primary-500"
               />
               <span>
-                本书已有官方预生成世界,<span class="font-semibold">0 token 直接进入</span>(本页自定义生成按全书估算约 {{ estimatedTokens.toLocaleString() }} tokens)
+                本书已有官方预生成世界,<span class="font-semibold">0 token 直接进入</span><template v-if="!usingUserKey">(本页自定义生成按全书估算约 {{ estimatedTokens.toLocaleString() }} tokens)</template>
               </span>
             </div>
             <UButton
@@ -929,8 +943,11 @@ const features = [
             </UButton>
           </div>
 
-          <!-- 预估消耗小字提示:按全书字数估算本次生成 token -->
-          <div class="flex items-start gap-2 rounded-xl border border-neutral-200/70 bg-neutral-50/80 px-3.5 py-2.5 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900/40 dark:text-neutral-400">
+          <!-- 预估消耗小字提示:按全书字数估算本次生成 token(自建 key 不消耗平台 token,不展示) -->
+          <div
+            v-if="!usingUserKey"
+            class="flex items-start gap-2 rounded-xl border border-neutral-200/70 bg-neutral-50/80 px-3.5 py-2.5 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900/40 dark:text-neutral-400"
+          >
             <UIcon
               name="i-lucide-coins"
               class="mt-0.5 size-3.5 shrink-0"
@@ -1095,7 +1112,11 @@ const features = [
                 </template>
               </p>
             </div>
-            <div class="shrink-0 text-right">
+            <!-- 实时 token 消耗(自建 key 不消耗平台 token,不展示) -->
+            <div
+              v-if="!usingUserKey"
+              class="shrink-0 text-right"
+            >
               <p class="text-sm font-semibold text-primary-600 tabular-nums dark:text-primary-400">
                 {{ liveShown.toLocaleString() }}
                 <span class="text-xs font-normal text-neutral-400">tokens</span>
@@ -1183,7 +1204,7 @@ const features = [
                 · {{ genState.progress?.doneUnits ?? 0 }}/{{ genState.progress?.totalUnits ?? 0 }} 单元
                 · 进行中 {{ genState.progress?.inflight ?? 0 }}
                 · 分段 {{ (genState.progress?.unitMaxChars ?? 0).toLocaleString() }} 字
-                · 已入账 {{ (genState.progress?.tokensUsed ?? 0).toLocaleString() }} / 估算 {{ liveShown.toLocaleString() }} tokens
+                <template v-if="!usingUserKey">· 已入账 {{ (genState.progress?.tokensUsed ?? 0).toLocaleString() }} / 估算 {{ liveShown.toLocaleString() }} tokens</template>
               </span>
             </p>
             <p
@@ -1254,7 +1275,7 @@ const features = [
               全书约 {{ formatChars(resultWork.chapters.reduce((n, c) => n + c.content.length, 0)) }}
             </span>
             <span
-              v-if="genState.tokensUsed"
+              v-if="genState.tokensUsed && !usingUserKey"
               class="inline-flex items-center gap-1 rounded-full bg-primary-500/10 px-3 py-1 text-primary-700 dark:bg-primary-400/10 dark:text-primary-400"
             >
               <UIcon
@@ -1388,7 +1409,7 @@ const features = [
             {{ genState.error }}
           </p>
           <p
-            v-if="genState.tokensUsed"
+            v-if="genState.tokensUsed && !usingUserKey"
             class="mx-auto mt-3 max-w-md text-xs text-neutral-500"
           >
             本次已消耗约 {{ genState.tokensUsed.toLocaleString() }} tokens(按实际用量结算)。

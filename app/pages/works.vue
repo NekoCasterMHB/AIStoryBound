@@ -1096,7 +1096,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     {{ worldGenStageLabel(t) }}
                   </UBadge>
                   <UBadge
-                    v-if="t.tokensUsed"
+                    v-if="t.tokensUsed && t.keySource !== 'user'"
                     color="neutral"
                     variant="subtle"
                     size="sm"
