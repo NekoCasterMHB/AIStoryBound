@@ -7,7 +7,7 @@ import type { ChapterSegment, LocalWork } from '#shared/novel'
 import { db } from './localDb'
 
 export interface GenerateProgress {
-  stage: 'parse' | 'author' | 'extract' | 'merge' | 'check' | 'synthesize' | 'done'
+  stage: 'parse' | 'author' | 'extract' | 'merge' | 'check' | 'synthesize' | 'arcs' | 'done'
   /** extract 阶段:已完成单元数 */
   doneUnits: number
   totalUnits: number

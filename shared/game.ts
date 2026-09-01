@@ -268,7 +268,9 @@ export function cardBrief(c: CharacterCard, dyn?: CharacterDynamicState): string
   const base = `${c.name}(${c.role}${c.gender ? `,${c.gender}` : ''},${c.identity ?? '未知身份'})`
   const pos = positionPrefix(c)
   const bits: string[] = pos ? [pos, base] : [base]
-  if (c.alias?.trim()) bits.push(`别名:${c.alias}`)
+  // 成书模型偶尔会把别名按提取示例输出成数组(存量作品可能带数组入库):归一为字符串再判空
+  const alias = Array.isArray(c.alias) ? c.alias.join('、') : c.alias
+  if (alias?.trim()) bits.push(`别名:${alias}`)
   // age 旧数据可能被模型写成数字,统一转字符串再判断
   if (c.age != null && String(c.age).trim()) bits.push(`年龄:${String(c.age)}`)
   if (c.appearance?.trim()) bits.push(`外貌:${c.appearance}`)

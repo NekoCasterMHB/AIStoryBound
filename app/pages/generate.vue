@@ -141,6 +141,7 @@ const stageLabel: Record<string, string> = {
   merge: '合并实体与校验引用…',
   check: '一致性检查…',
   synthesize: '生成人物卡与简介…',
+  arcs: '补充角色故事线…',
   done: '完成'
 }
 
@@ -162,7 +163,7 @@ const genPercent = computed(() => {
   if (p.stage === 'extract') {
     return p.totalUnits ? Math.round(15 + (p.doneUnits / p.totalUnits) * 65) : 15
   }
-  return { parse: 5, author: 15, merge: 85, check: 92, synthesize: 97 }[p.stage] ?? 30
+  return { parse: 5, author: 15, merge: 85, check: 92, synthesize: 97, arcs: 97 }[p.stage] ?? 30
 })
 
 // 实时 token 展示:管线保证数值单调不减,这里再做平滑动画(指数趋近,避免大跳变)

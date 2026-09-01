@@ -1165,6 +1165,8 @@ export function finalizeCards(
   return (Array.isArray(overlayRaw.characters) ? overlayRaw.characters : [])
     .filter(c => c?.name && topNames.has(c.name))
     .map((c) => {
+      // 成书模型偶尔照抄提取输入的别名数组格式:归一化为字符串,与 CharacterCard.alias(string|null) 类型一致
+      if (Array.isArray(c.alias)) c = { ...c, alias: c.alias.join('、') || null }
       const ent = nameToEntity.get(normKey(c.name))
       let patched = c
       if (!patched.first_appearance && ent && ent.sources.length > 0) {
@@ -1234,7 +1236,7 @@ const CHARACTER_ARC_SCHEMA = `{
 export function characterArcCandidates(
   entities: WorldEntities,
   storyline: StoryBeat[] | undefined
-): { card: CharacterCard, beats: number[] }[] {
+): { card: MergedCharacter, beats: number[] }[] {
   const appearances = characterAppearances(storyline)
   return entities.characters
     .map(c => ({ card: c, beats: appearances.get(normKey(c.name)) ?? [] }))
@@ -1298,7 +1300,7 @@ export const ARC_WINDOW_BEAT_LIMIT = 3
  *  textWindow 为该角色登场段的原文节选(可选):模型据此还原真实细节,不得与原文矛盾。 */
 export function buildCharacterArcMessages(
   title: string,
-  candidate: { card: CharacterCard, beats: number[] },
+  candidate: { card: MergedCharacter, beats: number[] },
   storyline: StoryBeat[] | undefined,
   textWindow?: string
 ): { role: 'system' | 'user', content: string }[] {

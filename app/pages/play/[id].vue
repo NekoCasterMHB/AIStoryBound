@@ -60,7 +60,9 @@ const arcByCardName = computed(() => {
 const isInBeatCast = (() => {
   const match = (card: { name: string, alias?: string | null }, cast: string[]): boolean => {
     if (!cast.length) return true // cast 缺失(旧作品/LLM 未填):不误伤,全部可选
-    const cardNames = [card.name, card.alias ?? ''].map(normName).filter(Boolean)
+    // alias 兼容字符串与数组(成书模型偶尔输出数组):数组逐个别名参与匹配
+    const aliases = Array.isArray(card.alias) ? card.alias : [card.alias ?? '']
+    const cardNames = [card.name, ...aliases].map(normName).filter(Boolean)
     return cast.some((c) => {
       const k = normName(c)
       return cardNames.includes(k)

@@ -80,7 +80,7 @@ export default defineEventHandler(async (event) => {
     if (!verified) {
       throw createError({ statusCode: 400, statusMessage: '配置未验证或已变更,请到个人中心重新测试后再使用' })
     }
-    escrow = await encryptJson({ baseUrl: normalized.baseUrl, apiKey: normalized.apiKey, model: normalized.model })
+    escrow = await encryptJson(event, { baseUrl: normalized.baseUrl, apiKey: normalized.apiKey, model: normalized.model })
   }
 
   // ---- 平台模式:余额充足性预检(不预扣;真实消耗在管线中逐单元原子扣费,余额不足任务暂停) ----
