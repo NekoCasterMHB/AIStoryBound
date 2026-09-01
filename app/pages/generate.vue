@@ -14,7 +14,7 @@ import { setAdultModeEnabled } from '../utils/adultMode'
 import { getActiveRelayConfig } from '../utils/aiConfigStore'
 import {
   uploadWorldGenTask, pullCachedWorld,
-  pollWorldGenTask, downloadAndInstallWorldTask, cancelWorldGenTask
+  pollWorldGenTask, downloadAndInstallWorldTask, cancelWorldGenTask, hashText, checkWorldDuplicate
 } from '../utils/worldGenCloud'
 import type { WorldCacheHit, WorldGenTaskDTO } from '../utils/worldGenCloud'
 import { useAuthModal } from '~/composables/useAuthModal'
@@ -96,6 +96,56 @@ const pendingGen = ref<{ title: string, chapters: ChapterSegment[], frontMatter:
 /** 生成模式:false=完整(默认),true=节约(跳过一致性检查与人物卡润色,省约一半 token) */
 const ecoMode = ref(false)
 
+/** 确认页缓存预检:解析完成后按当前文本 hash + 模式提前查共享缓存,命中即在确认页提示(不必等点生成) */
+const precheckHit = ref<WorldCacheHit | null>(null)
+const prechecking = ref(false)
+
+/** 生成会话状态(阶段/标题/进度/错误/结果/已耗 token)。须在下方 watch 与 precheckCacheHit 之前声明——
+ *  watch 的源 getter 在 setup 阶段立即求值,晚声明会触发 TDZ: Cannot access 'genState' before initialization */
+const genState = ref<{
+  phase: 'idle' | 'parsing' | 'confirm' | 'generating' | 'done' | 'error'
+  title: string
+  progress: GenerateProgress | null
+  error: string | null
+  resultId: string | null
+  tokensUsed: number
+}>({
+  phase: 'idle',
+  title: '',
+  progress: null,
+  error: null,
+  resultId: null,
+  tokensUsed: 0
+})
+
+/**
+ * 运行预检。文本口径与服务端一致:清洗规则见 toContentSegments(去 \r、合并 3+ 连续换行、trim),
+ * 服务端 parseNovelBytes 同规则,故 hashText(清洗后全文) 与服务端上传后 hash 一致。
+ */
+async function precheckCacheHit() {
+  if (genState.value.phase !== 'confirm' || !pendingGen.value?.chapters.length) return
+  prechecking.value = true
+  precheckHit.value = null
+  const seq = runSeq
+  try {
+    const text = pendingGen.value.chapters.map(c => c.content).join('\n')
+    const hash = await hashText(text)
+    if (seq !== runSeq) return // 期间被取消/换文件
+    const hit = await checkWorldDuplicate(hash, ecoMode.value ? 'eco' : 'full')
+    if (seq !== runSeq) return
+    precheckHit.value = hit
+  } catch {
+    // 预检失败(未登录/网络)静默,不阻断确认页;真正命中仍以点击生成后的服务端为准
+  } finally {
+    if (seq === runSeq) prechecking.value = false
+  }
+}
+
+/** 模式/内容变化时重新预检(节约模式会命中另一桶缓存) */
+watch([() => genState.value.phase, pendingGen, ecoMode], () => {
+  void precheckCacheHit()
+})
+
 /** 全书字数(与额度预检同口径:各章正文长度合计) */
 const totalChars = computed(() =>
   pendingGen.value?.chapters.reduce((sum, c) => sum + c.content.length, 0) ?? 0
@@ -121,21 +171,6 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const uploadCard = ref<HTMLElement | null>(null)
 const picking = ref(false)
 const isDragging = ref(false)
-const genState = ref<{
-  phase: 'idle' | 'parsing' | 'confirm' | 'generating' | 'done' | 'error'
-  title: string
-  progress: GenerateProgress | null
-  error: string | null
-  resultId: string | null
-  tokensUsed: number
-}>({
-  phase: 'idle',
-  title: '',
-  progress: null,
-  error: null,
-  resultId: null,
-  tokensUsed: 0
-})
 
 /** 生成流水线阶段(UI stepper 展示,与 GenerateProgress.stage 对应) */
 const stages = [
@@ -940,6 +975,42 @@ const features = [
               @click="startPrebuiltFromConfirm"
             >
               直接开始
+            </UButton>
+          </div>
+
+          <!-- 缓存预检命中:同文本已有共享成书,可直接拉取(半价),不必重新生成 -->
+          <div
+            v-if="prechecking"
+            class="flex items-center gap-2 rounded-xl border border-neutral-200/70 bg-neutral-50/80 px-3.5 py-2.5 text-xs text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900/40 dark:text-neutral-400"
+          >
+            <UIcon
+              name="i-lucide-loader-circle"
+              class="size-3.5 animate-spin"
+            />
+            正在检查该文本是否已有缓存成书…
+          </div>
+          <div
+            v-else-if="precheckHit"
+            class="flex flex-col items-center gap-3 rounded-xl border border-emerald-300/60 bg-emerald-500/10 px-3.5 py-3 sm:flex-row sm:justify-between dark:border-emerald-700/60"
+          >
+            <div class="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-200">
+              <UIcon
+                name="i-lucide-database-zap"
+                class="size-4 shrink-0 text-emerald-500"
+              />
+              <span>
+                该文本已有缓存成书<span v-if="precheckHit.title">《{{ precheckHit.title }}》</span>,拉取仅需
+                <span class="font-semibold">{{ precheckHit.halfCost.toLocaleString() }}</span>
+                tokens(记录消耗的一半),直接得到成书
+              </span>
+            </div>
+            <UButton
+              color="success"
+              icon="i-lucide-cloud-download"
+              :loading="pullingCached"
+              @click="startPullCached(precheckHit)"
+            >
+              拉取已有世界
             </UButton>
           </div>
 

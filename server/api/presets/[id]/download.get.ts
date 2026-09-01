@@ -6,34 +6,38 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { H3Event } from 'h3'
 import { getPresetNovel, incrementPresetDownloads } from '../../../utils/db'
+import { getSkillBucket } from '../../../utils/r2'
+import { presetTxtR2Key } from '../../admin/cache/[id]/promote.post'
 
 /** 预置 txt 的静态路径约定:public/txt/<id>.txt  →  /txt/<id>.txt */
 function staticPath(id: string): string {
   return `/txt/${encodeURIComponent(id)}.txt`
 }
 
-/** 读取预置 txt 原始字节(UTF-8,含 BOM):生产走 ASSETS binding,dev 走文件系统 */
+/** 读取预置 txt 原始字节(UTF-8,含 BOM):静态资源优先,缺失回退 R2(管理员从缓存 promote 的书) */
 async function readPresetTxt(event: H3Event, id: string): Promise<Uint8Array> {
   // dev 用 fs 直读 public/txt(dev 的 ASSETS proxy 指向构建产物 .output/public,内容可能滞后)
   if (import.meta.dev) {
     try {
       return new Uint8Array(readFileSync(join(process.cwd(), 'public', 'txt', `${id}.txt`)))
     } catch {
-      throw createError({ statusCode: 404, statusMessage: 'Preloaded novel file not found' })
+      // 静态缺失,尝试 R2 回退
+    }
+  } else {
+    // 生产(Cloudflare Worker):经 ASSETS binding 读取随站点部署的静态文件
+    const env = (event.context as unknown as { cloudflare?: { env?: Env } }).cloudflare?.env
+    if (env?.ASSETS) {
+      // Workers Static Assets:按路径匹配静态文件,host 无关
+      const url = new URL(staticPath(id), getRequestURL(event))
+      const res = await env.ASSETS.fetch(url)
+      if (res.ok) return new Uint8Array(await res.arrayBuffer())
     }
   }
-  // 生产(Cloudflare Worker):经 ASSETS binding 读取随站点部署的静态文件
-  const env = (event.context as unknown as { cloudflare?: { env?: Env } }).cloudflare?.env
-  if (env?.ASSETS) {
-    // Workers Static Assets:按路径匹配静态文件,host 无关
-    const url = new URL(staticPath(id), getRequestURL(event))
-    const res = await env.ASSETS.fetch(url)
-    if (!res.ok) {
-      throw createError({ statusCode: 404, statusMessage: 'Preloaded novel file not found' })
-    }
-    return new Uint8Array(await res.arrayBuffer())
-  }
-  throw createError({ statusCode: 500, statusMessage: 'ASSETS binding not available' })
+  // R2 回退:管理员从缓存 promote 到推荐书架的书,源 txt 存在 preset-txt/<id>.txt
+  const bucket = getSkillBucket(event)
+  const obj = await bucket.get(presetTxtR2Key(id))
+  if (obj) return new Uint8Array(await obj.arrayBuffer())
+  throw createError({ statusCode: 404, statusMessage: 'Preloaded novel file not found' })
 }
 
 export default defineEventHandler(async (event) => {
