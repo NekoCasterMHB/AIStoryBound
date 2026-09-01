@@ -1,11 +1,13 @@
 <script setup lang="ts">
 // /works — 我的书架(登录后):推荐书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
 import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
-import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments, isLegacyChapteredWork, supplementCharacterArcs } from '../utils/worldGen'
+import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments, isLegacyChapteredWork } from '../utils/worldGen'
 import { NOVEL_ENCODING_LABELS } from '#shared/novel-encoding'
+import { characterArcCandidates } from '#shared/world-build'
 import { listLocalGames, deleteLocalGame } from '../utils/gameStore'
 import { deleteGamePoints } from '../utils/gameSaveStore'
-import { importWorkFromZip } from '../utils/shareZip'
+import { importWorkFromZip, downloadWorkAsZip } from '../utils/shareZip'
+import { downloadWorkAsTxt, downloadGameAsTxt } from '../utils/exportStory'
 import {
   fetchBackups, fetchBackupMeta, uploadWorkBackup, downloadWorkBackup, deleteCloudBackup,
   buildWorkBackupZip, parseWorkBackupZip, importBackupData, MAX_BACKUP_BYTES,
@@ -15,9 +17,11 @@ import { listReadingProgress } from '../utils/readingStore'
 import { fetchPrebuiltWorld, installPrebuiltWork } from '../utils/prebuiltWorld'
 import type { PrebuiltWorld } from '../utils/prebuiltWorld'
 import { setAdultModeEnabled } from '../utils/adultMode'
+import { getActiveRelayConfig } from '../utils/aiConfigStore'
 import {
   fetchWorldGenTasks, cancelWorldGenTask, downloadAndInstallWorldTask,
-  resumeWorldGenTask, worldGenTaskPercent, worldGenStageLabel
+  resumeWorldGenTask, worldGenTaskPercent, worldGenStageLabel,
+  startSupplementArcsTask, fetchArcsResult
 } from '../utils/worldGenCloud'
 import type { WorldGenTaskDTO } from '../utils/worldGenCloud'
 import { type LocalWork, type LocalGame, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
@@ -282,26 +286,16 @@ function entityCount(w: LocalWork): number {
     + e.timeline_events.length + e.world_rules.length + e.items.length + e.foreshadowing.length
 }
 
-/** 卡片标签:性向单独徽章展示(语义不同),这里只返回玩法/标签,最多 4 个 */
+/** 卡片标签:性向单独徽章展示(语义不同),这里返回玩法/标签,全部展示不截断 */
 function workCardTags(w: LocalWork): string[] {
   const tags: string[] = []
   for (const k of w.overlay?.kinkProfile ?? []) {
     if (k.theme && !tags.includes(k.theme)) tags.push(k.theme)
-    if (tags.length >= 4) break
   }
-  if (tags.length < 4) {
-    for (const t of w.overlay?.tags ?? []) {
-      if (t && !tags.includes(t)) tags.push(t)
-      if (tags.length >= 4) break
-    }
+  for (const t of w.overlay?.tags ?? []) {
+    if (t && !tags.includes(t)) tags.push(t)
   }
-  return tags.slice(0, 4)
-}
-
-/** 去重后的标签总数(超过展示数显示 +N) */
-function workCardTagTotal(w: LocalWork): number {
-  const kinks = (w.overlay?.kinkProfile ?? []).map(k => k.theme).filter(Boolean)
-  return new Set([...kinks, ...(w.overlay?.tags ?? [])].filter(Boolean)).size
+  return tags
 }
 
 /** 每部本地作品的「更多操作」菜单:世界详情 / 编辑正文 / 编辑角色卡 / 重新生成世界 / 同步云端 / 删除 */
@@ -313,39 +307,125 @@ function workMenuItems(w: LocalWork): DropdownMenuItem[][] {
     { label: '重新生成世界', icon: 'i-lucide-refresh-cw', onSelect: () => navigateTo(`/generate?from=work&id=${w.id}`) },
     { label: '同步云端', icon: 'i-lucide-cloud-upload', disabled: syncingWorkId.value === w.id, onSelect: () => syncWorkToCloudZip(w) }
   ]
-  // 旧作品/未生成配角故事线的作品:提供增量补生成入口(用已有故事线补一次 AI 调用,不重跑提取)
-  if (!(w.characterArcs ?? []).length && (w.storyline?.length ?? 0) > 0) {
+  // 仅当真正缺少配角故事线且有候选角色(登场≥2次)时才展示增量补生成入口;
+  // 缺 arcs 但无候选角色时点击只会提示"无需生成",不再浪费菜单位置
+  if (
+    !(w.characterArcs ?? []).length
+    && (w.storyline?.length ?? 0) > 0
+    && !!w.entities
+    && characterArcCandidates(w.entities, w.storyline).length > 0
+  ) {
     firstGroup.push({
       label: '补充生成配角故事线',
       icon: 'i-lucide-route',
-      disabled: supplementingArcsId.value === w.id,
+      disabled: supplementingArcsId.value === w.id || !!activeArcsTask(w.id),
       onSelect: () => supplementWorkArcs(w)
     })
   }
   return [
     firstGroup,
     [
+      { label: '导出原文 TXT', icon: 'i-lucide-file-text', onSelect: () => onExportWorkTxt(w) },
+      { label: '导出游玩对话 TXT', icon: 'i-lucide-scroll-text', onSelect: () => openExportSession(w) },
+      { label: '导出全部 ZIP', icon: 'i-lucide-file-archive', onSelect: () => onExportWorkZip(w) }
+    ],
+    [
       { label: '删除', icon: 'i-lucide-trash-2', color: 'error', onSelect: () => askDeleteWork(w) }
     ]
   ]
 }
 
-// ---- 增量补生成配角故事线(旧作品补齐;一次性 AI 调用,失败不阻塞) ----
+// ---- 导出(原文 TXT / 全部 ZIP,与「导入 ZIP 分享包」配套) ----
+function onExportWorkTxt(w: LocalWork) {
+  const ok = downloadWorkAsTxt({ title: w.title, chapters: w.chapters })
+  if (!ok) toast.add({ title: '作品没有正文,无法导出', color: 'warning' })
+}
+
+function onExportWorkZip(w: LocalWork) {
+  downloadWorkAsZip({ work: w, games: games.value.filter(g => g.workId === w.id) })
+}
+
+// ---- 导出游玩对话 TXT:菜单 → 会话选择弹窗 → 下载该会话旁白剧情(与旧「分享剧情」同款) ----
+const exportSessionOpen = ref(false)
+const exportSessionWork = ref<LocalWork | null>(null)
+/** 该作品全部会话(按角色分组、组内按最后游玩倒序) */
+const exportSessionGroups = computed(() => {
+  const gs = (exportSessionWork.value
+    ? games.value.filter(g => g.workId === exportSessionWork.value!.id)
+    : [])
+    .slice()
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  const byChar = new Map<string, LocalGame[]>()
+  for (const g of gs) {
+    const list = byChar.get(g.characterName) ?? []
+    list.push(g)
+    byChar.set(g.characterName, list)
+  }
+  return [...byChar.entries()].map(([name, list]) => ({ name, list }))
+})
+
+/** 会话回合数 = 旁白条数(每回合一条旁白) */
+function turnsOf(g: LocalGame): number {
+  return g.messages.filter(m => m.role !== 'user').length
+}
+
+function openExportSession(w: LocalWork) {
+  exportSessionWork.value = w
+  exportSessionOpen.value = true
+}
+
+function exportSessionTxt(g: LocalGame) {
+  const work = exportSessionWork.value
+  if (!work) return
+  const ok = downloadGameAsTxt({
+    title: work.title,
+    playerName: g.characterName,
+    messages: g.messages
+  })
+  if (!ok) toast.add({ title: '该会话还没有可导出的剧情', description: '先产生一段旁白后再导出', color: 'warning' })
+}
+
+// ---- 增量补生成配角故事线(旧作品补齐)→ 云端任务(kind=arcs,逐单元生成,进度条 + 手动写回) ----
 const supplementingArcsId = ref<string | null>(null)
+/** 本次会话创建的 arcs 任务 id:监听其在 cloudTasks 轮询中的终态并 toast */
+const pendingArcsTaskId = ref<string | null>(null)
+
+/** 该作品是否有进行中的补充故事线任务(卡片 loading 徽章 + 菜单防重) */
+function activeArcsTask(workId: string): WorldGenTaskDTO | undefined {
+  return cloudTasks.value.find(t => t.kind === 'arcs' && t.sourceWorkId === workId
+    && (t.status === 'uploaded' || t.status === 'running' || t.status === 'paused'))
+}
 
 async function supplementWorkArcs(w: LocalWork) {
   if (supplementingArcsId.value) return
+  if (activeArcsTask(w.id)) {
+    toast.add({ title: '该作品已有进行中的补充故事线任务', description: '可先取消或等待完成', color: 'warning' })
+    return
+  }
+  // 候选预检(与云端同一名单):无候选角色直接提示,不建任务
+  if (!w.entities || !w.storyline?.length || characterArcCandidates(w.entities, w.storyline).length === 0) {
+    toast.add({ title: '故事线中没有登场两次以上的角色,无需生成配角故事线', color: 'warning' })
+    return
+  }
   supplementingArcsId.value = w.id
   try {
-    const { count, tokensUsed } = await supplementCharacterArcs(w.id)
-    await refreshLocal()
+    const task = await startSupplementArcsTask({
+      workId: w.id,
+      title: w.title || '未命名小说',
+      entities: w.entities,
+      storyline: w.storyline,
+      text: w.chapters.map(c => c.content).join('\n'),
+      config: await getActiveRelayConfig() ?? undefined
+    })
+    pendingArcsTaskId.value = task.id
+    await loadCloudTasks()
     toast.add({
-      title: '配角故事线已生成',
-      description: `为 ${count} 个角色生成了独立故事线${tokensUsed ? `,消耗 ${tokensUsed.toLocaleString()} tokens` : ''};扮演配角时将以该角色的故事线推进`,
-      color: 'success'
+      title: '已创建云端任务,正在生成配角故事线…',
+      description: `共 ${task.stageDetail.totalUnits} 条故事线,生成中可离开页面;完成后在任务卡片点「更新世界情报」写回作品`,
+      color: 'info'
     })
   } catch (e) {
-    toast.add({ title: '生成失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+    toast.add({ title: '创建任务失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
   } finally {
     supplementingArcsId.value = null
   }
@@ -416,12 +496,76 @@ async function installCloudTask(t: WorldGenTaskDTO) {
     } else {
       toast.add({ title: '已跳过', description: '保留本地已有作品,未重复添加', color: 'neutral' })
     }
+    // 安装/覆盖成功且确实是新安装:询问是否删除云端任务记录(已安装态由 sourceTaskId 判定)
+    if (duplicateDecision !== false) {
+      const remove = await askDeleteTaskModal(work.title)
+      if (remove) {
+        try {
+          await cancelWorldGenTask(t.id)
+          await loadCloudTasks()
+        } catch {
+          toast.add({ title: '删除任务记录失败', description: '本地书架不受影响,可稍后在任务卡片手动删除', color: 'warning' })
+        }
+      }
+    }
   } catch (e) {
     toast.add({ title: '下载安装失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
   } finally {
     installingTaskId.value = null
     duplicateDecision = null
   }
+}
+
+/** 云端任务是否已安装进书架(有本地作品的 sourceTaskId 指向该任务) */
+function taskInstalled(t: WorldGenTaskDTO): boolean {
+  return works.value.some(w => w.sourceTaskId === t.id)
+}
+
+// ---- arcs 任务结果写回(任务卡「更新世界情报」:拉取弧线并写入本地作品 characterArcs) ----
+const applyingArcsTaskId = ref<string | null>(null)
+/** 本次会话已写回过的 arcs 任务(按钮切「已更新」禁用,避免重复覆盖) */
+const appliedArcsTaskIds = ref<Record<string, boolean>>({})
+
+async function applyArcsResult(t: WorldGenTaskDTO) {
+  if (applyingArcsTaskId.value || appliedArcsTaskIds.value[t.id]) return
+  applyingArcsTaskId.value = t.id
+  try {
+    const arcs = await fetchArcsResult(t.id)
+    if (!t.sourceWorkId) throw new Error('任务缺少作品信息')
+    const work = await getWork(t.sourceWorkId)
+    if (!work) throw new Error('本地未找到对应作品,可能已被删除')
+    work.characterArcs = arcs
+    work.updatedAt = new Date().toISOString()
+    await saveWork(work)
+    appliedArcsTaskIds.value[t.id] = true
+    await refreshLocal()
+    toast.add({ title: '世界情报已更新', description: `已写入 ${arcs.length} 条配角故事线`, color: 'success' })
+  } catch (e) {
+    toast.add({ title: '更新失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    applyingArcsTaskId.value = null
+  }
+}
+
+/** 云端任务记录删除确认(安装成功后询问;选删除则删终态任务行) */
+const deleteTaskOpen = ref(false)
+const deleteTaskTitle = ref('')
+const deleteTaskBody = ref('')
+let deleteTaskResolve: ((remove: boolean) => void) | null = null
+
+function askDeleteTaskModal(title: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    deleteTaskTitle.value = '删除云端任务记录'
+    deleteTaskBody.value = `《${title}》已安装到书架,是否删除该云端任务记录?删除后本地书架不受影响,仅清掉这条云端任务记录。`
+    deleteTaskResolve = resolve
+    deleteTaskOpen.value = true
+  })
+}
+
+function onDeleteTaskConfirm(remove: boolean) {
+  deleteTaskOpen.value = false
+  deleteTaskResolve?.(remove)
+  deleteTaskResolve = null
 }
 
 async function cancelCloudTask(t: WorldGenTaskDTO) {
@@ -491,6 +635,24 @@ watch(hasActiveCloudTasks, (active) => {
   }
 }, { immediate: true })
 
+/** arcs 任务终态提示(completed/failed/paused 各一次;由 cloudTasks 轮询驱动,不重复轮询) */
+watch(cloudTasks, (tasks) => {
+  const id = pendingArcsTaskId.value
+  if (!id) return
+  const t = tasks.find(x => x.id === id)
+  if (!t) return
+  if (t.status === 'completed') {
+    toast.add({ title: '配角故事线已生成', description: '在任务卡片点「更新世界情报」写回作品', color: 'success' })
+    pendingArcsTaskId.value = null
+  } else if (t.status === 'failed') {
+    toast.add({ title: '配角故事线生成失败', description: t.error ?? undefined, color: 'error' })
+    pendingArcsTaskId.value = null
+  } else if (t.status === 'paused') {
+    toast.add({ title: '余额不足,任务已暂停', description: '充值后在云端任务区点「继续任务」即可续跑,已完成的故事线不重复扣费', color: 'warning' })
+    pendingArcsTaskId.value = null
+  }
+})
+
 onUnmounted(() => {
   if (cloudPollTimer) clearInterval(cloudPollTimer)
 })
@@ -526,6 +688,56 @@ function openContinue(w: LocalWork) {
   continueWorkTitle.value = w.title
   continueGames.value = games.value.filter(g => g.workId === w.id)
   continueOpen.value = true
+}
+
+/** 作品卡底部按钮(智能主按钮 + 阅读次按钮):
+ *  有游戏进度→继续游戏;有角色卡→选择角色;云端恢复且无角色卡→生成世界;否则→阅读。
+ *  主按钮不是阅读时补一个「阅读」软按钮保住读正文入口;云端恢复的无正文作品点击阅读只提示。 */
+interface WorkCardAction {
+  label: string
+  icon: string
+  color: 'primary' | 'neutral'
+  variant: 'solid' | 'soft'
+  to?: string
+  onClick?: () => void
+}
+
+function workCardActions(w: LocalWork): WorkCardAction[] {
+  const progress = progressFor('work', w.id)
+  const readAction = (variant: 'solid' | 'soft'): WorkCardAction => isCloudRestored(w)
+    ? {
+        label: '阅读',
+        icon: 'i-lucide-book-open',
+        color: 'neutral',
+        variant: 'soft',
+        onClick: () => toast.add({ title: '云端恢复的作品暂无正文', description: '在「更多 → 补全正文」粘贴全文保存后即可阅读', color: 'warning' })
+      }
+    : { label: readBtnLabel(progress), icon: 'i-lucide-book-open', color: 'primary', variant, to: `/read/work/${w.id}` }
+  if (hasGamesFor(w.id)) {
+    return [
+      { label: '继续游戏', icon: 'i-lucide-gamepad-2', color: 'primary', variant: 'solid', onClick: () => openContinue(w) },
+      readAction('soft')
+    ]
+  }
+  if ((w.overlay?.characters?.length ?? 0) > 0) {
+    return [
+      { label: '选择角色', icon: 'i-lucide-play', color: 'primary', variant: 'solid', onClick: () => selectRole(w) },
+      readAction('soft')
+    ]
+  }
+  if (isCloudRestored(w)) {
+    return [{ label: '生成世界', icon: 'i-lucide-sparkles', color: 'primary', variant: 'solid', to: `/generate?from=work&id=${w.id}` }]
+  }
+  return [readAction('solid')]
+}
+
+/** 作品卡 meta 行:作者 · 全书字数 · 尺度 · 舞台(空项省略) */
+/** 作品卡 meta 行:作者 · 全书字数 · 尺度(舞台单独成段,见模板 R2b) */
+function workMetaLine(w: LocalWork): string {
+  const parts = [`作者: ${w.author || '佚名'}`]
+  parts.push(w.chapters.length ? `全书约 ${fmtChars(w.chapters.reduce((n, c) => n + c.content.length, 0))}` : '无正文')
+  if (w.overlay?.heat) parts.push(`尺度:${w.overlay.heat}`)
+  return parts.join(' · ')
 }
 
 /** 该作品有存档的角色(按最后游玩时间倒序),供模态框选择 */
@@ -774,15 +986,15 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
               <UCard
                 v-for="p in officialWorks"
                 :key="p.id"
-                class="flex flex-col"
+                class="h-full flex flex-col transition hover:border-primary-500/40 hover:shadow-md dark:hover:border-primary-500/30"
               >
-                <p class="break-words font-semibold">
+                <p class="break-words font-semibold leading-snug">
                   {{ p.title }}
                 </p>
-                <p class="truncate text-xs text-neutral-500">
+                <p class="mt-1 truncate text-xs text-neutral-500">
                   {{ p.author || '佚名' }}
                 </p>
-                <div class="mt-2 flex flex-wrap gap-1.5">
+                <div class="mt-2 flex flex-wrap gap-1">
                   <UBadge
                     variant="subtle"
                     size="sm"
@@ -799,7 +1011,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     {{ b.label }}
                   </UBadge>
                 </div>
-                <div class="mt-3 flex flex-wrap gap-2">
+                <div class="mt-auto flex flex-wrap gap-1.5 pt-3">
                   <UButton
                     v-if="p.hasWorld"
                     label="进入世界"
@@ -849,7 +1061,8 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                 :key="t.id"
                 class="!py-3"
               >
-                <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                <!-- R1 状态行:图标 + 标题 + 阶段/消耗徽章(不再与按钮混排) -->
+                <div class="flex min-w-0 items-center gap-2">
                   <UIcon
                     :name="t.status === 'completed'
                       ? 'i-lucide-circle-check'
@@ -878,6 +1091,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     :color="t.status === 'completed' ? 'success' : t.status === 'failed' ? 'error' : t.status === 'cancelled' ? 'neutral' : t.status === 'paused' ? 'warning' : 'info'"
                     variant="soft"
                     size="sm"
+                    class="shrink-0"
                   >
                     {{ worldGenStageLabel(t) }}
                   </UBadge>
@@ -887,6 +1101,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     variant="subtle"
                     size="sm"
                     icon="i-lucide-coins"
+                    class="shrink-0"
                   >
                     {{ t.tokensUsed.toLocaleString() }} tokens
                   </UBadge>
@@ -896,15 +1111,57 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     variant="subtle"
                     size="sm"
                     label="自建 Key"
+                    class="shrink-0"
                   />
+                </div>
+                <p
+                  v-if="t.status === 'failed' && t.error"
+                  class="mt-1.5 break-all text-xs text-red-500"
+                >
+                  {{ t.error }}
+                </p>
+                <UProgress
+                  v-if="t.status === 'running' || t.status === 'uploaded' || t.status === 'paused'"
+                  :model-value="worldGenTaskPercent(t)"
+                  size="xs"
+                  class="mt-2"
+                />
+                <p
+                  v-if="t.status === 'running' || t.status === 'uploaded'"
+                  class="mt-1 text-xs text-neutral-500"
+                >
+                  {{ worldGenStageLabel(t) }} · {{ worldGenTaskPercent(t) }}% · 生成期间可离开页面
+                </p>
+                <p
+                  v-else-if="t.status === 'paused'"
+                  class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+                >
+                  已在 {{ worldGenTaskPercent(t) }}% 处暂停(余额不足);充值后点击「继续任务」从断点恢复,已完成部分不重复扣费
+                </p>
+                <!-- R3 操作行(右对齐,与徽章分离不再乱换行) -->
+                <div class="mt-2 flex justify-end gap-1.5">
+                  <!-- arcs 任务完成:手动「更新世界情报」写回本地作品(已写回则显示已更新禁用) -->
                   <UButton
-                    v-if="t.status === 'completed'"
-                    label="下载安装"
-                    icon="i-lucide-download"
+                    v-if="t.kind === 'arcs' && t.status === 'completed'"
+                    :label="appliedArcsTaskIds[t.id] ? '已更新' : '更新世界情报'"
+                    :icon="appliedArcsTaskIds[t.id] ? 'i-lucide-check' : 'i-lucide-refresh-cw'"
                     color="primary"
-                    variant="soft"
+                    :variant="appliedArcsTaskIds[t.id] ? 'ghost' : 'soft'"
+                    size="sm"
+                    :loading="applyingArcsTaskId === t.id"
+                    :disabled="!!appliedArcsTaskIds[t.id]"
+                    @click="applyArcsResult(t)"
+                  />
+                  <!-- 整书任务完成:下载安装(已安装则显示已安装禁用) -->
+                  <UButton
+                    v-if="t.kind !== 'arcs' && t.status === 'completed'"
+                    :label="taskInstalled(t) ? '已安装' : '下载安装'"
+                    :icon="taskInstalled(t) ? 'i-lucide-check' : 'i-lucide-download'"
+                    color="primary"
+                    :variant="taskInstalled(t) ? 'ghost' : 'soft'"
                     size="sm"
                     :loading="installingTaskId === t.id"
+                    :disabled="taskInstalled(t)"
                     @click="installCloudTask(t)"
                   />
                   <UButton
@@ -936,30 +1193,6 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     @click="cancelCloudTask(t)"
                   />
                 </div>
-                <p
-                  v-if="t.status === 'failed' && t.error"
-                  class="mt-1.5 break-all text-xs text-red-500"
-                >
-                  {{ t.error }}
-                </p>
-                <UProgress
-                  v-if="t.status === 'running' || t.status === 'uploaded' || t.status === 'paused'"
-                  :model-value="worldGenTaskPercent(t)"
-                  size="xs"
-                  class="mt-2"
-                />
-                <p
-                  v-if="t.status === 'running' || t.status === 'uploaded'"
-                  class="mt-1 text-xs text-neutral-500"
-                >
-                  {{ worldGenStageLabel(t) }} · {{ worldGenTaskPercent(t) }}% · 生成期间可离开页面,完成后自动安装进书架
-                </p>
-                <p
-                  v-else-if="t.status === 'paused'"
-                  class="mt-1 text-xs text-amber-600 dark:text-amber-400"
-                >
-                  已在 {{ worldGenTaskPercent(t) }}% 处暂停(余额不足);充值后点击「继续任务」从断点恢复,已完成部分不重复扣费
-                </p>
               </UCard>
             </div>
           </div>
@@ -984,44 +1217,67 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
               <UCard
                 v-for="w in works"
                 :key="w.id"
-                class="flex flex-col"
+                class="h-full flex flex-col transition hover:border-primary-500/40 hover:shadow-md dark:hover:border-primary-500/30"
               >
-                <p class="break-words font-semibold">
-                  {{ w.title }}
+                <!-- R1 标题行 + 同步状态 -->
+                <div class="flex items-start justify-between gap-2">
+                  <p class="min-w-0 break-words font-semibold leading-snug">
+                    {{ w.title }}
+                  </p>
+                  <span class="flex shrink-0 flex-wrap justify-end gap-1">
+                    <UBadge
+                      v-if="backupsLoaded && backupStale(w)"
+                      color="warning"
+                      variant="soft"
+                      size="sm"
+                    >
+                      有更新待同步
+                    </UBadge>
+                    <UBadge
+                      v-else-if="w.syncStatus === 'synced'"
+                      color="success"
+                      variant="soft"
+                      size="sm"
+                    >
+                      已同步
+                    </UBadge>
+                    <UBadge
+                      v-else-if="w.syncStatus === 'dirty'"
+                      color="warning"
+                      variant="soft"
+                      size="sm"
+                    >
+                      待同步
+                    </UBadge>
+                    <UBadge
+                      v-else
+                      color="neutral"
+                      variant="soft"
+                      size="sm"
+                    >
+                      本地
+                    </UBadge>
+                  </span>
+                </div>
+
+                <!-- R2 作者/字数/尺度(合并一行) -->
+                <p class="mt-1.5 truncate text-xs text-neutral-500">
+                  {{ workMetaLine(w) }}
                 </p>
-                <div class="mt-1.5 flex flex-wrap gap-1.5">
-                  <UBadge
-                    v-if="w.syncStatus === 'synced'"
-                    color="success"
-                    variant="soft"
-                    size="sm"
-                  >
-                    已同步
-                  </UBadge>
-                  <UBadge
-                    v-else-if="w.syncStatus === 'dirty'"
-                    color="warning"
-                    variant="soft"
-                    size="sm"
-                  >
-                    待同步
-                  </UBadge>
-                  <UBadge
-                    v-else
-                    color="neutral"
-                    variant="soft"
-                    size="sm"
-                  >
-                    本地
-                  </UBadge>
-                  <UBadge
-                    v-if="backupsLoaded && backupStale(w)"
-                    color="warning"
-                    variant="soft"
-                    size="sm"
-                  >
-                    有更新待同步
-                  </UBadge>
+
+                <!-- R2b 舞台说明文(单独一段,最多两行) -->
+                <p
+                  v-if="w.overlay?.setting"
+                  class="mt-1 line-clamp-2 text-xs leading-relaxed text-neutral-500"
+                >
+                  {{ w.overlay.setting }}
+                </p>
+
+                <!-- R3 状态徽章:云端恢复 + 阅读进度 + 补充故事线中 -->
+                <div
+                  v-if="isCloudRestored(w) || readBadges(progressFor('work', w.id)).length || activeArcsTask(w.id)"
+                  class="mt-2 flex flex-wrap gap-1"
+                >
                   <UBadge
                     v-if="isCloudRestored(w)"
                     color="warning"
@@ -1039,19 +1295,25 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                   >
                     {{ b.label }}
                   </UBadge>
+                  <UBadge
+                    v-if="activeArcsTask(w.id)"
+                    color="info"
+                    variant="soft"
+                    size="sm"
+                  >
+                    <span class="flex items-center gap-1">
+                      <UIcon
+                        name="i-lucide-loader-circle"
+                        class="size-3 animate-spin"
+                      />
+                      补充故事线中
+                    </span>
+                  </UBadge>
                 </div>
-                <p class="mt-1 truncate text-xs text-neutral-500">
-                  作者: {{ w.author || '佚名' }} · {{ w.chapters.length ? `全书约 ${fmtChars(w.chapters.reduce((n, c) => n + c.content.length, 0))}` : '无正文' }}
-                </p>
-                <p
-                  v-if="w.overlay?.setting || w.overlay?.heat"
-                  class="mt-1 truncate text-xs text-neutral-500"
-                >
-                  {{ [w.overlay?.heat ? `尺度:${w.overlay.heat}` : '', w.overlay?.setting].filter(Boolean).join(' · ') }}
-                </p>
+                <!-- R4 性向/标签 + 世界详情徽章(可点进世界详情) -->
                 <div
-                  v-if="w.overlay?.orientation || workCardTags(w).length"
-                  class="mt-1.5 flex flex-wrap gap-1"
+                  v-if="(w.overlay?.orientation && w.overlay.orientation !== '不明') || workCardTags(w).length || entityCount(w) || w.conflicts?.length || w.warnings?.length"
+                  class="mt-2 flex flex-wrap gap-1"
                 >
                   <UBadge
                     v-if="w.overlay?.orientation && w.overlay.orientation !== '不明'"
@@ -1072,25 +1334,12 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     {{ tag }}
                   </UBadge>
                   <UBadge
-                    v-if="workCardTagTotal(w) > workCardTags(w).length"
-                    color="neutral"
-                    variant="subtle"
-                    size="sm"
-                  >
-                    +{{ workCardTagTotal(w) - workCardTags(w).length }}
-                  </UBadge>
-                </div>
-                <div
-                  v-if="entityCount(w) || w.conflicts?.length || w.warnings?.length"
-                  class="mt-1.5 flex flex-wrap gap-1"
-                >
-                  <UBadge
                     v-if="entityCount(w)"
                     color="neutral"
                     variant="subtle"
                     size="sm"
                     icon="i-lucide-globe"
-                    class="cursor-pointer"
+                    class="cursor-pointer transition hover:opacity-70"
                     @click="openWorldDetail(w.id)"
                   >
                     实体 {{ entityCount(w) }}
@@ -1101,7 +1350,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     variant="subtle"
                     size="sm"
                     icon="i-lucide-git-merge"
-                    class="cursor-pointer"
+                    class="cursor-pointer transition hover:opacity-70"
                     @click="openWorldDetail(w.id)"
                   >
                     冲突 {{ w.conflicts.length }}
@@ -1112,69 +1361,41 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     variant="subtle"
                     size="sm"
                     icon="i-lucide-triangle-alert"
-                    class="cursor-pointer"
+                    class="cursor-pointer transition hover:opacity-70"
                     @click="openWorldDetail(w.id)"
                   >
                     告警 {{ w.warnings.length }}
                   </UBadge>
                 </div>
-                <p class="mt-1 text-xs text-neutral-500">
-                  最后操作: {{ fmtTime(w.updatedAt ?? w.createdAt) }}
-                </p>
-                <div class="mt-1">
+
+                <!-- R5 底部信息:最后操作 / tokens 消耗各占一行(顶到卡片底部) -->
+                <div class="mt-auto flex flex-col gap-1 pt-3">
+                  <p class="min-w-0 truncate text-xs text-neutral-500">
+                    最后操作: {{ fmtTime(w.updatedAt ?? w.createdAt) }}
+                  </p>
                   <UBadge
                     v-if="w.tokensUsed"
                     color="neutral"
                     variant="subtle"
                     size="sm"
                     icon="i-lucide-coins"
+                    class="self-start"
                   >
                     已消耗 {{ w.tokensUsed.toLocaleString() }} tokens
                   </UBadge>
                 </div>
-                <div class="mt-3 flex flex-wrap items-center gap-1.5">
+                <!-- R6 操作区:智能主按钮(+ 阅读次按钮)+ 设置菜单 -->
+                <div class="mt-2 flex items-center gap-1.5">
                   <UButton
-                    v-if="!isCloudRestored(w)"
-                    :label="readBtnLabel(progressFor('work', w.id))"
-                    icon="i-lucide-book-open"
-                    color="primary"
-                    variant="soft"
+                    v-for="a in workCardActions(w)"
+                    :key="a.label"
+                    :label="a.label"
+                    :icon="a.icon"
+                    :color="a.color"
+                    :variant="a.variant"
                     size="sm"
-                    :to="`/read/work/${w.id}`"
-                  />
-                  <UButton
-                    v-else
-                    :label="readBtnLabel(progressFor('work', w.id))"
-                    icon="i-lucide-book-open"
-                    color="neutral"
-                    variant="soft"
-                    size="sm"
-                    @click="toast.add({ title: '云端恢复的作品暂无正文', description: '在「更多 → 补全正文」粘贴全文保存后即可阅读', color: 'warning' })"
-                  />
-                  <UButton
-                    v-if="!w.overlay?.characters?.length"
-                    label="生成世界"
-                    icon="i-lucide-sparkles"
-                    color="primary"
-                    size="sm"
-                    :to="`/generate?from=work&id=${w.id}`"
-                  />
-                  <UButton
-                    v-if="w.overlay?.characters?.length"
-                    label="选择角色"
-                    icon="i-lucide-play"
-                    color="primary"
-                    size="sm"
-                    @click="selectRole(w)"
-                  />
-                  <UButton
-                    v-if="hasGamesFor(w.id)"
-                    label="继续游戏"
-                    icon="i-lucide-rotate-ccw"
-                    color="primary"
-                    variant="outline"
-                    size="sm"
-                    @click="openContinue(w)"
+                    :to="a.to"
+                    @click="a.onClick?.()"
                   />
                   <UDropdownMenu
                     :items="workMenuItems(w)"
@@ -1211,7 +1432,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
               <UCard
                 v-for="b in backups"
                 :key="b.workId"
-                class="flex items-center justify-between gap-2"
+                class="h-full flex items-center justify-between gap-2 transition hover:border-primary-500/40 hover:shadow-md dark:hover:border-primary-500/30"
               >
                 <div class="min-w-0">
                   <p class="truncate text-sm font-semibold">
@@ -1444,6 +1665,86 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       </template>
     </UModal>
 
+    <!-- 安装完成后询问:是否删除云端任务记录 -->
+    <UModal
+      v-model:open="deleteTaskOpen"
+      :title="deleteTaskTitle"
+    >
+      <template #body>
+        <p class="text-sm text-neutral-600 dark:text-neutral-300">
+          {{ deleteTaskBody }}
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="保留记录"
+            color="neutral"
+            variant="outline"
+            @click="onDeleteTaskConfirm(false)"
+          />
+          <UButton
+            label="删除记录"
+            icon="i-lucide-trash-2"
+            color="error"
+            @click="onDeleteTaskConfirm(true)"
+          />
+        </div>
+      </template>
+    </UModal>
+
+    <!-- 导出游玩对话:选择会话(按角色分组,点击直接下载该会话旁白剧情 TXT) -->
+    <UModal
+      v-model:open="exportSessionOpen"
+      :title="`导出游玩对话 · ${exportSessionWork?.title ?? ''}`"
+    >
+      <template #body>
+        <div
+          v-if="exportSessionGroups.length === 0"
+          class="py-6 text-center text-sm text-neutral-500"
+        >
+          该作品还没有游戏会话,先开始一局游戏再导出
+        </div>
+        <div
+          v-else
+          class="flex max-h-[60vh] flex-col gap-4 overflow-y-auto"
+        >
+          <div
+            v-for="grp in exportSessionGroups"
+            :key="grp.name"
+          >
+            <p class="mb-1.5 text-xs font-semibold text-neutral-500">
+              {{ grp.name }}
+            </p>
+            <div class="flex flex-col gap-1.5">
+              <button
+                v-for="g in grp.list"
+                :key="g.id"
+                type="button"
+                class="flex items-center justify-between gap-2 rounded-lg border border-neutral-200 px-3 py-2 text-left text-sm transition hover:border-primary-400 dark:border-neutral-700"
+                :title="`导出「${grp.name}」的游玩对话 TXT`"
+                @click="exportSessionTxt(g)"
+              >
+                <span class="shrink-0 text-xs tabular-nums text-neutral-500">
+                  {{ turnsOf(g) }} 回合
+                </span>
+                <span class="min-w-0 flex-1 truncate text-right text-xs text-neutral-500">
+                  {{ fmtTime(g.updatedAt) }}
+                </span>
+                <UIcon
+                  name="i-lucide-download"
+                  class="size-4 shrink-0 text-neutral-400"
+                />
+              </button>
+            </div>
+          </div>
+        </div>
+        <p class="mt-3 text-xs text-neutral-400">
+          点击某条会话直接下载该会话的旁白剧情 TXT(自动剔除玩家行动与选项)
+        </p>
+      </template>
+    </UModal>
+
     <!-- 删除云端备份确认 -->
     <UModal
       v-model:open="backupDeleteOpen"
@@ -1513,7 +1814,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       <template #title>
         <span class="flex items-center gap-2">
           <UIcon
-            name="i-lucide-rotate-ccw"
+            name="i-lucide-gamepad-2"
             class="size-4 text-primary"
           />
           继续游戏

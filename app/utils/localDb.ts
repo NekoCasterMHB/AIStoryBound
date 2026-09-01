@@ -10,7 +10,6 @@ import type { CachedPreset, CharacterCard, LocalGame, LocalWork, ReadingProgress
 import type { AiSkill } from '#shared/ai-skills'
 import type { ToySettings } from '#shared/toy'
 import type { PluginDescriptor } from '#shared/plugin'
-import type { ExtractCacheEntry } from './extractCache'
 
 export const DB_NAME = 'aiSpankWorld-local'
 export const DB_VERSION = 9
@@ -27,7 +26,7 @@ export const STORE_TOY_SETTINGS = 'toy-settings'
 export const STORE_TOY_ADAPTERS = 'toy-adapters'
 /** 用户偏好(单条记录,keyPath='key';如叙事速度 key='narr-speed') */
 export const STORE_PREFS = 'prefs'
-/** 断点续跑:extract 单元提取结果缓存(keyPath='key',见 app/utils/extractCache.ts) */
+/** 断点续跑:extract 单元提取结果缓存(本地生成管线已移除,表保留兼容旧库数据) */
 export const STORE_EXTRACT_CACHE = 'extract-cache'
 
 /** 兼容旧 worlds store 的行结构(旧版按 novelId 存 CharacterCard 数组) */
@@ -67,7 +66,7 @@ export class AIStoryBoundDB extends Dexie {
   'toy-settings'!: Table<ToySettingsRow, string>
   'toy-adapters'!: Table<ImportedPluginRow, string>
   prefs!: Table<PrefsRow, string>
-  'extract-cache'!: Table<ExtractCacheEntry, string>
+  'extract-cache'!: Table<{ key: string } & Record<string, unknown>, string>
 
   constructor() {
     super(DB_NAME)

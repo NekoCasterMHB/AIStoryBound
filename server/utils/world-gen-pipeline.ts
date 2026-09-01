@@ -25,10 +25,11 @@ import type {
   ChapterExtraction, CharacterArc, EntityConflict, StoryBeat, TokenUsage, WorldEntities, WorldOverlay
 } from '../../shared/novel'
 import {
-  assembleStoryline, buildCharacterArcsMessages, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
-  buildSynthesizeMessages, emptyExtraction, finalizeCards, mergeExtractions, mergeOverlayMeta,
-  normalizeCharacterArcs, normalizeExtraction, quoteByChapter, splitUnits, summarizeWorldLocal, verifyQuotes,
-  ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS
+  assembleStoryline, buildCharacterArcMessages, buildCheckMessages, buildEcoSynthMessages,
+  buildExtractMessages, buildLocalCards, buildSynthesizeMessages, characterArcCandidates, emptyExtraction, finalizeCards,
+  mergeExtractions, mergeOverlayMeta, normalizeCharacterArcs, normalizeExtraction, quoteByChapter, splitUnits,
+  summarizeWorldLocal, verifyQuotes, ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS,
+  ARC_WINDOW_BEAT_LIMIT, ARC_WINDOW_CHARS
 } from '../../shared/world-build'
 import type { ExtractUnit, WorldLocalSummary } from '../../shared/world-build'
 import type { WorldGenMode, WorldGenStageDetail } from '../../shared/world-gen-task'
@@ -39,6 +40,8 @@ import { parseNovelBytes } from './novel-parser'
 const MAX_FAIL_RATIO = 1 / 3
 /** 提取并发(与浏览器端 EXTRACT_CONCURRENCY 一致) */
 export const EXTRACT_CONCURRENCY = 4
+/** arcs 任务创建时余额预检的输出预留估算(tokens);实际调用不设 maxTokens,输出上限交给上游模型自身 */
+export const ARCS_UNIT_OUTPUT_RESERVE = 8000
 /** running 状态超过该时长视为孤儿(Workflow 被强杀/执行环境异常),由状态接口兜底判失败并退款;
  *  正常运行时提取单元会持续更新任务行,最长的静默段是检查/成书的单次 AI 调用(约 10 分钟),30 分钟足够安全 */
 const STALE_RUNNING_MS = 30 * 60 * 1000
@@ -461,6 +464,13 @@ export async function stepPlanUnits(ctx: WorldGenCtx): Promise<UnitPlan> {
   return plan
 }
 
+/** 步骤 1+2:解析(编码/清洗/作者正则)+ 切段计划,两个纯代码步合成一个(少一次 workflow step 与 DB 往返) */
+export async function stepParseAndPlan(ctx: WorldGenCtx): Promise<{ parsed: ParseOutcome, plan: UnitPlan }> {
+  const parsed = await stepParseSource(ctx)
+  const plan = await stepPlanUnits(ctx)
+  return { parsed, plan }
+}
+
 /** 提取完成数刷新(stage_detail.doneUnits;必须保留 plan 等既有字段,进度更新会穿插在提取期间) */
 async function bumpExtractProgress(ctx: TaskRef, totalUnits: number): Promise<void> {
   const task = await requireTask(ctx)
@@ -541,7 +551,7 @@ async function putScratch(ctx: WorldGenCtx, name: string, value: unknown): Promi
   await ctx.bucket.put(scratchKey(ctx.taskId, name), JSON.stringify(value))
 }
 
-async function getScratch<T>(ctx: WorldGenCtx, name: string): Promise<T | null> {
+export async function getScratch<T>(ctx: WorldGenCtx, name: string): Promise<T | null> {
   const obj = await ctx.bucket.get(scratchKey(ctx.taskId, name))
   if (!obj) return null
   try {
@@ -746,37 +756,125 @@ export async function stepSynthesize(ctx: WorldGenCtx): Promise<{ cardCount: num
   return { cardCount: (overlay.characters ?? []).length, title: overlay.title || title }
 }
 
-/** 步骤 6.5(仅完整模式):配角独立故事线(角色弧线)。失败降级为告警,不中止;
- *  产物写 R2 scratch 的 arcs.json,stepFinalize 读取后随成书 payload 落盘。 */
-export async function stepCharacterArcs(ctx: WorldGenCtx): Promise<{ count: number }> {
+// ---- 配角故事线生成(arcs 补充任务 + world 成书共用,逐单元) ----
+
+/** arcs 任务输入载荷(world_gen_tasks.payload JSON):客户端上传该作品实体库、主线细纲与全书正文 */
+interface ArcsTaskPayload {
+  entities: WorldEntities
+  storyline: StoryBeat[]
+  /** 全书正文(chapters.join('\n');用于登场段原文窗口,缺失时跳过注入) */
+  text?: string
+}
+
+function parseArcsPayload(raw: string | null): ArcsTaskPayload | null {
+  if (!raw) return null
+  try {
+    const p = JSON.parse(raw) as ArcsTaskPayload
+    if (p && Array.isArray(p.entities?.characters) && Array.isArray(p.storyline)) return p
+  } catch {
+    // 载荷损坏按缺失处理
+  }
+  return null
+}
+
+/**
+ * 配角故事线步骤(arcs 补充任务与 world 成书共用):按候选角色逐单元生成独立故事线。
+ *  - 数据来源:arcs 任务读 payload(entities/storyline/text);world 成书读 merged 实体 + R2 原文;
+ *  - 进度 = doneUnits/totalUnits(stage 'arcs' 期间客户端按故事线条数展示);
+ *  - 每单元一次 AI 调用,成功即原子扣费(余额不足抛 InsufficientTokensError → paused);
+ *  - 单单元失败(非余额)降级跳过并记 warning;全部失败 → 抛错判 failed;至少 1 条成功 → 完成;
+ *  - 结果写 scratch arcs.json(world 任务由 finalize 落盘成书,arcs 任务由 /tasks/[id]/arcs 读取);
+ *  - 每单元注入该角色前几个登场段的原文节选,模型据此还原细节(忠实度接近按原文提取)。
+ */
+export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: number }> {
   const task = await requireTask(ctx)
   await assertNotCancelled(task)
-  if (task.mode === 'eco') return { count: 0 }
-  const overlay = await getScratch<WorldOverlay>(ctx, 'overlay')
-  const merged = await getScratch<MergedState>(ctx, 'merged')
-  if (!overlay || !merged) return { count: 0 }
-  const { storyline } = merged
-  if (!storyline || storyline.length === 0) return { count: 0 }
 
-  const messages = buildCharacterArcsMessages(task.title || '小说', merged.entities, storyline)
-  if (messages.length === 0) return { count: 0 }
-  try {
-    const relay = await relayOf(ctx, task)
-    const { data, usage } = await callAiJson(relay, {
-      messages,
-      maxTokens: 8000,
-      temperature: 0.3
-    })
-    await recordTaskUsage(ctx, task, usage)
-    const arcs = normalizeCharacterArcs(data, storyline, overlay.characters)
-    await putScratch(ctx, 'arcs', arcs)
-    return { count: arcs.length }
-  } catch (e) {
-    // 余额不足为致命错误:终止任务;其余失败降级(不影响成书)
-    if (e instanceof InsufficientTokensError) throw e
-    console.warn('[world-gen] 配角故事线生成失败,已跳过', { taskId: ctx.taskId }, e)
+  // ---- 数据来源:arcs 任务用 payload;world 成书用 merged + R2 原文 ----
+  let entities: WorldEntities
+  let storyline: StoryBeat[]
+  let sourceText: string | null
+  if (task.kind === 'arcs') {
+    const payload = parseArcsPayload(task.payload)
+    if (!payload) throw new Error('任务载荷缺失,无法生成配角故事线')
+    entities = payload.entities
+    storyline = payload.storyline
+    sourceText = payload.text ?? null
+  } else {
+    const merged = await getScratch<MergedState>(ctx, 'merged')
+    if (!merged) throw new Error('合并结果缺失,无法生成配角故事线')
+    entities = merged.entities
+    storyline = merged.storyline
+    if (!storyline || storyline.length === 0) return { count: 0 }
+    sourceText = (await deriveUnits(ctx, task)).text
+  }
+
+  const candidates = characterArcCandidates(entities, storyline)
+  const totalUnits = candidates.length
+  if (totalUnits === 0) {
+    // 无候选角色:arcs 任务直接完成(空结果);world 成书静默跳过(由 finalize 落盘)
+    if (task.kind === 'arcs') {
+      await putScratch(ctx, 'arcs', [])
+      await markTask(ctx, { status: 'completed', stage: 'done', warnings: '[]' })
+    }
     return { count: 0 }
   }
+
+  const title = task.title || '未命名小说'
+  await markTask(ctx, { stage: 'arcs', stageDetail: JSON.stringify({ doneUnits: 0, totalUnits }) })
+
+  // 登场段原文窗口:每个候选取前 ARC_WINDOW_BEAT_LIMIT 个登场段、每段 ARC_WINDOW_CHARS 字(startChar 越界/缺失跳过)
+  const beatByIndex = new Map(storyline.map(b => [b.index, b]))
+  const textWindowOf = (candidate: { beats: number[] }): string => {
+    if (!sourceText) return ''
+    const parts: string[] = []
+    for (const bi of candidate.beats.slice(0, ARC_WINDOW_BEAT_LIMIT)) {
+      const beat = beatByIndex.get(bi)
+      if (!beat || typeof beat.startChar !== 'number' || beat.startChar < 0 || beat.startChar >= sourceText.length) continue
+      parts.push(`【段${bi + 1}】${sourceText.slice(beat.startChar, beat.startChar + ARC_WINDOW_CHARS)}`)
+    }
+    return parts.join('\n\n')
+  }
+
+  const arcs: CharacterArc[] = []
+  const warnings: string[] = []
+  const relay = await relayOf(ctx, task)
+  // 单 step 内并发(与提取同款批量);arcs 数组为同执行环境共享内存,顺序 push 无竞态。
+  // 未完成单元不做持久化检查点:重跑会重跑全部单元并重新扣费,与「续跑重跑并重扣费」语义一致。
+  await pool(candidates.map((_, i) => i), EXTRACT_CONCURRENCY, async (i) => {
+    const candidate = candidates[i]!
+    try {
+      // 不设 maxTokens:输出上限交给上游模型自身,避免登场段多时被低上限截断丢段
+      const { data, usage } = await callAiJson(relay, {
+        messages: buildCharacterArcMessages(title, candidate, storyline, textWindowOf(candidate)),
+        temperature: 0.3
+      })
+      // 先扣费再落结果:余额不足抛出时该条结果不计入,续跑重跑并重新扣费,不漏账
+      await recordTaskUsage(ctx, task, usage)
+      const normalized = normalizeCharacterArcs(data, storyline, entities.characters)
+      if (normalized.length > 0) arcs.push(normalized[0]!)
+    } catch (e) {
+      if (e instanceof InsufficientTokensError) throw e
+      warnings.push(`「${candidate.card.name}」故事线生成失败:${e instanceof Error ? e.message : String(e)}`)
+    }
+  })
+
+  if (arcs.length === 0) {
+    // arcs 补充任务:全部失败 → 判失败;world 成书:降级跳过(不影响成书落盘)
+    if (task.kind === 'arcs') throw new Error(warnings[0] ?? '所有角色的故事线均生成失败')
+    await markTask(ctx, { stage: 'done', warnings: JSON.stringify(warnings.slice(0, 20)) })
+    return { count: 0 }
+  }
+  await putScratch(ctx, 'arcs', arcs)
+  const done: Partial<typeof worldGenTasks.$inferInsert> = {
+    stage: 'done',
+    stageDetail: JSON.stringify({ doneUnits: totalUnits, totalUnits }),
+    warnings: JSON.stringify(warnings.slice(0, 20))
+  }
+  // arcs 任务在此完成;world 任务保持 running,由 finalize 落盘并置完成
+  if (task.kind === 'arcs') done.status = 'completed'
+  await markTask(ctx, done)
+  return { count: arcs.length }
 }
 
 export interface WorldJsonPayload {
@@ -891,17 +989,26 @@ export async function runWorldGenPipelineInline(ctx: WorldGenCtx): Promise<void>
   try {
     const task = await requireTask(ctx)
     await assertNotCancelled(task)
-    await markTask(ctx, { status: 'running', stage: 'parse' })
-    const parsed = await stepParseSource(ctx)
-    if (!parsed.author) await stepAuthorAi(ctx)
-    const plan = await stepPlanUnits(ctx)
-    await pool(plan.units.map((_, i) => i), EXTRACT_CONCURRENCY, async (i) => {
+    await markTask(ctx, { status: 'running', stage: task.kind === 'arcs' ? 'arcs' : 'parse' })
+    // arcs 任务:只跑补充配角故事线步骤
+    if (task.kind === 'arcs') {
+      await stepSupplementArcs(ctx)
+      return
+    }
+    const { parsed, plan } = await stepParseAndPlan(ctx)
+    // author 识别(正则未命中时)与第一批提取并行,后续批次照旧
+    const firstBatch = plan.units.map((_, i) => i).slice(0, EXTRACT_CONCURRENCY)
+    await Promise.all([
+      ...(parsed.author ? [] : [stepAuthorAi(ctx)]),
+      ...firstBatch.map(i => extractUnitAt(ctx, plan, i))
+    ])
+    await pool(plan.units.map((_, i) => i).slice(firstBatch.length), EXTRACT_CONCURRENCY, async (i) => {
       await extractUnitAt(ctx, plan, i)
     })
     await stepMerge(ctx, plan)
     if (task.mode !== 'eco') await stepCheck(ctx)
     await stepSynthesize(ctx)
-    if (task.mode !== 'eco') await stepCharacterArcs(ctx)
+    if (task.mode !== 'eco') await stepSupplementArcs(ctx)
     await stepFinalize(ctx)
   } catch (e) {
     if (e instanceof WorldGenCancelledError) return

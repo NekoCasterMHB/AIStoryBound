@@ -66,7 +66,7 @@ function progressLabel(g: LocalGame): string {
       <div>
         <h1 class="flex items-center gap-2 text-xl font-semibold">
           <UIcon
-            name="i-lucide-rotate-ccw"
+            name="i-lucide-gamepad-2"
             class="size-5 text-primary"
           />
           继续游戏

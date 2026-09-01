@@ -4,8 +4,7 @@
 // 也支持预置小说详情页跳转(?from=preset&id=xxx&eco=0|1):自动加载该小说为附件,直接进入确认页由用户确认;
 // 支持创意工坊「书架」购买的本地作品跳转(?from=work&id=xxx):从本地书架加载章节进入确认页。
 // 相同 txt 的历史成书按内容哈希命中共享缓存:可拉取(扣记录消耗的一半)或重新生成(正常扣费并刷新缓存)。
-import { parseLocalNovel, generateWorld, getWork, toContentSegments } from '../utils/worldGen'
-import { clearExtractCache } from '../utils/extractCache'
+import { parseLocalNovel, getWork, toContentSegments } from '../utils/worldGen'
 import { CancelledError } from '../utils/aiRelay'
 import { checkWorldGenQuota, estimateWorldGenTokens } from '../utils/tokenQuota'
 import { loadPresetChapters } from '../utils/chapters'
@@ -14,7 +13,7 @@ import type { PrebuiltWorld } from '../utils/prebuiltWorld'
 import { setAdultModeEnabled } from '../utils/adultMode'
 import { getActiveRelayConfig } from '../utils/aiConfigStore'
 import {
-  hashText, checkWorldDuplicate, uploadWorldGenTask, pullCachedWorld,
+  uploadWorldGenTask, pullCachedWorld,
   pollWorldGenTask, downloadAndInstallWorldTask, cancelWorldGenTask
 } from '../utils/worldGenCloud'
 import type { WorldCacheHit, WorldGenTaskDTO } from '../utils/worldGenCloud'
@@ -191,50 +190,26 @@ watch(liveTarget, (target) => {
 const abortCtrl = ref<AbortController | null>(null)
 let runSeq = 0
 
-// ---- 云端任务生成(上传 txt 的默认路径;预置/本地作品入口保留原管线) ----
+// ---- 云端任务生成(唯一路径:上传 txt / 本地作品 / 预置小说统一走云端) ----
 
 /** 原始 File(云端任务上传需要;确认页选定后保留,重新选择时清空) */
 const cloudFile = ref<File | null>(null)
-/** 文件内容 sha-256(选文件后按转换后文本计算;共享缓存查重键) */
-const cloudHash = ref<string | null>(null)
 /** 上传文件的编码识别与预览(转换后 UTF-8 文本;仅上传 txt 路径展示) */
 const uploadMeta = ref<{ encodingLabel: string, preview: string, truncated: boolean, charCount: number } | null>(null)
-/** 相同 txt 的历史成书(缓存命中时确认页提供「拉取已有世界」) */
-const dupHit = ref<WorldCacheHit | null>(null)
-const dupChecking = ref(false)
 /** 云端任务快照(轮询更新)与上传进度 */
 const cloudTask = ref<WorldGenTaskDTO | null>(null)
 const cloudUploadPct = ref(0)
 const pullingCached = ref(false)
+/** 上传命中共享缓存后的待选择状态(弹「拉取 / 重新生成」;取消后回到确认页) */
+const pullChoice = ref<{ hit: WorldCacheHit, charCount: number } | null>(null)
+/** 缓存选择弹窗开关(与 pullChoice 联动;关闭即取消) */
+const pullChoiceOpen = computed({
+  get: () => pullChoice.value !== null,
+  set: (v: boolean) => { if (!v) pullChoice.value = null }
+})
 
 /** 是否正在上传原文(已进入生成态但任务尚未创建) */
 const cloudUploading = computed(() => genState.value.phase === 'generating' && !cloudTask.value && !!cloudFile.value)
-
-/** 查重(选文件后与切换模式时触发;失败静默,不影响正常生成) */
-async function refreshDupHit() {
-  const file = cloudFile.value
-  if (!file || fromPreset.value) {
-    dupHit.value = null
-    return
-  }
-  dupChecking.value = true
-  try {
-    // 特征码基于转换后的 UTF-8 文本(handleFile 解析时已算好),非原始文件字节
-    if (!cloudHash.value) {
-      dupHit.value = null
-      return
-    }
-    dupHit.value = await checkWorldDuplicate(cloudHash.value, ecoMode.value ? 'eco' : 'full')
-  } catch {
-    dupHit.value = null
-  } finally {
-    dupChecking.value = false
-  }
-}
-
-watch(ecoMode, () => {
-  if (genState.value.phase === 'confirm' && cloudFile.value) void refreshDupHit()
-})
 
 /** 云端任务快照 → 复用本地管线的进度对象(生成页 stepper/进度条/告警 UI 全部复用) */
 function taskToProgress(t: WorldGenTaskDTO): GenerateProgress {
@@ -251,15 +226,15 @@ function taskToProgress(t: WorldGenTaskDTO): GenerateProgress {
 
 function resetCloudState() {
   cloudFile.value = null
-  cloudHash.value = null
-  dupHit.value = null
   uploadMeta.value = null
   cloudTask.value = null
   cloudUploadPct.value = 0
+  pullChoice.value = null
 }
 
-/** 确认页「开始生成」(上传 txt):云端任务路径 —— 上传 → 轮询 → 完成自动安装 */
-async function startCloudGeneration() {
+/** 上传并启动云端任务:上传 → 命中共享缓存则弹「拉取 / 重新生成」→ 轮询 → 完成手动安装。
+ *  forceRegenerate=true 时忽略缓存直接建任务(用户在缓存弹窗里选择「重新生成」后重传)。 */
+async function startCloudGeneration(opts: { charCount?: number, forceRegenerate?: boolean } = {}) {
   const file = cloudFile.value
   if (!file) return
   const seq = ++runSeq
@@ -277,16 +252,26 @@ async function startCloudGeneration() {
     } catch {
       config = null
     }
-    const task = await uploadWorldGenTask({
+    const res = await uploadWorldGenTask({
       file,
       mode: ecoMode.value ? 'eco' : 'full',
-      charCount: totalChars.value,
+      charCount: opts.charCount ?? totalChars.value,
       config,
+      forceRegenerate: opts.forceRegenerate,
       onUploadProgress: (loaded, total) => {
         if (seq === runSeq) cloudUploadPct.value = Math.min(100, Math.round((loaded / total) * 100))
       }
     })
     if (seq !== runSeq) return
+    // 命中共享缓存:服务端未建任务,弹「拉取(半价)/ 重新生成 / 取消」选择
+    if (!res.task && res.cacheHit) {
+      abortCtrl.value = null
+      pullChoice.value = { hit: res.cacheHit, charCount: opts.charCount ?? totalChars.value }
+      genState.value = { phase: 'confirm', title: genState.value.title, progress: null, error: null, resultId: null, tokensUsed: 0 }
+      return
+    }
+    if (!res.task) throw new Error('服务端未返回任务')
+    const task = res.task
     cloudTask.value = task
     genState.value.progress = taskToProgress(task)
     const final = await pollWorldGenTask(task.id, (t) => {
@@ -319,8 +304,6 @@ async function startCloudGeneration() {
     genState.value.tokensUsed = final.tokensUsed
     resultWork.value = null
     abortCtrl.value = null
-    lastFailedGen.value = null
-    await clearExtractCache().catch(() => { /* 清缓存失败不影响结果展示 */ })
   } catch (err) {
     if (seq !== runSeq) return
     abortCtrl.value = null
@@ -334,6 +317,22 @@ async function startCloudGeneration() {
       tokensUsed: cloudTask.value?.tokensUsed ?? 0
     }
   }
+}
+
+/** 上传命中缓存弹窗:拉取半价成书(直接下载安装进书架) */
+function onPullChoicePull() {
+  const c = pullChoice.value
+  if (!c) return
+  pullChoice.value = null
+  void startPullCached(c.hit)
+}
+
+/** 上传命中缓存弹窗:忽略缓存重新生成(带 forceRegenerate 重传同一文件) */
+function onPullChoiceRegenerate() {
+  const c = pullChoice.value
+  if (!c) return
+  pullChoice.value = null
+  void startCloudGeneration({ forceRegenerate: true, charCount: c.charCount })
 }
 
 /** 确认页「拉取已有世界」:扣记录消耗的一半,直接下载安装进书架 */
@@ -350,7 +349,6 @@ async function startPullCached(hit: WorldCacheHit) {
     genState.value.tokensUsed = task.tokensUsed
     genState.value.title = work.title
     resultWork.value = work
-    lastFailedGen.value = null
   } catch (e) {
     if (seq !== runSeq) return
     toast.add({
@@ -401,7 +399,6 @@ async function installCompletedCloudTask() {
     genState.value.resultId = work.id
     genState.value.tokensUsed = work.tokensUsed ?? task.tokensUsed
     resultWork.value = work
-    lastFailedGen.value = null
     await navigateTo(`/play/${work.id}`)
   } catch (e) {
     if (seq !== runSeq) return
@@ -489,8 +486,6 @@ async function handleFile(file: File) {
   shownCur = 0
   liveShown.value = 0
   genState.value = { phase: 'parsing', title: file.name, progress: null, error: null, resultId: null, tokensUsed: 0 }
-  // 重新上传/换文件:清空旧提取缓存(带超时,不阻塞解析)
-  void clearExtractCache()
   try {
     const parsed = await parseLocalNovel(file)
     genState.value.title = parsed.title
@@ -498,10 +493,8 @@ async function handleFile(file: File) {
     pendingGen.value = { title: parsed.title, chapters: parsed.chapters, frontMatter: parsed.frontMatter }
     // 生成前预检平台 token 额度(不足时提示,不阻断)
     quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco: ecoMode.value })
-    // 云端任务:保留原始文件,特征码基于转换后的 UTF-8 文本(与后端同口径)并查重
+    // 云端任务:保留原始文件(特征码由服务端按转换后 UTF-8 文本重算,命中缓存在上传后弹窗选择)
     cloudFile.value = file
-    cloudHash.value = null
-    dupHit.value = null
     // 预览与编码识别:展示自动转换结果(识别编码 → UTF-8 文本前 400 字)
     const convertedText = parsed.chapters[0]?.content ?? ''
     uploadMeta.value = {
@@ -510,11 +503,6 @@ async function handleFile(file: File) {
       truncated: convertedText.length > 400,
       charCount: convertedText.length
     }
-    void hashText(convertedText).then((h) => {
-      if (seq !== runSeq) return
-      cloudHash.value = h
-      void refreshDupHit()
-    })
     // 先展示字数与预估消耗,用户确认后才进入生成管线
     genState.value.phase = 'confirm'
   } catch (err) {
@@ -638,75 +626,15 @@ async function loadWorkIntoConfirm(workId: string) {
   }
 }
 
-/** 生成失败时的参数快照:失败态"继续生成"直接复用(配合断点续跑缓存,已提取部分 0 token) */
-const lastFailedGen = ref<{ title: string, chapters: ChapterSegment[], frontMatter: string } | null>(null)
-
-async function runGeneration(title: string, chapters: Parameters<typeof generateWorld>[1], frontMatter: string, seq: number, knownAuthor?: string) {
-  const ctrl = new AbortController()
-  abortCtrl.value = ctrl
-  genState.value.phase = 'generating'
-  // 只认当前运行序号的进度回调,避免已取消管线的残留事件覆盖新任务状态
-  const applyProgress = (p: GenerateProgress) => {
-    if (seq === runSeq) genState.value.progress = { ...p }
-  }
-  try {
-    const { work } = await generateWorld(title, chapters, applyProgress, {
-      frontMatter,
-      signal: ctrl.signal,
-      eco: ecoMode.value,
-      // 预置小说元数据自带作者:直接采用,跳过正文/联网识别(省 token)
-      knownAuthor
-    })
-    if (seq !== runSeq) return
-    genState.value.phase = 'done'
-    genState.value.progress = null
-    genState.value.resultId = work.id
-    genState.value.tokensUsed = work.tokensUsed ?? 0
-    resultWork.value = work
-    abortCtrl.value = null
-    lastFailedGen.value = null
-    // 生成完成:清空提取缓存,防止多次生成后 IndexedDB 无限累加
-    await clearExtractCache().catch(() => { /* 清缓存失败不影响结果展示 */ })
-  } catch (err) {
-    if (seq !== runSeq) return // 已被新任务接管
-    abortCtrl.value = null
-    // 用户取消:取消按钮已把状态复位为上传态,这里不覆盖
-    if (err instanceof CancelledError) return
-    // 其余失败(如提取失败率过高/成书失败)必须落到错误态,否则界面会一直停在"生成中";
-    // 快照参数供"继续生成"续跑(断点续跑缓存会复用已提取单元,不重复消耗 token)
-    lastFailedGen.value = { title, chapters, frontMatter }
-    const lastProgress = genState.value.progress
-    genState.value = {
-      phase: 'error',
-      title,
-      progress: null,
-      error: err instanceof Error ? err.message : String(err),
-      resultId: null,
-      // 保留最后估算的已消耗 token(失败不代表没扣费;断点续跑可复用已提取单元)
-      tokensUsed: lastProgress?.liveTokens ?? genState.value.tokensUsed
-    }
-  }
-}
-
-/** 失败态"继续生成":复用失败时的参数重跑管线;extract 缓存会自动跳过已完成单元 */
-function retryGeneration() {
-  const pending = lastFailedGen.value
-  if (!pending) return
-  const seq = ++runSeq
-  void runGeneration(pending.title, pending.chapters, pending.frontMatter, seq, presetAuthor.value ?? undefined)
-}
-
-/** 确认页"开始生成":上传 txt 走云端任务;预置/本地作品入口保留浏览器端管线 */
+/** 确认页「开始生成」:统一走云端任务——上传 txt 直接用原文件;本地作品/预置小说从章节文本构造文件上传 */
 function startGenerationFromConfirm() {
-  if (cloudFile.value) {
-    void startCloudGeneration()
-    return
-  }
   const pending = pendingGen.value
-  if (!pending) return
-  pendingGen.value = null
-  const seq = ++runSeq
-  void runGeneration(pending.title, pending.chapters, pending.frontMatter, seq, presetAuthor.value ?? undefined)
+  if (!pending || !pending.chapters.length) return
+  // 本地作品/预置小说无原始文件:按转换口径拼接章节文本为 UTF-8 文件,与上传 txt 走同一云端管线
+  const text = pending.chapters.map(c => c.content).join('\n')
+  const file = new File([text], `${pending.title || '作品'}.txt`, { type: 'text/plain;charset=utf-8' })
+  cloudFile.value = file
+  void startCloudGeneration()
 }
 
 /** 确认页"直接开始":用官方预生成世界组装作品落书架,0 token 跳选角(自定义生成保留) */
@@ -735,7 +663,6 @@ function repickFile() {
   presetAuthor.value = null
   prebuiltWorld.value = null
   presetMeta.value = null
-  lastFailedGen.value = null
   resetCloudState()
   genState.value = { phase: 'idle', title: '', progress: null, error: null, resultId: null, tokensUsed: 0 }
   onPickFile()
@@ -757,11 +684,8 @@ async function cancelGeneration() {
   presetAuthor.value = null
   prebuiltWorld.value = null
   presetMeta.value = null
-  lastFailedGen.value = null
   resetCloudState()
   genState.value = { phase: 'idle', title: '', progress: null, error: null, resultId: null, tokensUsed: 0 }
-  // 取消后清空提取缓存,防止多次取消残留累计
-  await clearExtractCache().catch(() => { /* 清缓存失败不影响状态复位 */ })
   toast.add({
     title: '已停止生成',
     description: '在途请求可能已产生少量扣费,可重新上传开始。',
@@ -1001,36 +925,6 @@ const features = [
               @click="startPrebuiltFromConfirm"
             >
               直接开始
-            </UButton>
-          </div>
-
-          <!-- 相同 txt 的历史成书:可拉取(扣记录消耗的一半)或重新生成 -->
-          <div
-            v-if="dupHit && cloudFile"
-            class="flex flex-col gap-3 rounded-xl border border-teal-300/60 bg-teal-500/5 px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between dark:border-teal-700/60"
-          >
-            <div class="flex items-start gap-2 text-sm text-neutral-700 dark:text-neutral-200">
-              <UIcon
-                name="i-lucide-database-zap"
-                class="mt-0.5 size-4 shrink-0 text-teal-500"
-              />
-              <div>
-                <p>
-                  已有人生成过这本相同内容的世界<span v-if="dupHit.title">《{{ dupHit.title }}》</span>(记录消耗 {{ dupHit.tokensUsed.toLocaleString() }} tokens)
-                </p>
-                <p class="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
-                  直接拉取成书仅需 {{ dupHit.halfCost.toLocaleString() }} tokens(记录消耗的一半);选择下方「开始生成」则重新生成并刷新缓存。
-                </p>
-              </div>
-            </div>
-            <UButton
-              color="success"
-              icon="i-lucide-cloud-download"
-              :loading="pullingCached"
-              class="shrink-0"
-              @click="startPullCached(dupHit)"
-            >
-              拉取已有世界
             </UButton>
           </div>
 
@@ -1496,17 +1390,16 @@ const features = [
             v-if="genState.tokensUsed"
             class="mx-auto mt-3 max-w-md text-xs text-neutral-500"
           >
-            本次已消耗约 {{ genState.tokensUsed.toLocaleString() }} tokens(估算);已提取的单元已缓存,「继续生成」可复用,不重复扣费。
+            本次已消耗约 {{ genState.tokensUsed.toLocaleString() }} tokens(按实际用量结算)。
           </p>
           <div class="mt-7 flex justify-center gap-3">
             <UButton
-              v-if="lastFailedGen"
               color="primary"
               size="lg"
-              icon="i-lucide-play"
-              @click="retryGeneration"
+              icon="i-lucide-library"
+              :to="'/works'"
             >
-              继续生成(已提取部分自动复用)
+              前往书架查看云端任务
             </UButton>
             <UButton
               color="neutral"
@@ -1622,6 +1515,46 @@ const features = [
             icon="i-lucide-refresh-cw"
             color="primary"
             @click="onOverwriteConfirm(true)"
+          />
+        </div>
+      </template>
+    </UModal>
+    <!-- 上传命中共享缓存:选择拉取(半价)/ 重新生成 / 取消 -->
+    <UModal
+      v-model:open="pullChoiceOpen"
+      title="检测到相同内容的成书缓存"
+    >
+      <template #body>
+        <div class="space-y-2 text-sm text-neutral-600 dark:text-neutral-300">
+          <p>
+            已有人生成过这本相同内容的世界<span v-if="pullChoice?.hit.title">《{{ pullChoice.hit.title }}》</span>(记录消耗 {{ pullChoice?.hit.tokensUsed.toLocaleString() }} tokens)。
+          </p>
+          <p class="text-xs text-neutral-500 dark:text-neutral-400">
+            「拉取已有世界」仅需 {{ pullChoice?.hit.halfCost.toLocaleString() }} tokens(记录消耗的一半),直接得到成书;
+            「重新生成」按正常消耗生成新世界并刷新共享缓存。
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="取消"
+            color="neutral"
+            variant="outline"
+            @click="pullChoice = null"
+          />
+          <UButton
+            label="重新生成"
+            icon="i-lucide-sparkles"
+            color="neutral"
+            @click="onPullChoiceRegenerate"
+          />
+          <UButton
+            label="拉取已有世界"
+            icon="i-lucide-cloud-download"
+            color="success"
+            :loading="pullingCached"
+            @click="onPullChoicePull"
           />
         </div>
       </template>

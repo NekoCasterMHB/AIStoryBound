@@ -451,6 +451,9 @@ CREATE TABLE IF NOT EXISTS `ai_usage` (
 CREATE TABLE IF NOT EXISTS `world_gen_tasks` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
+	`kind` text DEFAULT 'world' NOT NULL,
+	`source_work_id` text,
+	`payload` text,
 	`status` text DEFAULT 'uploaded' NOT NULL,
 	`stage` text DEFAULT 'parse' NOT NULL,
 	`stage_detail` text,

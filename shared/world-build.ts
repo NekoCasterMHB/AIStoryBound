@@ -169,7 +169,9 @@ export function buildCheckMessages(title: string, entities: WorldEntities, confl
         + '请做一致性审查:\n'
         + '1. reviewed:对每条既有冲突给出判倾向 verdict 与一句话 reason。later_wins=后文更可信(剧情推进/反转属此类,比如死亡又复活但原文有交代),first_wins=前文更可信,uncertain=无法判断,not_conflict=不是真冲突。\n'
         + '2. new_conflicts:从实体库中找出代码未发现的新矛盾(同一实体同一字段存在两个不同事实、设定前后矛盾)。evidence_a.chapter 与 evidence_b.chapter 必须是实体库中出现的章节号(两处不同)。\n'
-        + `3. 不要编造:所有证据章节号必须来自实体库。\n`
+        + '3. 不要编造:所有证据章节号必须来自实体库。\n'
+        + '4. 近义表述不算冲突:同一含义的不同措辞、同义改写、风格化修饰不算矛盾;只有事实性相互矛盾(数值、时间、身份、状态无法同时成立)才判为冲突。\n'
+        + '5. 同一人物可有多个身份/称谓/别名/伪装:关系链或实体库中反复出现的同一人(身份标注不同)应视为同一实体;身份差异、经历阶段变化、别名伪装都不算冲突。\n'
         + `实体库:\n${JSON.stringify(compact)}\n`
         + `代码冲突:\n${JSON.stringify(conflictView)}`
     }
@@ -1217,22 +1219,42 @@ export function characterAppearances(storyline: StoryBeat[] | undefined): Map<st
   return map
 }
 
-/** 弧线生成请求:基于主线故事线与角色素材,为每个登场且有剧情量的角色生成独立弧线。
- *  增量补生成与成书共用,保证产物一致。输入不含原文正文(避免重复注入),只给细纲 + 人物卡素材。 */
-export function buildCharacterArcsMessages(
-  title: string,
+/** 弧线 schema(批量与逐条共用,保证产物结构一致) */
+const CHARACTER_ARC_SCHEMA = `{
+  "arcs": [{
+    "character": "角色名(必须与上方人物卡名字一致)",
+    "summary": "该角色全书的弧线概述(目标/宿命/处境演变,一两句话)",
+    "beats": [{"beatIndex": 0, "summary": "该角色在本段的行动/处境/目标推进(以该角色为中心,80~150字)", "status": "本段处境变化,无则null"}],
+    "ending": "该角色在全书终局的状态/结局(null可)"
+  }]
+}`
+
+/** 弧线候选角色:登场段数 ≥2,按登场段数排序取前 N。
+ *  批量提示词与云端 arcs 任务逐条生成共用同一名单,保证两份产物覆盖一致 */
+export function characterArcCandidates(
   entities: WorldEntities,
   storyline: StoryBeat[] | undefined
-): { role: 'system' | 'user', content: string }[] {
-  const beats = [...(storyline ?? [])].sort((a, b) => a.index - b.index)
+): { card: CharacterCard, beats: number[] }[] {
   const appearances = characterAppearances(storyline)
-  // 候选角色:登场段数 ≥2 或登场段数 ≥1 且为主要角色卡;按登场段数排序取前 N
-  const candidates = entities.characters
-    .map(c => ({ card: c, key: normKey(c.name), beats: appearances.get(normKey(c.name)) ?? [] }))
+  return entities.characters
+    .map(c => ({ card: c, beats: appearances.get(normKey(c.name)) ?? [] }))
     .filter(c => c.beats.length >= 2)
     .sort((a, b) => b.beats.length - a.beats.length)
     .slice(0, ARC_CHARACTER_LIMIT)
+}
+
+/** 弧线生成请求:基于主线故事线与角色素材,为每个登场且有剧情量的角色生成独立弧线。
+ *  增量补生成与成书共用,保证产物一致。输入不含原文正文(避免重复注入),只给细纲 + 人物卡素材。
+ *  textWindows 按角色名提供登场段原文节选(可选):批量生成时逐角色注入。 */
+export function buildCharacterArcsMessages(
+  title: string,
+  entities: WorldEntities,
+  storyline: StoryBeat[] | undefined,
+  textWindows?: Record<string, string>
+): { role: 'system' | 'user', content: string }[] {
+  const candidates = characterArcCandidates(entities, storyline)
   if (candidates.length === 0) return []
+  const beats = [...(storyline ?? [])].sort((a, b) => a.index - b.index)
 
   const beatLines = beats.map(b => `[段${b.index + 1}] ${b.summary}${b.cast?.length ? `（登场:${b.cast.slice(0, 6).join('、')}）` : ''}`).join('\n')
   const cardLines = candidates.map(({ card, beats: bs }) => {
@@ -1249,26 +1271,67 @@ export function buildCharacterArcsMessages(
       .filter(v => v.status)
       .slice(0, 20)
       .map(v => `第${(v.stage ?? 0) + 1}段:${v.status}`)
-    return `${card.name}:\n${bits.join('\n')}${variantLines.length ? `\n分段处境:\n${variantLines.join('\n')}` : ''}`
+    const win = textWindows?.[card.name]?.trim()
+    return `${card.name}:\n${bits.join('\n')}${variantLines.length ? `\n分段处境:\n${variantLines.join('\n')}` : ''}${win ? `\n\n登场段原文节选:\n${win}` : ''}`
   }).join('\n\n')
 
-  const schema = `{
-  "arcs": [{
-    "character": "角色名(必须与上方人物卡名字一致)",
-    "summary": "该角色全书的弧线概述(目标/宿命/处境演变,一两句话)",
-    "beats": [{"beatIndex": 0, "summary": "该角色在本段的行动/处境/目标推进(以该角色为中心,80~150字)", "status": "本段处境变化,无则null"}],
-    "ending": "该角色在全书终局的状态/结局(null可)"
-  }]
-}`
   return [
-    { role: 'system' as const, content: `你必须只输出一个合法的 JSON 对象,不要输出任何其他文字、注释或 Markdown 围栏。\n输出结构必须满足:\n${schema}` },
+    { role: 'system' as const, content: `你必须只输出一个合法的 JSON 对象,不要输出任何其他文字、注释或 Markdown 围栏。\n输出结构必须满足:\n${CHARACTER_ARC_SCHEMA}` },
     {
       role: 'user' as const,
       content: `小说《${title}》的主线故事线(按段序)如下:\n${beatLines}\n\n以下角色的人物卡素材(用于生成各自的独立弧线):\n${cardLines}\n\n请为上述每个角色生成一条独立故事线(角色弧线):\n`
         + '- 只能使用上方故事线中已出现且与该角色相关的信息,不得新增原著没有的情节、不得编造该角色的独立事件;\n'
+        + '- 每个角色的登场段都已在各自人物卡素材中逐段列出:必须为每一个登场段各生成一条 beat,不得合并多个段、不得省略任何登场段;\n'
         + '- beats 按主线细纲段序对齐(beatIndex 对应段号),只列出该角色实际登场/有戏份的段(未登场段不写);\n'
         + '- summary 以该角色为中心叙述其行动、处境与目标推进,不要重复整段主线剧情;\n'
         + '- 出场信息不足的角色可以省略 beats 或仅给 summary+ending,不要硬凑。'
+    }
+  ]
+}
+
+/** 弧线生成时注入的登场段原文窗口:每段字数上限(取该段 startChar 起的一段正文,忠实还原细节) */
+export const ARC_WINDOW_CHARS = 2500
+/** 弧线生成时注入的登场段数量上限(取前 N 个登场段,控制输入体积) */
+export const ARC_WINDOW_BEAT_LIMIT = 3
+
+/** 单角色弧线请求(arcs 云端任务逐单元调用):只为指定角色生成一条弧线,输入只含该角色素材。
+ *  textWindow 为该角色登场段的原文节选(可选):模型据此还原真实细节,不得与原文矛盾。 */
+export function buildCharacterArcMessages(
+  title: string,
+  candidate: { card: CharacterCard, beats: number[] },
+  storyline: StoryBeat[] | undefined,
+  textWindow?: string
+): { role: 'system' | 'user', content: string }[] {
+  const beats = [...(storyline ?? [])].sort((a, b) => a.index - b.index)
+  const beatLines = beats.map(b => `[段${b.index + 1}] ${b.summary}${b.cast?.length ? `（登场:${b.cast.slice(0, 6).join('、')}）` : ''}`).join('\n')
+  const { card, beats: bs } = candidate
+  const bits = [
+    card.identity && `身份:${card.identity}`,
+    card.goals?.length ? `目标:${card.goals.slice(0, 4).join('、')}` : '',
+    card.fears?.length ? `恐惧/弱点:${card.fears.slice(0, 3).join('、')}` : '',
+    card.secrets?.length ? `秘密:${card.secrets.slice(0, 3).join('、')}` : '',
+    card.relationships?.length ? `关系:${card.relationships.slice(0, 5).map(r => `${r.name}(${r.type})`).join('、')}` : '',
+    bs.length ? `登场段:${bs.map(i => `第${i + 1}段`).join('、')}` : ''
+  ].filter(Boolean)
+  // chapterVariants 提供该角色在各段的处境变化(比人物卡终态更贴合分段)
+  const variantLines = (card.chapterVariants ?? [])
+    .filter(v => v.status)
+    .slice(0, 20)
+    .map(v => `第${(v.stage ?? 0) + 1}段:${v.status}`)
+  const cardLine = `${card.name}:\n${bits.join('\n')}${variantLines.length ? `\n分段处境:\n${variantLines.join('\n')}` : ''}`
+  const windowPart = textWindow?.trim()
+    ? `\n\n该角色登场段的原文节选(还原细节用,戏份内容不得与原文矛盾):\n${textWindow.trim()}`
+    : ''
+  return [
+    { role: 'system' as const, content: `你必须只输出一个合法的 JSON 对象,不要输出任何其他文字、注释或 Markdown 围栏。\n输出结构必须满足:\n${CHARACTER_ARC_SCHEMA}` },
+    {
+      role: 'user' as const,
+      content: `小说《${title}》的主线故事线(按段序)如下:\n${beatLines}\n\n以下为该角色的人物卡素材:\n${cardLine}${windowPart}\n\n请为该角色生成一条独立故事线(角色弧线):\n`
+        + '- 只能使用上方故事线中已出现且与该角色相关的信息,不得新增原著没有的情节、不得编造该角色的独立事件;\n'
+        + `- 该角色共登场 ${candidate.beats.length} 段(上方「登场段」已逐段列出):必须为每一个登场段各生成一条 beat(按 beatIndex 对齐),不得合并多个段、不得省略任何登场段;\n`
+        + '- beats 按主线细纲段序对齐(beatIndex 对应段号),只列出该角色实际登场/有戏份的段(未登场段不写);\n'
+        + '- summary 以该角色为中心叙述其行动、处境与目标推进,不要重复整段主线剧情;\n'
+        + '- 出场信息不足可以省略 beats 或仅给 summary+ending,不要硬凑。'
     }
   ]
 }

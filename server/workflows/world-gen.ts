@@ -8,8 +8,8 @@
 //    catch 识别该错误后自动另起新实例续跑(已完成单元从 world_gen_units 跳过),而非判失败。
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers'
 import {
-  createWorldGenCtx, extractUnitAt, isDeployResetError, markTask, markTaskFailed, markTaskPaused, stepAuthorAi, stepCharacterArcs,
-  stepCheck, stepFinalize, stepMerge, stepParseSource, stepPlanUnits, stepSynthesize, requireTask,
+  createWorldGenCtx, extractUnitAt, isDeployResetError, markTask, markTaskFailed, markTaskPaused, stepAuthorAi,
+  stepCheck, stepFinalize, stepMerge, stepParseAndPlan, stepSupplementArcs, stepSynthesize, requireTask,
   WorldGenCancelledError, InsufficientTokensError, EXTRACT_CONCURRENCY
 } from '../utils/world-gen-pipeline'
 import type { WorldGenEnv } from '../utils/world-gen-pipeline'
@@ -28,24 +28,35 @@ export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowPa
       if (task.status === 'cancelled') return
       await markTask(ctx, { status: 'running', error: null })
 
-      // 1) 解析(编码/清洗/书名页作者正则)
-      const parsed = await step.do('parse-source', {
-        retries: { limit: 3, delay: '5 second', backoff: 'exponential' }
-      }, () => stepParseSource(ctx))
-
-      // 2) 作者识别兜底(正则未命中时 AI 判断;失败不中止)
-      if (!parsed.author) {
-        const author = await step.do('author-ai', { retries: { limit: 1, delay: '5 second' } }, () => stepAuthorAi(ctx))
-        if (author) await markTask(ctx, { author })
+      // arcs 任务(补充配角故事线):单个步骤生成全部候选角色弧线,完成后实例结束
+      if (task.kind === 'arcs') {
+        await step.do('supplement-arcs', {
+          retries: { limit: 1, delay: '10 second' }
+        }, () => stepSupplementArcs(ctx))
+        return
       }
 
-      // 3) 切段计划
-      const plan = await step.do('plan-units', {
+      // 1) 解析(编码/清洗/书名页作者正则)+ 2) 切段计划(两个纯代码步合成一个)
+      const { parsed, plan } = await step.do('parse-plan', {
         retries: { limit: 3, delay: '5 second', backoff: 'exponential' }
-      }, () => stepPlanUnits(ctx))
+      }, () => stepParseAndPlan(ctx))
 
-      // 4) 分块提取:并发 4 分批(与浏览器端并发一致;每单元独立 step,重试互不影响)
-      for (let start = 0; start < plan.units.length; start += EXTRACT_CONCURRENCY) {
+      // 3) 分块提取:author 识别(正则未命中时)与第一批并发,后续批次并发 4 分批
+      //    (每单元独立 step,重试互不影响)
+      const firstBatch = plan.units.map((_, i) => i).slice(0, EXTRACT_CONCURRENCY)
+      await Promise.all([
+        ...(parsed.author
+          ? []
+          : [
+              step.do('author-ai', { retries: { limit: 1, delay: '5 second' } }, () => stepAuthorAi(ctx))
+            ]),
+        ...firstBatch.map(i =>
+          step.do(`extract-unit-${i + 1}`, {
+            retries: { limit: 2, delay: '10 second', backoff: 'exponential' }
+          }, () => extractUnitAt(ctx, plan, i))
+        )
+      ])
+      for (let start = firstBatch.length; start < plan.units.length; start += EXTRACT_CONCURRENCY) {
         const batch = plan.units.map((_, i) => i).slice(start, start + EXTRACT_CONCURRENCY)
         await Promise.all(batch.map(i =>
           step.do(`extract-unit-${i + 1}`, {
@@ -69,9 +80,9 @@ export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowPa
         retries: { limit: 3, delay: '15 second', backoff: 'exponential' }
       }, () => stepSynthesize(ctx))
 
-      // 7.5) 配角独立故事线(完整模式;失败降级不中止,写 scratch 供 finalize 落盘)
+      // 7.5) 配角独立故事线(完整模式;逐单元生成,写 scratch 供 finalize 落盘;失败降级不中止)
       if (task.mode !== 'eco') {
-        await step.do('character-arcs', { retries: { limit: 1, delay: '5 second' } }, () => stepCharacterArcs(ctx))
+        await step.do('supplement-arcs', { retries: { limit: 1, delay: '10 second' } }, () => stepSupplementArcs(ctx))
       }
 
       // 8) 落 R2 缓存 + 入库 + 结算 + 清 key/scratch

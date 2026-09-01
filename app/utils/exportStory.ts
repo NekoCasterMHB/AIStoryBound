@@ -63,3 +63,35 @@ export function downloadGameAsTxt(args: ExportGameTxtArgs): boolean {
   URL.revokeObjectURL(url)
   return true
 }
+
+// ---- 作品全文导出(书架「分享剧情 TXT」:标题头 + 全章节正文) ----
+
+export interface ExportWorkTxtArgs {
+  title?: string
+  chapters: { title?: string, content: string }[]
+}
+
+/** 组装作品全文 TXT(标题头 + 全章节正文;无正文返回空串) */
+export function buildWorkTxt(args: ExportWorkTxtArgs): string {
+  const { title, chapters } = args
+  const head = title ? `《${title}》\n\n` : ''
+  const body = chapters
+    .map(c => c.content.trim())
+    .filter(Boolean)
+    .join('\n\n')
+  return body ? `${head}${body}\n` : ''
+}
+
+/** 下载作品全文为 TXT;没有正文时返回 false(调用方自行提示)。带 BOM 头 */
+export function downloadWorkAsTxt(args: ExportWorkTxtArgs): boolean {
+  const text = buildWorkTxt(args)
+  if (!text) return false
+  const blob = new Blob([`\ufeff${text}`], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${sanitizeFilename(args.title || '作品')}-作品.txt`
+  a.click()
+  URL.revokeObjectURL(url)
+  return true
+}

@@ -8,15 +8,13 @@ import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
 import { loadScenePrefs, saveScenePrefs } from '../../utils/scenePrefs'
 import { loadNarrTemp, saveNarrTemp, NARR_TEMP_MIN, NARR_TEMP_MAX, NARR_TEMP_STEP } from '../../utils/narrPrefs'
 import { loadEnabledAiSkillObjects, listInstalledSkills, loadEnabledAiSkills, saveEnabledAiSkills } from '../../utils/aiSkills'
-import { ADULT_CONTENT_POLICY, buildTurnPrompt, cardBrief, effectiveCards, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, estimateTurnPromptBreakdown, REINJECT_CHAPTER_EVERY, REINJECT_WINDOW_CHARS } from '#shared/game'
+import { ADULT_CONTENT_POLICY, buildTurnPrompt, cardBrief, effectiveCards, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, estimateTurnPromptBreakdown, REINJECT_WINDOW_CHARS } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { CharacterDynamicState, GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
 import { getLocalGame, saveLocalGame } from '../../utils/gameStore'
 import { getWork, touchWork, addWorkTokens } from '../../utils/worldGen'
 import type { AiSkill } from '#shared/ai-skills'
 import { saveGamePoint, listGamePoints, pruneGamePoints, capGamePoints } from '../../utils/gameSaveStore'
-import { downloadGameAsTxt } from '../../utils/exportStory'
-import { downloadGameAsZip } from '../../utils/shareZip'
 import { toyController } from '../../toy/api'
 import { loadToySettings } from '../../toy/store'
 import { loadAllPluginSpecs } from '../../toy/runtime/adapter-loader'
@@ -24,6 +22,7 @@ import { isAdapterEnabled, DEFAULT_TOY_SETTINGS } from '#shared/toy'
 import type { ToySettings } from '#shared/toy'
 import { describePlugin } from '#shared/plugin'
 import { loadNarrSpeed, saveNarrSpeed, narrSpeedTierOf, clampNarrCps, NARR_SPEED_TIERS, NARR_SPEED_DEFAULT } from '../../utils/narrSpeed'
+import { loadReinjectInterval, saveReinjectInterval, REINJECT_INTERVAL_MIN, REINJECT_INTERVAL_MAX } from '../../utils/reinjectPrefs'
 import { loadNarrLength, saveNarrLength, NARR_LENGTH_MIN, NARR_LENGTH_MAX, NARR_LENGTH_STEP } from '../../utils/narrLength'
 import { createNarrParser } from '../../utils/narrStream'
 import { createTypewriter } from '../../utils/typewriter'
@@ -83,6 +82,15 @@ const sceneMsg = ref<{ kind: 'ok' | 'err', text: string } | null>(null)
 function submitScenePrefs() {
   saveScenePrefs({ prefer: scenePrefs.prefer, avoid: scenePrefs.avoid })
   sceneMsg.value = { kind: 'ok', text: '已保存,新回合生效' }
+}
+
+/** 段回注间隔(每 N 回合重新注入当前段情节 + 段首原文窗口;本地偏好,即时保存,新回合生效) */
+const reinjectEvery = ref(loadReinjectInterval())
+watch(reinjectEvery, v => saveReinjectInterval(clampReinjectInterval(v)))
+
+function clampReinjectInterval(v: number): number {
+  if (!Number.isFinite(v)) return REINJECT_INTERVAL_MIN
+  return Math.min(REINJECT_INTERVAL_MAX, Math.max(REINJECT_INTERVAL_MIN, Math.round(v)))
 }
 
 // ---- 段回注定位(每 N 回合把当前段情节 + 段起始原文窗口重新注入提示词;不依赖章节) ----
@@ -222,6 +230,8 @@ interface TurnCostPart { label: string, tokens: number }
 interface TurnCostItem { stage: 'narrative' | 'options' | 'desires', label: string, prompt: number, completion: number, total: number, details?: TurnCostPart[] }
 const turnCostReport = ref<TurnCostItem[] | null>(null)
 const costModalOpen = ref(false)
+/** 顶部状态面板(地点/时间等 6 项)折叠开关 */
+const statsOpen = ref(true)
 /** 饼图色板(按序循环取色;与阶段/细项共用,保证图例颜色一致) */
 const PIE_COLORS = ['#60a5fa', '#f472b6', '#fbbf24', '#34d399', '#a78bfa', '#f87171', '#22d3ee', '#fb923c', '#a3e635', '#f472b6', '#2dd4bf', '#c084fc']
 /** 由 token 数值生成 conic-gradient(跳过 ≤0 的扇区;全 0 返回中性色环) */
@@ -903,9 +913,9 @@ async function sendTurn(choice?: string) {
       : []
     const deviceEnabled = !!settingsNow?.aiEnabled && enabledBriefs.length > 0
     const deviceSpec = deviceEnabled ? narratorDeviceSpec(enabledBriefs) : ''
-    // 段回注:每 REINJECT_CHAPTER_EVERY 回合,取当前段情节 + 段起始原文窗口 + 后段走向(有细纲即启用,不依赖开局方式)
+    // 段回注:每 reinjectEvery 回合,取当前段情节 + 段起始原文窗口 + 后段走向(有细纲即启用,不依赖开局方式)
     const turnIndex = messages.value.filter(m => m.role === 'narrator').length
-    const reinjectPlot = turnIndex > 0 && turnIndex % REINJECT_CHAPTER_EVERY === 0 && storylineBeats.value.length > 0
+    const reinjectPlot = turnIndex > 0 && turnIndex % reinjectEvery.value === 0 && storylineBeats.value.length > 0
       ? buildBeatReinject()
       : undefined
     // 1) 叙事流式(中继 SSE)
@@ -1151,37 +1161,6 @@ async function rollbackAction() {
   await savePointNow()
 }
 
-// ---- 分享(菜单:剧情 TXT / 全部 ZIP) ----
-
-/** 分享包内含完整作品 + 会话,与书架「导入 ZIP 分享包」配套 */
-function onExportZip() {
-  if (streaming.value || !game.value) return
-  downloadGameAsZip({
-    title: work.value?.overlay?.title,
-    playerName: playerName.value,
-    chapter: currentBeatLabel.value,
-    work: work.value,
-    game: game.value,
-    messages: messages.value
-  })
-}
-
-const shareMenuItems = [
-  { label: '分享剧情 TXT', icon: 'i-lucide-file-text', onSelect: onExportTxt },
-  { label: '分享全部 ZIP', icon: 'i-lucide-file-archive', onSelect: onExportZip }
-]
-
-function onExportTxt() {
-  if (streaming.value) return
-  const ok = downloadGameAsTxt({
-    title: work.value?.overlay?.title,
-    playerName: playerName.value,
-    chapter: currentBeatLabel.value,
-    messages: messages.value
-  })
-  if (!ok) toast.add({ title: '还没有剧情可导出', description: '先开始故事,产生一段旁白后再导出', color: 'warning' })
-}
-
 // 新内容自动滚到底部
 watch([messages, streamDisplay], async () => {
   await nextTick()
@@ -1247,18 +1226,6 @@ watch([messages, streamDisplay], async () => {
               title="查看本回合 token 消耗构成"
               @click="costModalOpen = true"
             />
-            <UDropdownMenu
-              :items="shareMenuItems"
-              :disabled="!started || streaming"
-            >
-              <UButton
-                label="分享"
-                icon="i-lucide-share-2"
-                color="neutral"
-                variant="outline"
-                size="sm"
-              />
-            </UDropdownMenu>
             <UButton
               label="技能"
               icon="i-lucide-wand-2"
@@ -1278,12 +1245,12 @@ watch([messages, streamDisplay], async () => {
             <!-- 外部设备连接入口:顶栏按钮 + 弹出菜单(与顶栏按钮同款外观) -->
             <ToyControlStrip />
             <UButton
-              label="返回"
+              label="返回书架"
               icon="i-lucide-arrow-left"
               color="neutral"
               variant="outline"
               size="sm"
-              :to="'/'"
+              :to="'/works'"
             />
           </div>
         </div>
@@ -1295,67 +1262,89 @@ watch([messages, streamDisplay], async () => {
           :title="loadError"
         />
 
-        <!-- 公开状态面板 -->
-        <div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-6">
-          <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
-            <p class="text-neutral-500">
-              地点
-            </p>
-            <p class="truncate font-semibold">
-              {{ state.location || '未知' }}
-            </p>
-          </div>
-          <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
-            <p class="text-neutral-500">
-              时间
-            </p>
-            <p class="truncate font-semibold">
-              {{ state.time || '—' }}
-            </p>
-          </div>
-          <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
-            <p class="text-neutral-500">
-              心情
-            </p>
-            <p class="truncate font-semibold">
-              {{ state.mood || '—' }}
-            </p>
-          </div>
-          <div
-            class="cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800"
-            title="点击查看详情并调节"
-            @click="openStatModal('relations')"
+        <!-- 公开状态面板(地点/时间等,可折叠) -->
+        <div class="rounded-lg border border-neutral-200 dark:border-neutral-800">
+          <button
+            type="button"
+            class="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-neutral-500 transition hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+            @click="statsOpen = !statsOpen"
           >
-            <p class="text-neutral-500">
-              关系
-            </p>
-            <p class="truncate tabular-nums">
-              {{ relationBrief }}
-            </p>
-          </div>
+            <span class="flex items-center gap-1.5">
+              <UIcon
+                name="i-lucide-gauge"
+                class="size-3.5"
+              />
+              当前状态
+            </span>
+            <UIcon
+              :name="statsOpen ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
+              class="size-4"
+            />
+          </button>
           <div
-            class="cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800"
-            title="点击查看各角色当前状态"
-            @click="openStatModal('desires')"
+            v-show="statsOpen"
+            class="grid grid-cols-2 gap-2 border-t border-neutral-200 px-3 py-3 text-xs sm:grid-cols-6 dark:border-neutral-800"
           >
-            <p class="text-neutral-500">
-              性欲
-            </p>
-            <p class="truncate tabular-nums">
-              {{ desireBrief }}
-            </p>
-          </div>
-          <div
-            class="cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800"
-            title="点击查看/编辑各角色当前状态"
-            @click="openCharStateModal"
-          >
-            <p class="text-neutral-500">
-              角色状态
-            </p>
-            <p class="truncate">
-              {{ charStateBriefText }}
-            </p>
+            <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
+              <p class="text-neutral-500">
+                地点
+              </p>
+              <p class="truncate font-semibold">
+                {{ state.location || '未知' }}
+              </p>
+            </div>
+            <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
+              <p class="text-neutral-500">
+                时间
+              </p>
+              <p class="truncate font-semibold">
+                {{ state.time || '—' }}
+              </p>
+            </div>
+            <div class="rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800">
+              <p class="text-neutral-500">
+                心情
+              </p>
+              <p class="truncate font-semibold">
+                {{ state.mood || '—' }}
+              </p>
+            </div>
+            <div
+              class="cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800"
+              title="点击查看详情并调节"
+              @click="openStatModal('relations')"
+            >
+              <p class="text-neutral-500">
+                关系
+              </p>
+              <p class="truncate tabular-nums">
+                {{ relationBrief }}
+              </p>
+            </div>
+            <div
+              class="cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800"
+              title="点击查看各角色当前状态"
+              @click="openStatModal('desires')"
+            >
+              <p class="text-neutral-500">
+                性欲
+              </p>
+              <p class="truncate tabular-nums">
+                {{ desireBrief }}
+              </p>
+            </div>
+            <div
+              class="cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 dark:bg-neutral-800"
+              title="点击查看/编辑各角色当前状态"
+              @click="openCharStateModal"
+            >
+              <p class="text-neutral-500">
+                角色状态
+              </p>
+              <p class="truncate">
+                {{ charStateBriefText }}
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -1759,6 +1748,26 @@ watch([messages, streamDisplay], async () => {
                   class="flex-1"
                 />
                 <span class="w-16 shrink-0 text-right font-mono text-sm text-neutral-700 dark:text-neutral-300">{{ narrLength }} 字</span>
+              </div>
+            </div>
+
+            <!-- 防跑偏频率(段回注间隔):定期把当前段落原著原文重新注入,防止剧情越写越偏 -->
+            <div class="flex flex-col gap-2">
+              <p class="text-sm font-semibold">
+                防跑偏频率
+              </p>
+              <p class="text-xs text-neutral-500">
+                AI 会越写越偏离原著。设置每隔几个回合把当前段落的原著原文重新对照一次,把剧情拉回正轨;数字越小越贴原文、消耗略增,默认 5 回合,新回合生效
+              </p>
+              <div class="flex items-center gap-4">
+                <USlider
+                  v-model="reinjectEvery"
+                  :min="REINJECT_INTERVAL_MIN"
+                  :max="REINJECT_INTERVAL_MAX"
+                  :step="1"
+                  class="flex-1"
+                />
+                <span class="w-20 shrink-0 text-right font-mono text-sm text-neutral-700 dark:text-neutral-300">每 {{ reinjectEvery }} 回合</span>
               </div>
             </div>
 

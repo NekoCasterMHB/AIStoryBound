@@ -5,7 +5,7 @@ import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import { uuid } from '#shared/novel'
 import type { ChapterSegment, HeatLevel, KinkProfileEntry, LocalGame, LocalWork, WorldOverlay } from '#shared/novel'
 import { SHARE_FORMAT, SHARE_VERSION } from '#shared/share-format'
-import { buildGameTxt, sanitizeFilename } from './exportStory'
+import { buildGameTxt, buildWorkTxt, sanitizeFilename } from './exportStory'
 
 /** 分享包格式标识:manifest.json 中的 format 字段,与本应用导出的包互相匹配(常量定义在 shared/share-format) */
 export { SHARE_FORMAT, SHARE_VERSION }
@@ -82,6 +82,66 @@ export function downloadGameAsZip(args: ExportGameZipArgs): void {
   const a = document.createElement('a')
   a.href = url
   a.download = `${sanitizeFilename(args.title || '故事')}-${sanitizeFilename(args.playerName || '玩家')}-分享包.zip`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// ---- 作品级分享包(书架「分享全部 ZIP」:整部作品 + 该作品全部游戏会话) ----
+
+export interface ExportWorkZipArgs {
+  /** 作品本体(章节正文 + 生成产物) */
+  work: LocalWork
+  /** 该作品的全部游戏会话(可选;包内附 game-N.json 供复盘,导入端重建作品时忽略) */
+  games?: LocalGame[]
+  /** 导出时间;缺省用当前时间 */
+  at?: Date
+}
+
+/**
+ * 组装作品分享 ZIP 包(与「分享全部」同格式,书架「导入 ZIP 分享包」可直接导入):
+ *  - manifest.json / work.json / story.txt(作品全文)
+ *  - game-N.json:该作品的每个游戏会话(导入端不读,仅供作者复盘/分享给读者看过程)
+ */
+export function buildWorkShareZip(args: ExportWorkZipArgs): Uint8Array {
+  const { work, games = [], at = new Date() } = args
+
+  const includes: string[] = []
+  const entries: Record<string, Uint8Array> = {}
+
+  includes.push('work.json')
+  entries['work.json'] = strToU8(JSON.stringify(work, null, 2))
+
+  const story = buildWorkTxt({ title: work.title, chapters: work.chapters })
+  if (story) {
+    includes.push('story.txt')
+    entries['story.txt'] = strToU8(story)
+  }
+
+  games.forEach((g, i) => {
+    includes.push(`game-${i + 1}.json`)
+    entries[`game-${i + 1}.json`] = strToU8(JSON.stringify(g, null, 2))
+  })
+
+  const manifest: ShareManifest = {
+    format: SHARE_FORMAT,
+    version: SHARE_VERSION,
+    kind: 'game',
+    title: work.title || '未命名',
+    exportedAt: at.toISOString(),
+    includes
+  }
+  entries['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2))
+  return zipSync(entries, { level: 6 })
+}
+
+/** 下载作品分享 ZIP 包(书架「分享全部 ZIP」) */
+export function downloadWorkAsZip(args: ExportWorkZipArgs): void {
+  const zip = buildWorkShareZip(args)
+  const blob = new Blob([zip.slice()], { type: 'application/zip' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${sanitizeFilename(args.work.title || '作品')}-作品分享包.zip`
   a.click()
   URL.revokeObjectURL(url)
 }

@@ -3,7 +3,7 @@
 // 并提供概览元数据(summary/性向/尺度/设定/tags 等)的编辑——此前这些字段生成后全应用不可见、不可改。
 // 入口:书架卡片「世界详情」/ 生成完成页 / 选角页;保存后由父组件刷新列表。
 import { getWork, saveWork } from '../utils/worldGen'
-import type { LocalWork, WorldEntities, EntityConflict, StoryBeat } from '#shared/novel'
+import type { LocalWork, WorldEntities, EntityConflict, StoryBeat, CharacterArc } from '#shared/novel'
 
 const props = defineProps<{ workId: string }>()
 const emit = defineEmits<{ saved: [] }>()
@@ -190,6 +190,7 @@ const entityGroups = computed(() => {
 const conflicts = computed<EntityConflict[]>(() => work.value?.conflicts ?? [])
 const warnings = computed<string[]>(() => work.value?.warnings ?? [])
 const storyline = computed<StoryBeat[]>(() => work.value?.storyline ?? [])
+const characterArcs = computed<CharacterArc[]>(() => work.value?.characterArcs ?? [])
 
 const VERDICT_LABEL: Record<string, string> = {
   later_wins: '以后文为准',
@@ -203,7 +204,7 @@ const VERDICT_LABEL: Record<string, string> = {
   <UModal
     v-model:open="open"
     title="世界详情"
-    description="生成产物总览:概览、故事线、实体库、冲突与告警"
+    description="生成产物总览:概览、故事线、配角故事线、实体库、冲突与告警"
     :ui="{ content: 'sm:max-w-3xl' }"
   >
     <template #body>
@@ -399,6 +400,52 @@ const VERDICT_LABEL: Record<string, string> = {
           </ol>
         </details>
 
+        <!-- 配角故事线(角色弧线:按登场段逐条,玩家扮演该角色时以此为主叙事线) -->
+        <details
+          v-if="characterArcs.length"
+          class="rounded-xl border border-neutral-200 p-4 dark:border-neutral-700"
+        >
+          <summary class="cursor-pointer text-sm font-semibold">
+            配角故事线 · {{ characterArcs.length }} 条
+          </summary>
+          <div class="mt-3 max-h-80 space-y-2 overflow-y-auto text-sm">
+            <details
+              v-for="arc in characterArcs"
+              :key="arc.character"
+              class="rounded-lg border border-neutral-200/70 bg-neutral-50/60 p-2.5 dark:border-neutral-700/70 dark:bg-neutral-800/40"
+            >
+              <summary class="cursor-pointer text-xs font-semibold">
+                {{ arc.character }}
+              </summary>
+              <div class="mt-2 space-y-1.5 text-xs text-neutral-600 dark:text-neutral-400">
+                <p v-if="arc.summary">
+                  {{ arc.summary }}
+                </p>
+                <ul
+                  v-if="arc.beats.length"
+                  class="space-y-1"
+                >
+                  <li
+                    v-for="b in arc.beats"
+                    :key="b.beatIndex"
+                  >
+                    <span class="font-medium text-highlighted">段{{ b.beatIndex + 1 }}</span>
+                    {{ b.summary }}<template v-if="b.status">
+                      （{{ b.status }}）
+                    </template>
+                  </li>
+                </ul>
+                <p
+                  v-if="arc.ending"
+                >
+                  <span class="font-medium text-neutral-500">结局:</span>
+                  {{ arc.ending }}
+                </p>
+              </div>
+            </details>
+          </div>
+        </details>
+
         <!-- 实体库 -->
         <section
           v-if="entityGroups.length"
@@ -494,7 +541,7 @@ const VERDICT_LABEL: Record<string, string> = {
         </section>
 
         <p
-          v-if="!entityGroups.length && !conflicts.length && !warnings.length && !storyline.length && !work.overlay?.summary"
+          v-if="!entityGroups.length && !conflicts.length && !warnings.length && !storyline.length && !characterArcs.length && !work.overlay?.summary"
           class="py-4 text-center text-sm text-neutral-400"
         >
           该作品还没有世界产物——到书架「重新生成世界」补齐

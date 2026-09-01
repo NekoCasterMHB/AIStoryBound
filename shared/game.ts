@@ -13,9 +13,8 @@ export interface ChatMsg { role: AiRole, content: string }
 
 export interface TurnSummary { idx: number, text: string }
 
-/** 章节回注间隔:每 N 个完整回合重新注入当前章/下一章的情节窗口(字符摘录,非整章) */
-export const REINJECT_CHAPTER_EVERY = 8
-/** 回注窗口单段字数:当前章"剩余部分"窗口 + 下一章开头窗口各 1500 字,合计约 3000 字 */
+/** 回注窗口单段字数:当前章"剩余部分"窗口 + 下一章开头窗口各 1500 字,合计约 3000 字。
+ *  回注间隔为玩家设置(见 app/utils/reinjectPrefs.ts,默认 5 回合) */
 export const REINJECT_WINDOW_CHARS = 1500
 
 /** 游玩系统提示:明确允许成人向虚构内容,禁止拒写/回避/说教中断叙事 */
@@ -588,18 +587,22 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
         const arcBeat = arc.beats.find(b => b.beatIndex === opening.beatIndex)
         if (arcBeat) {
           beatParts.push(`【玩家角色「${arc.character}」在本段的戏份】${arcBeat.summary}${arcBeat.status ? `（${arcBeat.status}）` : ''}\n(以该角色为叙事主体展开,不要切换到主角视角)`)
+        } else {
+          beatParts.push(`【玩家角色「${arc.character}」的弧线概述】${arc.summary}\n(该角色在本段登场但弧线未记录本段戏份:请让该角色以玩家身份自然地参与本段情节,不要凭空安排与弧线走向相悖的事件)`)
         }
       }
       if (opening.prevBeat?.text?.trim()) {
         beatParts.push(`【前段背景】${opening.prevBeat.title ? `「${opening.prevBeat.title}」:` : ''}${opening.prevBeat.text.trim()}\n(以上为前情背景,用于把握人物关系与事态由来,不要重新展开叙述)`)
       }
-      if (opening.beatText?.trim()) {
-        beatParts.push(`【本段正文】${opening.beatText.trim()}\n(注:以上为原著原文,以主角视角书写,仅作场景与人物参考;必须以玩家角色「${playerName}」的视角重新演绎,不要沿用原文的主角视角与内心)`)
+      // 段首原文:只注入前 1000 字并锚定「第一句」——全段正文一次注入会让模型跳段/压缩推进
+      const beatText = (opening.beatText ?? '').trim().slice(0, 1000)
+      if (beatText) {
+        beatParts.push(`【段首原文】${beatText}\n(以上为原著原文段首,仅作场景与人物参考;必须以玩家角色「${playerName}」的视角重新演绎,不要沿用原文的主角视角与内心)`)
       }
       if (opening.nextBeat?.text?.trim()) {
         beatParts.push(`【后段走向】${opening.nextBeat.title ? `「${opening.nextBeat.title}」:` : ''}${opening.nextBeat.text.trim()}\n(本段之后的情节走向,供后续回合自然衔接;除非本段情节已推进完毕,否则不要提前跳转到该部分)`)
       }
-      beatParts.push('请从本段情节的开头开始演绎:场景环境、在场人物、他们的话语与情绪、正在发生的事件都必须与本段细纲及正文一致,逐段推进本段情节;本段推进完毕后,可自然衔接后段的走向。不要忽略本段中已建立的人物关系与状态。')
+      beatParts.push('请从段首原文的第一句开始展开当前场景:场景环境、在场人物、他们的话语与情绪、正在发生的事件都必须与段首原文一致,逐句推进本段情节;本回合从场景的开头演起,不要从途中情节开始,不要概括式跳过时间或事件;细纲摘要与后段走向仅作本段全景与后续走向的参考,本段情节推进到该处之前不得使用。不要忽略本段中已建立的人物关系与状态。')
       userParts.push({ label: '剧情回顾与历史消息', content: beatParts.join('\n\n') })
     } else if (opening?.mode === 'custom' && opening.scene?.trim()) {
       userParts.push({ label: '剧情回顾与历史消息', content: `【开场】玩家提供的背景设定:${opening.scene.trim()}\n\n请以此为出发点展开,描写玩家「${playerName}」所处的场景,引入剧情与第一个矛盾。` })
@@ -620,6 +623,8 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
       const arcBeat = arc.beats.find(b => b.beatIndex === reinjectPlot.beatIndex)
       if (arcBeat) {
         reinjectParts.push(`【玩家角色「${arc.character}」在本段的戏份】${arcBeat.summary}${arcBeat.status ? `（${arcBeat.status}）` : ''}\n(该角色为叙事主体,不要切换到主角视角)`)
+      } else {
+        reinjectParts.push(`【玩家角色「${arc.character}」的弧线概述】${arc.summary}\n(该角色在本段登场,请按其弧线走向自然推进)`)
       }
     }
     if (reinjectPlot.window?.trim()) {

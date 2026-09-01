@@ -1,6 +1,6 @@
 // server/utils/world-gen-dto.ts
 // 云端世界生成任务行 → 客户端 DTO(不含 key 密文、R2 key 等内部列)
-import type { WorldGenMode, WorldGenStage, WorldGenTaskDTO, WorldGenTaskStatus, WorldGenKeySource } from '../../shared/world-gen-task'
+import type { WorldGenMode, WorldGenStage, WorldGenTaskDTO, WorldGenTaskStatus, WorldGenKeySource, WorldGenTaskKind } from '../../shared/world-gen-task'
 import { parseStageDetail } from './world-gen-pipeline'
 import type { WorldGenTaskRow } from './world-gen-pipeline'
 
@@ -15,6 +15,8 @@ export function worldGenTaskToDTO(row: WorldGenTaskRow): WorldGenTaskDTO {
   }
   return {
     id: row.id,
+    kind: (row.kind ?? 'world') as WorldGenTaskKind,
+    sourceWorkId: row.sourceWorkId,
     status: row.status as WorldGenTaskStatus,
     stage: row.stage as WorldGenStage,
     stageDetail: { doneUnits: detail.doneUnits, totalUnits: detail.totalUnits },
@@ -30,7 +32,8 @@ export function worldGenTaskToDTO(row: WorldGenTaskRow): WorldGenTaskDTO {
     warnings,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
-    ...(row.status === 'completed' ? { downloadUrl: `/api/world-gen/tasks/${row.id}/download` } : {})
+    // 仅整书任务(world)提供成书下载;arcs 结果走 /tasks/[id]/arcs 接口
+    ...(row.status === 'completed' && row.kind !== 'arcs' ? { downloadUrl: `/api/world-gen/tasks/${row.id}/download` } : {})
   }
 }
 

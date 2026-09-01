@@ -26,6 +26,7 @@ import { toyController } from '../toy/api'
 import { listImportedAdapters, loadToySettings, saveToySettings, clearLegacyImportedAdapters } from '../toy/store'
 import { loadAllAdapters, removeImportedAdapter, importAdapterFiles } from '../toy/runtime/adapter-loader'
 import { loadNarrSpeed, saveNarrSpeed, clampNarrCps, NARR_SPEED_TIERS, NARR_SPEED_DEFAULT } from '../utils/narrSpeed'
+import { loadReinjectInterval, saveReinjectInterval, REINJECT_INTERVAL_MIN, REINJECT_INTERVAL_MAX } from '../utils/reinjectPrefs'
 import { loadNarrLength, saveNarrLength, NARR_LENGTH_MIN, NARR_LENGTH_MAX, NARR_LENGTH_STEP } from '../utils/narrLength'
 
 useHead({ title: 'AI Word2World · 个人中心' })
@@ -884,6 +885,15 @@ function applyNarrSpeedCustom(): void {
   narrSpeedCustom.value = ''
 }
 
+/** 段回注间隔(本地偏好,默认 5 回合):每 N 回合重新注入当前段情节 + 段首原文窗口,即时保存,新回合生效 */
+const reinjectEvery = ref(loadReinjectInterval())
+watch(reinjectEvery, v => saveReinjectInterval(clampReinjectInterval(v)))
+
+function clampReinjectInterval(v: number): number {
+  if (!Number.isFinite(v)) return REINJECT_INTERVAL_MIN
+  return Math.min(REINJECT_INTERVAL_MAX, Math.max(REINJECT_INTERVAL_MIN, Math.round(v)))
+}
+
 /** 每回合生成字数(本地偏好,默认 400 字):回合正文目标篇幅,滑动条即时保存,新回合生效 */
 const narrLength = ref(loadNarrLength())
 watch(narrLength, v => saveNarrLength(v))
@@ -1501,6 +1511,28 @@ watch(narrLength, v => saveNarrLength(v))
                 class="flex-1"
               />
               <span class="w-16 shrink-0 text-right font-mono text-sm text-neutral-700 dark:text-neutral-300">{{ narrLength }} 字</span>
+            </div>
+          </UCard>
+
+          <!-- 防跑偏频率(段回注间隔):定期把当前段落原著原文重新注入,防止剧情越写越偏 -->
+          <UCard class="mb-6">
+            <div class="mb-3 flex flex-col gap-1">
+              <p class="font-semibold">
+                防跑偏频率
+              </p>
+              <p class="text-xs text-neutral-500">
+                AI 会越写越偏离原著。设置每隔几个回合把当前段落的原著原文重新对照一次,把剧情拉回正轨;数字越小越贴原文、消耗略增,默认 5 回合,新回合生效
+              </p>
+            </div>
+            <div class="flex items-center gap-4">
+              <USlider
+                v-model="reinjectEvery"
+                :min="REINJECT_INTERVAL_MIN"
+                :max="REINJECT_INTERVAL_MAX"
+                :step="1"
+                class="flex-1"
+              />
+              <span class="w-24 shrink-0 text-right font-mono text-sm text-neutral-700 dark:text-neutral-300">每 {{ reinjectEvery }} 回合</span>
             </div>
           </UCard>
 

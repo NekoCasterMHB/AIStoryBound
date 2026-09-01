@@ -561,9 +561,15 @@ export const aiUsage = sqliteTable('ai_usage', {
 export const worldGenTasks = sqliteTable('world_gen_tasks', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** 任务类型:world=整书世界生成(默认)| arcs=补充生成配角故事线 */
+  kind: text('kind').notNull().default('world'),
+  /** arcs 任务绑定的本地作品 id(卡片 loading 指示按它匹配);world 任务为 null */
+  sourceWorkId: text('source_work_id'),
+  /** arcs 任务的输入载荷 JSON:{ entities, storyline };world 任务为 null */
+  payload: text('payload'),
   /** uploaded=已建任务待执行 | running=管线执行中 | completed=成书可下载 | failed | cancelled */
   status: text('status').notNull().default('uploaded'),
-  /** 管线阶段:parse|author|extract|merge|check|synthesize|done */
+  /** 管线阶段:parse|author|extract|merge|check|synthesize|arcs|done */
   stage: text('stage').notNull().default('parse'),
   /** JSON:{ doneUnits, totalUnits } extract 阶段进度 */
   stageDetail: text('stage_detail'),

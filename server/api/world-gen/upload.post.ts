@@ -1,17 +1,19 @@
 // server/api/world-gen/upload.post.ts
 // 上传原文并创建云端世界生成任务(multipart):
-//   file=<txt> & mode=full|eco & charCount=<客户端解析字数> & config=<可选自建配置 JSON>
-// 流程:服务端自动识别编码 → 转为 UTF-8 文本 → 按转换后内容重算 sha-256 → R2 按 hash 去重存转换后 UTF-8
-// → 平台模式预授权扣费 → 建任务行 → 启动 Workflow。
+//   file=<txt> & mode=full|eco & charCount=<客户端解析字数> & config=<可选自建配置 JSON> & forceRegenerate=1(可选)
+// 流程:服务端自动识别编码 → 转为 UTF-8 文本 → 按转换后内容重算 sha-256 → 查共享缓存
+// (命中且未带 forceRegenerate 时直接返回 cacheHit,不建任务,由客户端选择拉取/重新生成)→
+// R2 按 hash 去重存转换后 UTF-8 → 平台模式余额预检 → 建任务行 → 启动 Workflow。
 // 自建 key:格式校验 + 指纹准入(与 /api/ai/chat 同门槛)→ AES-GCM 加密暂存到任务行,
 // 任务终态即清空(clearTaskKey / 孤儿清扫兜底);用户 key 模式不扣平台额度、只记账。
 // 本地 dev(env.WORLD_GEN 缺失)回退 waitUntil 内联执行同一套管线,保证可调试。
 import { and, eq } from 'drizzle-orm'
 import { useD1 } from '../../utils/d1'
 import { requireUser } from '../../utils/authz'
-import { user as usersTable, aiConfigVerifications, worldGenTasks } from '../../db/schema'
+import { user as usersTable, aiConfigVerifications, worldGenTasks, worldCache } from '../../db/schema'
 import { uuid } from '../../../shared/novel'
-import { estimateWorldGenTokens } from '../../../shared/world-gen-task'
+import { cacheHalfCost, estimateWorldGenTokens } from '../../../shared/world-gen-task'
+import type { WorldCacheHit } from '../../../shared/world-gen-task'
 import { isAiApiFormat } from '../../../shared/ai-config'
 import { getSkillBucket } from '../../utils/r2'
 import { encryptJson } from '../../utils/crypto'
@@ -96,6 +98,30 @@ export default defineEventHandler(async (event) => {
     }
   }
 
+  // ---- 共享缓存命中:未显式要求重新生成时,不建任务,把命中信息返回给客户端选择(拉取半价 / 重新生成)。
+  // 与 /api/world-gen/check 同口径(该接口保留兼容);命中时不存 R2 原文,避免无用占用。 ----
+  const forceRegenerate = parts.find(p => p.name === 'forceRegenerate')?.data.toString() === '1'
+  if (!forceRegenerate) {
+    const db = useD1(event)
+    const hitRow = await db.select()
+      .from(worldCache)
+      .where(and(eq(worldCache.sourceHash, hash), eq(worldCache.mode, mode)))
+      .get()
+    if (hitRow) {
+      const cacheHit: WorldCacheHit = {
+        cacheId: hitRow.id,
+        sourceHash: hitRow.sourceHash,
+        title: hitRow.title,
+        author: hitRow.author,
+        mode: hitRow.mode === 'eco' ? 'eco' : 'full',
+        tokensUsed: hitRow.tokensUsed,
+        halfCost: cacheHalfCost(hitRow.tokensUsed),
+        createdAt: hitRow.createdAt.toISOString()
+      }
+      return { task: null, cacheHit }
+    }
+  }
+
   // ---- R2 存转换后的 UTF-8 文本(按 hash 去重:同内容全站只存一份) ----
   const bucket = getSkillBucket(event)
   const sourceKey = worldSourceKey(hash)
@@ -153,5 +179,5 @@ export default defineEventHandler(async (event) => {
   console.info('[world-gen] 任务已启动', { taskId, started })
 
   const row = await db.select().from(worldGenTasks).where(eq(worldGenTasks.id, taskId)).get()
-  return { task: row ? worldGenTaskToDTO(row) : null, started }
+  return { task: row ? worldGenTaskToDTO(row) : null, cacheHit: null, started }
 })

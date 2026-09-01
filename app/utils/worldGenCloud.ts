@@ -5,7 +5,7 @@
 import type { WorldCacheHit, WorldGenMode, WorldGenTaskDTO } from '#shared/world-gen-task'
 import { saveWork, getWorkBySourceTask } from './worldGen'
 import { importWorkFromBytes } from './shareZip'
-import type { LocalWork } from '#shared/novel'
+import type { CharacterArc, LocalWork } from '#shared/novel'
 
 export type { WorldCacheHit, WorldGenMode, WorldGenTaskDTO }
 
@@ -41,18 +41,27 @@ export interface UploadOptions {
   charCount: number
   /** 自建 key 配置(浏览器本地已验证的激活配置;上送云端加密暂存,任务结束即删) */
   config?: { format: string, baseUrl: string, apiKey: string, model: string } | null
+  /** 命中共享缓存时强制重新生成(重新上传第二次时携带);缺省由服务端返回 cacheHit 供客户端选择 */
+  forceRegenerate?: boolean
   onUploadProgress?: (loaded: number, total: number) => void
 }
 
-/** 上传原文并创建云端任务(XHR 以拿到上传进度;服务端重算 hash 校验) */
-export function uploadWorldGenTask(opts: UploadOptions): Promise<WorldGenTaskDTO> {
+export interface UploadWorldGenResult {
+  task: WorldGenTaskDTO | null
+  cacheHit: WorldCacheHit | null
+}
+
+/** 上传原文并创建云端任务(XHR 以拿到上传进度;服务端重算 hash 校验)。
+ *  命中共享缓存且未带 forceRegenerate 时返回 { task: null, cacheHit },由调用方选择拉取/重新生成。 */
+export function uploadWorldGenTask(opts: UploadOptions): Promise<UploadWorldGenResult> {
   const form = new FormData()
   form.append('file', opts.file, opts.file.name)
   form.append('mode', opts.mode)
   form.append('charCount', String(Math.max(0, Math.round(opts.charCount))))
   if (opts.config) form.append('config', JSON.stringify(opts.config))
+  if (opts.forceRegenerate) form.append('forceRegenerate', '1')
 
-  return new Promise<WorldGenTaskDTO>((resolve, reject) => {
+  return new Promise<UploadWorldGenResult>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', '/api/world-gen/upload')
     xhr.responseType = 'json'
@@ -60,13 +69,11 @@ export function uploadWorldGenTask(opts: UploadOptions): Promise<WorldGenTaskDTO
       if (e.lengthComputable) opts.onUploadProgress?.(e.loaded, e.total)
     }
     xhr.onload = () => {
-      const res = xhr.response as { task?: WorldGenTaskDTO | null } | null
-      if (xhr.status >= 200 && xhr.status < 300 && res?.task) {
-        resolve(res.task)
+      const res = xhr.response as { task?: WorldGenTaskDTO | null, cacheHit?: WorldCacheHit | null, statusMessage?: string, message?: string } | null
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve({ task: res?.task ?? null, cacheHit: res?.cacheHit ?? null })
       } else {
-        const msg = (res as { statusMessage?: string } | null)?.statusMessage
-          ?? (xhr.response as { message?: string } | null)?.message
-          ?? `上传失败(HTTP ${xhr.status})`
+        const msg = res?.statusMessage ?? res?.message ?? `上传失败(HTTP ${xhr.status})`
         reject(new Error(msg))
       }
     }
@@ -101,6 +108,33 @@ export async function fetchWorldGenTasks(): Promise<WorldGenTaskDTO[]> {
 /** 取消进行中的任务 / 删除历史任务 */
 export async function cancelWorldGenTask(id: string): Promise<void> {
   await $fetch(`${WORLD_GEN_TASKS_URL}/${id}`, { method: 'DELETE' })
+}
+
+export interface SupplementArcsArgs {
+  workId: string
+  title: string
+  entities: LocalWork['entities']
+  storyline: LocalWork['storyline']
+  /** 全书正文(chapters.join('\n');服务端用于登场段原文窗口注入) */
+  text?: string
+  /** 自建 key 配置(浏览器本地已验证的激活配置;上送云端加密暂存,任务结束即删) */
+  config?: { format: string, baseUrl: string, apiKey: string, model: string } | null
+}
+
+/** 创建「补充生成配角故事线」云端任务(服务端逐单元生成并原子扣费) */
+export async function startSupplementArcsTask(args: SupplementArcsArgs): Promise<WorldGenTaskDTO> {
+  const res = await $fetch<{ task: WorldGenTaskDTO | null }>('/api/world-gen/arcs', {
+    method: 'POST',
+    body: args
+  })
+  if (!res.task) throw new Error('创建任务失败:服务端未返回任务')
+  return res.task
+}
+
+/** 读取已完成 arcs 任务的弧线结果(客户端据此写入本地作品 characterArcs) */
+export async function fetchArcsResult(id: string): Promise<CharacterArc[]> {
+  const res = await $fetch<{ arcs: CharacterArc[] }>(`${WORLD_GEN_TASKS_URL}/${id}/arcs`)
+  return res.arcs ?? []
 }
 
 /** 恢复暂停中的任务(充值后继续;已完成单元自动复用) */
@@ -187,6 +221,9 @@ export function worldGenTaskPercent(task: WorldGenTaskDTO): number {
       return 85
     case 'check':
       return 90
+    case 'arcs':
+      // 按故事线条数推进:10%(第 0 条)→ 90%(最后一条)
+      return Math.round(10 + unitRatio * 80)
     case 'synthesize':
       return 95
     case 'done':
@@ -212,6 +249,10 @@ export function worldGenStageLabel(task: WorldGenTaskDTO): string {
     }
     case 'merge': return '合并实体'
     case 'check': return '一致性检查'
+    case 'arcs': {
+      const { doneUnits, totalUnits } = task.stageDetail
+      return totalUnits > 0 ? `补充故事线 ${doneUnits}/${totalUnits}` : '补充故事线'
+    }
     case 'synthesize': return '成书中'
     case 'done': return '完成'
     default: return '处理中'

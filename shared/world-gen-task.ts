@@ -12,13 +12,17 @@ export type WorldGenMode = 'full' | 'eco'
 
 export type WorldGenTaskStatus = 'uploaded' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
 
-/** 管线阶段(与 app/utils/worldGen.ts 的 GenerateProgress.stage 对齐,复用生成页 stepper) */
-export type WorldGenStage = 'parse' | 'author' | 'extract' | 'merge' | 'check' | 'synthesize' | 'done'
+/** 管线阶段(与 app/utils/worldGen.ts 的 GenerateProgress.stage 对齐,复用生成页 stepper)
+ *  arcs=补充配角故事线任务(按候选角色逐条生成,stageDetail 记录 doneUnits/totalUnits) */
+export type WorldGenStage = 'parse' | 'author' | 'extract' | 'merge' | 'check' | 'synthesize' | 'arcs' | 'done'
+
+/** 任务类型:world=整书世界生成 | arcs=补充生成配角故事线 */
+export type WorldGenTaskKind = 'world' | 'arcs'
 
 /** key 来源:platform=平台 key 预授权计费 | user=用户自建 key(云端加密暂存,零扣费) */
 export type WorldGenKeySource = 'platform' | 'user'
 
-/** extract 阶段进度明细(stage_detail JSON) */
+/** extract/arcs 阶段进度明细(stage_detail JSON) */
 export interface WorldGenStageDetail {
   doneUnits: number
   totalUnits: number
@@ -27,6 +31,9 @@ export interface WorldGenStageDetail {
 /** 任务 DTO(GET /api/world-gen/tasks 与 /:id 返回;不含 key 密文等敏感列) */
 export interface WorldGenTaskDTO {
   id: string
+  kind: WorldGenTaskKind
+  /** arcs 任务绑定的本地作品 id;world 任务为 null */
+  sourceWorkId: string | null
   status: WorldGenTaskStatus
   stage: WorldGenStage
   stageDetail: WorldGenStageDetail
