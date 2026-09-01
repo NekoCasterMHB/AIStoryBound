@@ -4,7 +4,7 @@
 // 提取/检查/成书的 LLM 调用由浏览器编排,经服务器 /api/ai/chat 中继执行。
 import { SEX_TEXT_KEYS, uuid } from './novel'
 import type {
-  ChapterExtraction, ChapterSegment, CharacterCard, CharacterChapterVariant, EntityConflict, EntitySource,
+  ChapterExtraction, ChapterSegment, CharacterArc, CharacterArcBeat, CharacterCard, CharacterChapterVariant, EntityConflict, EntitySource,
   HeatLevel, KinkProfileEntry, MergedCharacter, PlotBeat, StoryBeat, WorldEntities, WorldOverlay
 } from './novel'
 
@@ -1195,4 +1195,127 @@ export function finalizeCards(
       }
       return patched
     })
+}
+
+// ---- 配角独立故事线(角色弧线) ----
+
+/** 弧线生成时注入的角色上限(控制 prompt 体积与 token 成本;超出按出场量取前 N) */
+export const ARC_CHARACTER_LIMIT = 10
+
+/** 从主线细纲段收集每个角色的登场段(用于生成候选名单与校验 beatIndex) */
+export function characterAppearances(storyline: StoryBeat[] | undefined): Map<string, number[]> {
+  const map = new Map<string, number[]>()
+  for (const b of storyline ?? []) {
+    for (const name of b.cast ?? []) {
+      const key = normKey(name)
+      if (!key) continue
+      const list = map.get(key) ?? []
+      if (!list.includes(b.index)) list.push(b.index)
+      map.set(key, list)
+    }
+  }
+  return map
+}
+
+/** 弧线生成请求:基于主线故事线与角色素材,为每个登场且有剧情量的角色生成独立弧线。
+ *  增量补生成与成书共用,保证产物一致。输入不含原文正文(避免重复注入),只给细纲 + 人物卡素材。 */
+export function buildCharacterArcsMessages(
+  title: string,
+  entities: WorldEntities,
+  storyline: StoryBeat[] | undefined
+): { role: 'system' | 'user', content: string }[] {
+  const beats = [...(storyline ?? [])].sort((a, b) => a.index - b.index)
+  const appearances = characterAppearances(storyline)
+  // 候选角色:登场段数 ≥2 或登场段数 ≥1 且为主要角色卡;按登场段数排序取前 N
+  const candidates = entities.characters
+    .map(c => ({ card: c, key: normKey(c.name), beats: appearances.get(normKey(c.name)) ?? [] }))
+    .filter(c => c.beats.length >= 2)
+    .sort((a, b) => b.beats.length - a.beats.length)
+    .slice(0, ARC_CHARACTER_LIMIT)
+  if (candidates.length === 0) return []
+
+  const beatLines = beats.map(b => `[段${b.index + 1}] ${b.summary}${b.cast?.length ? `（登场:${b.cast.slice(0, 6).join('、')}）` : ''}`).join('\n')
+  const cardLines = candidates.map(({ card, beats: bs }) => {
+    const bits = [
+      card.identity && `身份:${card.identity}`,
+      card.goals?.length ? `目标:${card.goals.slice(0, 4).join('、')}` : '',
+      card.fears?.length ? `恐惧/弱点:${card.fears.slice(0, 3).join('、')}` : '',
+      card.secrets?.length ? `秘密:${card.secrets.slice(0, 3).join('、')}` : '',
+      card.relationships?.length ? `关系:${card.relationships.slice(0, 5).map(r => `${r.name}(${r.type})`).join('、')}` : '',
+      bs.length ? `登场段:${bs.map(i => `第${i + 1}段`).join('、')}` : ''
+    ].filter(Boolean)
+    // chapterVariants 提供该角色在各段的处境变化(比人物卡终态更贴合分段)
+    const variantLines = (card.chapterVariants ?? [])
+      .filter(v => v.status)
+      .slice(0, 20)
+      .map(v => `第${(v.stage ?? 0) + 1}段:${v.status}`)
+    return `${card.name}:\n${bits.join('\n')}${variantLines.length ? `\n分段处境:\n${variantLines.join('\n')}` : ''}`
+  }).join('\n\n')
+
+  const schema = `{
+  "arcs": [{
+    "character": "角色名(必须与上方人物卡名字一致)",
+    "summary": "该角色全书的弧线概述(目标/宿命/处境演变,一两句话)",
+    "beats": [{"beatIndex": 0, "summary": "该角色在本段的行动/处境/目标推进(以该角色为中心,80~150字)", "status": "本段处境变化,无则null"}],
+    "ending": "该角色在全书终局的状态/结局(null可)"
+  }]
+}`
+  return [
+    { role: 'system' as const, content: `你必须只输出一个合法的 JSON 对象,不要输出任何其他文字、注释或 Markdown 围栏。\n输出结构必须满足:\n${schema}` },
+    {
+      role: 'user' as const,
+      content: `小说《${title}》的主线故事线(按段序)如下:\n${beatLines}\n\n以下角色的人物卡素材(用于生成各自的独立弧线):\n${cardLines}\n\n请为上述每个角色生成一条独立故事线(角色弧线):\n`
+        + '- 只能使用上方故事线中已出现且与该角色相关的信息,不得新增原著没有的情节、不得编造该角色的独立事件;\n'
+        + '- beats 按主线细纲段序对齐(beatIndex 对应段号),只列出该角色实际登场/有戏份的段(未登场段不写);\n'
+        + '- summary 以该角色为中心叙述其行动、处境与目标推进,不要重复整段主线剧情;\n'
+        + '- 出场信息不足的角色可以省略 beats 或仅给 summary+ending,不要硬凑。'
+    }
+  ]
+}
+
+/** 归一化弧线:名字对齐人物卡(normKey)、beatIndex 排序去重、裁剪、只保留有效段 */
+export function normalizeCharacterArcs(
+  raw: unknown,
+  storyline: StoryBeat[] | undefined,
+  cards: { name: string }[] | undefined
+): CharacterArc[] {
+  const beats = (storyline ?? []).map(b => b.index)
+  const validIndex = new Set(beats)
+  const cardKeys = new Map((cards ?? []).map(c => [normKey(c.name), c.name]))
+  const data = (raw as { arcs?: unknown } | null)?.arcs
+  if (!Array.isArray(data)) return []
+  const out: CharacterArc[] = []
+  for (const item of data) {
+    if (!item || typeof item !== 'object') continue
+    const obj = item as Record<string, unknown>
+    const rawName = String(obj.character ?? '').trim()
+    const key = normKey(rawName)
+    if (!key) continue
+    const name = cardKeys.get(key) ?? rawName
+    const arcBeats: CharacterArcBeat[] = []
+    if (Array.isArray(obj.beats)) {
+      for (const b of obj.beats) {
+        if (!b || typeof b !== 'object') continue
+        const bo = b as Record<string, unknown>
+        const bi = Number(bo.beatIndex)
+        if (!Number.isInteger(bi) || !validIndex.has(bi)) continue
+        const summary = String(bo.summary ?? '').trim()
+        if (!summary) continue
+        const status = typeof bo.status === 'string' && bo.status.trim() ? bo.status.trim() : undefined
+        arcBeats.push({ beatIndex: bi, summary, status })
+      }
+    }
+    arcBeats.sort((a, b) => a.beatIndex - b.beatIndex)
+    const deduped = arcBeats.filter((b, i) => i === 0 || b.beatIndex !== arcBeats[i - 1]!.beatIndex)
+    const summary = String(obj.summary ?? '').trim()
+    const ending = typeof obj.ending === 'string' && obj.ending.trim() ? obj.ending.trim() : undefined
+    if (!summary && deduped.length === 0) continue
+    out.push({
+      character: name,
+      summary: summary || deduped.map(b => `第${b.beatIndex + 1}段:${b.summary}`).join('; ').slice(0, 200),
+      beats: deduped,
+      ending
+    })
+  }
+  return out
 }

@@ -22,12 +22,12 @@ import { AI_PURPOSE_ROUTING_KEY } from './ai'
 import { isAiApiFormat, AI_ROUTE_ENV } from '../../shared/ai-config'
 import { extractFrontMatter, detectAuthorFromFrontMatter, uuid } from '../../shared/novel'
 import type {
-  ChapterExtraction, EntityConflict, StoryBeat, TokenUsage, WorldEntities, WorldOverlay
+  ChapterExtraction, CharacterArc, EntityConflict, StoryBeat, TokenUsage, WorldEntities, WorldOverlay
 } from '../../shared/novel'
 import {
-  assembleStoryline, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
+  assembleStoryline, buildCharacterArcsMessages, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
   buildSynthesizeMessages, emptyExtraction, finalizeCards, mergeExtractions, mergeOverlayMeta,
-  normalizeExtraction, quoteByChapter, splitUnits, summarizeWorldLocal, verifyQuotes,
+  normalizeCharacterArcs, normalizeExtraction, quoteByChapter, splitUnits, summarizeWorldLocal, verifyQuotes,
   ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS
 } from '../../shared/world-build'
 import type { ExtractUnit, WorldLocalSummary } from '../../shared/world-build'
@@ -42,6 +42,14 @@ export const EXTRACT_CONCURRENCY = 4
 /** running 状态超过该时长视为孤儿(Workflow 被强杀/执行环境异常),由状态接口兜底判失败并退款;
  *  正常运行时提取单元会持续更新任务行,最长的静默段是检查/成书的单次 AI 调用(约 10 分钟),30 分钟足够安全 */
 const STALE_RUNNING_MS = 30 * 60 * 1000
+
+/** 部署/代码更新重置正在运行的 Workflow 实例时,平台抛出的两类错误(DO 内存清零,持久化状态不受影响)。
+ *  这类错误不是任务失败:管线步骤全部幂等,应自动另起新实例续跑,而不是判失败展示给用户。 */
+const DEPLOY_RESET_ERROR_RE = /Durable Object reset because its code was updated|This script has been upgraded/i
+
+export function isDeployResetError(message: string): boolean {
+  return DEPLOY_RESET_ERROR_RE.test(message)
+}
 
 // ---- R2 key 约定 ----
 
@@ -738,6 +746,39 @@ export async function stepSynthesize(ctx: WorldGenCtx): Promise<{ cardCount: num
   return { cardCount: (overlay.characters ?? []).length, title: overlay.title || title }
 }
 
+/** 步骤 6.5(仅完整模式):配角独立故事线(角色弧线)。失败降级为告警,不中止;
+ *  产物写 R2 scratch 的 arcs.json,stepFinalize 读取后随成书 payload 落盘。 */
+export async function stepCharacterArcs(ctx: WorldGenCtx): Promise<{ count: number }> {
+  const task = await requireTask(ctx)
+  await assertNotCancelled(task)
+  if (task.mode === 'eco') return { count: 0 }
+  const overlay = await getScratch<WorldOverlay>(ctx, 'overlay')
+  const merged = await getScratch<MergedState>(ctx, 'merged')
+  if (!overlay || !merged) return { count: 0 }
+  const { storyline } = merged
+  if (!storyline || storyline.length === 0) return { count: 0 }
+
+  const messages = buildCharacterArcsMessages(task.title || '小说', merged.entities, storyline)
+  if (messages.length === 0) return { count: 0 }
+  try {
+    const relay = await relayOf(ctx, task)
+    const { data, usage } = await callAiJson(relay, {
+      messages,
+      maxTokens: 8000,
+      temperature: 0.3
+    })
+    await recordTaskUsage(ctx, task, usage)
+    const arcs = normalizeCharacterArcs(data, storyline, overlay.characters)
+    await putScratch(ctx, 'arcs', arcs)
+    return { count: arcs.length }
+  } catch (e) {
+    // 余额不足为致命错误:终止任务;其余失败降级(不影响成书)
+    if (e instanceof InsufficientTokensError) throw e
+    console.warn('[world-gen] 配角故事线生成失败,已跳过', { taskId: ctx.taskId }, e)
+    return { count: 0 }
+  }
+}
+
 export interface WorldJsonPayload {
   id: string
   title: string
@@ -747,6 +788,7 @@ export interface WorldJsonPayload {
   characters: unknown[]
   overlay: WorldOverlay
   storyline: StoryBeat[]
+  characterArcs: CharacterArc[]
   entities: WorldEntities
   conflicts: EntityConflict[]
   warnings: string[]
@@ -767,6 +809,7 @@ export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: strin
 
   const mode: WorldGenMode = task.mode === 'eco' ? 'eco' : 'full'
   const resultKey = worldCacheObjectKey(task.sourceHash, mode)
+  const characterArcs = await getScratch<CharacterArc[]>(ctx, 'arcs') ?? []
   const payload: WorldJsonPayload = {
     id: task.sourceHash,
     title: overlay.title || task.title || '未命名',
@@ -776,6 +819,7 @@ export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: strin
     characters: overlay.characters ?? [],
     overlay,
     storyline: merged.storyline,
+    characterArcs,
     entities: merged.entities,
     conflicts: merged.conflicts,
     warnings: merged.warnings,
@@ -857,6 +901,7 @@ export async function runWorldGenPipelineInline(ctx: WorldGenCtx): Promise<void>
     await stepMerge(ctx, plan)
     if (task.mode !== 'eco') await stepCheck(ctx)
     await stepSynthesize(ctx)
+    if (task.mode !== 'eco') await stepCharacterArcs(ctx)
     await stepFinalize(ctx)
   } catch (e) {
     if (e instanceof WorldGenCancelledError) return

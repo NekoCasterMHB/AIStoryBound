@@ -32,6 +32,29 @@ onMounted(async () => {
 
 const cards = computed(() => work.value?.overlay?.characters ?? [])
 
+/** 名字归一化(去空白;cast 与人物卡名/别名匹配用) */
+function normName(s: string | null | undefined): string {
+  return (s ?? '').replace(/\s+/g, '').trim()
+}
+
+/** 判断角色是否在所选细纲段登场(cast 与卡名/别名/昵称做宽松匹配;cast 缺失时全部视为登场) */
+const isInBeatCast = (() => {
+  const match = (card: { name: string, alias?: string | null }, cast: string[]): boolean => {
+    if (!cast.length) return true // cast 缺失(旧作品/LLM 未填):不误伤,全部可选
+    const cardNames = [card.name, card.alias ?? ''].map(normName).filter(Boolean)
+    return cast.some((c) => {
+      const k = normName(c)
+      return cardNames.includes(k)
+        || cardNames.some(n => n.includes(k) || k.includes(n))
+    })
+  }
+  return (card: { name: string, alias?: string | null }) => {
+    if (openingMode.value !== 'beat') return true
+    const cast = selectedBeat.value?.cast ?? []
+    return match(card, cast)
+  }
+})()
+
 /** 残缺作品拦截:角色卡过少或多数卡缺少基本人设信息时禁止开局。
  *  覆盖两类来源:本修复前生成的旧作品(成书输出被截断只留下主角)、用户手动删卡后的极端状态。 */
 const brokenReason = computed(() => {
@@ -52,7 +75,7 @@ const chapters = computed(() => work.value?.chapters ?? [])
 type OpeningMode = 'ai' | 'beat' | 'custom'
 const openingMode = ref<OpeningMode>('ai')
 const openingModes = [
-  { label: 'AI 生成开场', value: 'ai', description: '进入游戏后生成多个开场设定供选择' },
+  { label: 'AI 生成开场', value: 'ai', description: '进入游戏后生成 4 个开场设定供选择' },
   { label: '按细纲段开始', value: 'beat', description: '从所选细纲段的情节展开' },
   { label: '输入背景故事', value: 'custom', description: '按你写的背景设定生成开场' }
 ] satisfies { label: string, value: OpeningMode, description: string }[]
@@ -109,6 +132,14 @@ watch(adultOn, v => setAdultModeEnabled(v))
 
 async function startAs(characterName: string) {
   if (creating.value) return
+  // 「按细纲段开始」时,该段未登场的角色不可选(cast 缺失/匹配失败时不拦截)
+  if (openingMode.value === 'beat' && selectedBeat.value) {
+    const card = cards.value.find(c => c.name === characterName)
+    if (card && !isInBeatCast(card)) {
+      toast.add({ title: '该角色本段未登场', description: `细纲「${selectedBeat.value.label || `第${selectedBeat.value.index + 1}段`}」中${characterName}没有戏份,请选择该段登场的角色,或切换到其他开场方式`, color: 'error' })
+      return
+    }
+  }
   const { opening, currentBeat, error } = buildOpening()
   if (error) {
     toast.add({ title: error, color: 'error' })
@@ -370,6 +401,12 @@ function dismissLegacyHint() {
             >
               将从该段起始位置开始演绎,并连带注入前一段背景与后一段走向
             </p>
+            <p
+              v-if="selectedBeat && selectedBeat.cast?.length"
+              class="text-[11px] text-amber-600 dark:text-amber-400"
+            >
+              该段登场的角色可正常选择;未登场的角色已置灰(切换细纲段或开场方式后可选)
+            </p>
           </template>
         </div>
         <UTextarea
@@ -383,7 +420,7 @@ function dismissLegacyHint() {
           v-if="openingMode === 'ai'"
           class="text-xs text-neutral-500"
         >
-          进入游戏后,AI 会先生成 3~4 个开场设定供你选择(默认选中第一个,可改选)
+          进入游戏后,AI 会先生成 4 个开场设定供你选择(默认选中第一个,可改选)
         </p>
       </div>
     </UCard>
@@ -395,7 +432,10 @@ function dismissLegacyHint() {
       <UCard
         v-for="c in cards"
         :key="c.name"
-        class="flex h-full cursor-pointer flex-col transition hover:border-primary-400"
+        class="flex h-full flex-col transition"
+        :class="isInBeatCast(c)
+          ? 'cursor-pointer hover:border-primary-400'
+          : 'cursor-not-allowed opacity-50'"
         :ui="{ body: 'flex flex-1 flex-col' }"
         @click="startAs(c.name)"
       >
@@ -408,12 +448,22 @@ function dismissLegacyHint() {
               {{ c.identity || '未知身份' }}
             </p>
           </div>
-          <UBadge
-            :color="roleColor(c.role)"
-            variant="soft"
-          >
-            {{ c.role || '配角' }}
-          </UBadge>
+          <div class="flex flex-col items-end gap-1">
+            <UBadge
+              :color="roleColor(c.role)"
+              variant="soft"
+            >
+              {{ c.role || '配角' }}
+            </UBadge>
+            <UBadge
+              v-if="openingMode === 'beat' && !isInBeatCast(c)"
+              color="neutral"
+              variant="outline"
+              size="sm"
+            >
+              该段未登场
+            </UBadge>
+          </div>
         </div>
         <p
           v-if="c.personality?.length"
@@ -437,9 +487,10 @@ function dismissLegacyHint() {
           color="primary"
           variant="soft"
           :loading="creating"
+          :disabled="!isInBeatCast(c)"
           @click.stop="startAs(c.name)"
         >
-          扮演{{ c.name }}
+          {{ isInBeatCast(c) ? `扮演${c.name}` : '该段未登场,不可扮演' }}
         </UButton>
       </UCard>
     </div>

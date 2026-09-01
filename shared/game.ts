@@ -6,7 +6,7 @@ import { desireTierName } from './novel'
 import { estimateTextTokens } from './token-estimate'
 import type { PluginBrief } from './plugin'
 import type { AiSkill } from './ai-skills'
-import type { CharacterCard, CharacterDynamicState, GameState, LocalGame, StoryBeat, TurnStructured, WorldEntities, EntityConflict, WorldOverlay } from './novel'
+import type { CharacterArc, CharacterCard, CharacterDynamicState, GameState, LocalGame, StoryBeat, TurnStructured, WorldEntities, EntityConflict, WorldOverlay } from './novel'
 
 export type AiRole = 'system' | 'user' | 'assistant'
 export interface ChatMsg { role: AiRole, content: string }
@@ -346,7 +346,7 @@ export interface TurnPromptArgs {
   /** 每回合生成字数(个人中心滑动条设置):回合正文目标篇幅;缺省维持原有段落字数约束 */
   narrLength?: number
   /** 章节回注(每 N 回合):当前段情节 + 段起始原文窗口,由页面按细纲段定位计算后传入 */
-  reinjectPlot?: { beatTitle?: string, beatSummary?: string, window: string, nextBeat?: { title?: string, summary?: string } }
+  reinjectPlot?: { beatIndex?: number | null, beatTitle?: string, beatSummary?: string, window: string, nextBeat?: { title?: string, summary?: string } }
   /** 当前阶段段下标(0-based,细纲段):据此给人物卡叠加阶段变体(段差异化卡);缺省不叠加 */
   stageIndex?: number | null
   /** 世界观提取产物(规则/势力/地点/伏笔) */
@@ -355,6 +355,10 @@ export interface TurnPromptArgs {
   conflicts?: EntityConflict[]
   /** 按字数切段的完整故事线(回合只注入当前附近窗口) */
   storyline?: StoryBeat[]
+  /** 配角独立故事线(角色弧线):玩家扮演的角色有弧线时,以其为主叙事线 */
+  characterArcs?: CharacterArc[]
+  /** 玩家扮演的角色名(用于从 characterArcs 中选取该角色的弧线) */
+  playerArcCharacter?: string
   /** overlay 高层字段(性向/尺度/舞台/标签),拼进题材行 */
   overlayMeta?: Pick<WorldOverlay, 'orientation' | 'setting' | 'heat' | 'tags'>
 }
@@ -375,6 +379,22 @@ function storylineWindow(
   return [...beats].sort((a, b) => a.startChar - b.startChar)
 }
 
+/** 名字归一化(去空白;弧线按角色名对齐用) */
+function arcKey(s: string | null | undefined): string {
+  return (s ?? '').replace(/\s+/g, '').trim()
+}
+
+/** 玩家角色的弧线(有则优先作为叙事主线);无则回退主角主线 */
+function playerArc(
+  characterArcs: CharacterArc[] | undefined,
+  playerName: string | undefined
+): CharacterArc | undefined {
+  if (!characterArcs?.length || !playerName) return undefined
+  const key = arcKey(playerName)
+  return characterArcs.find(a => arcKey(a.character) === key)
+    ?? characterArcs.find(a => arcKey(a.character).includes(key) || key.includes(arcKey(a.character)))
+}
+
 function overlayToneLine(
   genre: string | null | undefined,
   summary: string | null | undefined,
@@ -391,19 +411,26 @@ function overlayToneLine(
   return bits.join('。')
 }
 
-/** 剧情轨道:细纲窗口 + 世界压缩 + 伏笔/冲突(细纲取代乱序时间线) */
+/** 剧情轨道:细纲窗口(玩家角色有弧线时用其弧线)+ 世界压缩 + 伏笔/冲突(细纲取代乱序时间线) */
 function plotTrackBlock(args: {
   entities?: WorldEntities
   conflicts?: EntityConflict[]
   storyline?: StoryBeat[]
   opening?: LocalGame['opening']
+  characterArcs?: CharacterArc[]
+  playerName?: string
 }): string {
   const lines: string[] = []
   const topBy = <T extends { mentionCount: number }>(arr: T[] | undefined, n: number) =>
     [...(arr ?? [])].sort((a, b) => b.mentionCount - a.mentionCount).slice(0, n)
 
+  const arc = playerArc(args.characterArcs, args.playerName)
   const window = storylineWindow(args.storyline, args.opening)
-  if (window.length) {
+  if (arc) {
+    // 玩家角色的独立弧线:以该角色为中心的分段戏份,替代主角中心主线
+    const arcLines = arc.beats.map(b => `[段${b.beatIndex + 1}] ${b.summary}${b.status ? `（${b.status}）` : ''}`).join('\n')
+    lines.push(`玩家角色「${arc.character}」的独立故事线(以此为主叙事线,未登场段不在其中):\n${arcLines}${arc.ending ? `\n结局走向:${arc.ending}` : ''}${arc.summary ? `\n弧线概述:${arc.summary}` : ''}`)
+  } else if (window.length) {
     lines.push(`故事线(按原文先后):\n${window.map((b) => {
       const extra = [b.place, b.cast?.slice(0, 4).join('、')].filter(Boolean).join(' · ')
       return `[段${b.index + 1}] ${b.summary}${extra ? `（${extra}）` : ''}`
@@ -454,7 +481,7 @@ export interface TurnPromptPart {
 
 /** 组装叙事 prompt 分段:system 各块在前、user 各块在后,顺序即最终拼接顺序 */
 export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
-  const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening, deviceSpec, narrLength, reinjectPlot, entities, conflicts, storyline, overlayMeta, stageIndex } = args
+  const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening, deviceSpec, narrLength, reinjectPlot, entities, conflicts, storyline, characterArcs, playerArcCharacter, overlayMeta, stageIndex } = args
   // 有效卡:基础卡 + 阶段变体(≤当前段)+ 运行时动态状态,prompt 全程使用有效卡防 OOC
   const dyn = state.characterStates ?? {}
   const effCards = cards.map(c => effectiveCard(c, stageIndex, dyn[c.name]))
@@ -479,7 +506,7 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   }
   // 基础规则(不含技能与用户偏好/回避;按 kind 分组供消耗统计,顺序与编号保持不变)
   const baseRules = [
-    `以「${playerName}」的第一视角展开场景,用旁白叙事推进;对话行以「角色名:」开头,非玩家角色可自由说话/行动。`,
+    `你只能以玩家角色「${playerName}」的第一视角与内心展开场景,用旁白叙事推进;对话行以「角色名:」开头,非玩家角色可自由说话/行动。严格禁止切换到其他角色(尤其原著主角)的视角,禁止替其他角色做决定、禁止描写其他角色的内心活动——其他角色的反应只能通过他们的言行从外部呈现。`,
     '忠于各人物卡的性格与说话风格,不要 OOC。',
     '角色间的支配/服从定位(如 主/贝、攻/受、主奴、人物卡嗜好中的承受/施予)严格按人物卡与关系设定执行,不得因玩家行动、剧情需要或性欲强度而翻转、互换或重新分配。',
     '呼应原著设定:世界类型、舞台与体系(如虚拟游戏世界中人物身处游戏内)是不可改变的硬设定;在此前提下允许情节合理分支,避免机械复述原文。',
@@ -509,7 +536,7 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   const skillRuleLines = numberedRules.filter((_, i) => ruleEntries[i]!.kind === 'skill')
   const sceneRuleLines = numberedRules.filter((_, i) => ruleEntries[i]!.kind === 'scene')
 
-  const track = plotTrackBlock({ entities, conflicts, storyline, opening })
+  const track = plotTrackBlock({ entities, conflicts, storyline, opening, characterArcs, playerName: playerArcCharacter || playerName })
   const playerLine = `你是《${title}》的互动叙事引擎。玩家扮演「${playerName}」(${effPlayer ? cardBrief(effPlayer, dyn[playerName]) : '原著角色'})。`
   const othersLine = `可能出场的其他角色:\n${others.map(c => cardBrief(c, dyn[c.name])).join('\n')}`
   const stateLine = `当前游戏状态:${JSON.stringify(state, null, 0)}`
@@ -545,18 +572,29 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   // 本轮行动已在尾部「玩家本轮行动」单独强调,历史里去重,避免同一行动重复出现稀释指令
   if (choice && recent.at(-1)?.role === 'user' && recent.at(-1)!.content === choice) recent.pop()
   if (recent.length > 0) {
-    userParts.push({ label: '剧情回顾与历史消息', content: recent.map(m => (m.role === 'user' ? `【玩家】${m.content}` : `【剧情】${m.content}`)).join('\n') })
+    // 玩家消息带角色名渲染(而非笼统「【玩家】」):长对话里持续锚定"这段历史是谁的视角",防视角漂移
+    userParts.push({ label: '剧情回顾与历史消息', content: recent.map((m) => {
+      if (m.role === 'user') return `【${m.speaker || playerName}】${m.content}`
+      return `【剧情】${m.content}`
+    }).join('\n') })
   }
   // 首回合(无摘要/无历史)的开场:按开局设定注入对应背景,缺省维持原有自由开场
   if (!hasStoryContext) {
     if (opening?.mode === 'beat' && (opening.beatText || opening.beatSummary)) {
       // 按细纲段开始:前段=背景(不重新展开),本段正文+后段走向,从本段情节开始演绎
+      const arc = playerArc(characterArcs, playerArcCharacter || playerName)
       const beatParts = [`【当前剧情位置】故事从细纲「${opening.beatTitle || '当前段'}」处开始演绎。本段情节走向已提供,请按细纲推进。`]
+      if (arc && opening.beatIndex != null) {
+        const arcBeat = arc.beats.find(b => b.beatIndex === opening.beatIndex)
+        if (arcBeat) {
+          beatParts.push(`【玩家角色「${arc.character}」在本段的戏份】${arcBeat.summary}${arcBeat.status ? `（${arcBeat.status}）` : ''}\n(以该角色为叙事主体展开,不要切换到主角视角)`)
+        }
+      }
       if (opening.prevBeat?.text?.trim()) {
         beatParts.push(`【前段背景】${opening.prevBeat.title ? `「${opening.prevBeat.title}」:` : ''}${opening.prevBeat.text.trim()}\n(以上为前情背景,用于把握人物关系与事态由来,不要重新展开叙述)`)
       }
       if (opening.beatText?.trim()) {
-        beatParts.push(`【本段正文】${opening.beatText.trim()}`)
+        beatParts.push(`【本段正文】${opening.beatText.trim()}\n(注:以上为原著原文,以主角视角书写,仅作场景与人物参考;必须以玩家角色「${playerName}」的视角重新演绎,不要沿用原文的主角视角与内心)`)
       }
       if (opening.nextBeat?.text?.trim()) {
         beatParts.push(`【后段走向】${opening.nextBeat.title ? `「${opening.nextBeat.title}」:` : ''}${opening.nextBeat.text.trim()}\n(本段之后的情节走向,供后续回合自然衔接;除非本段情节已推进完毕,否则不要提前跳转到该部分)`)
@@ -574,11 +612,18 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   // 段回注(每 N 回合):按细纲段注入当前段情节 + 段起始原文窗口,防止长局偏离故事线
   if (reinjectPlot?.window?.trim() || reinjectPlot?.beatSummary?.trim()) {
     const reinjectParts: string[] = []
+    const arc = playerArc(characterArcs, playerArcCharacter || playerName)
     if (reinjectPlot.beatSummary?.trim()) {
       reinjectParts.push(`【当前段情节对照(回注)】剧情当前处于细纲「${reinjectPlot.beatTitle || '当前段'}」,本段情节走向:\n${reinjectPlot.beatSummary}`)
     }
+    if (arc && reinjectPlot.beatIndex != null) {
+      const arcBeat = arc.beats.find(b => b.beatIndex === reinjectPlot.beatIndex)
+      if (arcBeat) {
+        reinjectParts.push(`【玩家角色「${arc.character}」在本段的戏份】${arcBeat.summary}${arcBeat.status ? `（${arcBeat.status}）` : ''}\n(该角色为叙事主体,不要切换到主角视角)`)
+      }
+    }
     if (reinjectPlot.window?.trim()) {
-      reinjectParts.push(`本段原文片段(对照参考):\n${reinjectPlot.window}`)
+      reinjectParts.push(`本段原文片段(对照参考;原著以主角视角书写,仅作场景与人物参考,须以玩家角色「${playerName}」的视角重新演绎):\n${reinjectPlot.window}`)
     }
     if (reinjectPlot.nextBeat?.summary?.trim()) {
       reinjectParts.push(`接下来的情节走向(后段${reinjectPlot.nextBeat.title ? `「${reinjectPlot.nextBeat.title}」` : ''}):\n${reinjectPlot.nextBeat.summary}`)
@@ -587,13 +632,17 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
     userParts.push({ label: '世界设定与剧情轨道', content: reinjectParts.join('\n\n') })
   }
   // 防人设漂移:核心人设复述在 user 尾部(长对话后注意力偏离开头 system 的设定,社区验证
-  // 此处重贴可显著降低 OOC/指令衰减);位置放在玩家本轮行动之前,不稀释当前指令的注意力
-  const anchors = [
-    effPlayer ? `玩家「${playerName}」:${cardBrief(effPlayer, dyn[playerName])}` : null,
-    ...others.map(c => cardBrief(c, dyn[c.name]))
-  ].filter((x): x is string => !!x)
+  // 此处重贴可显著降低 OOC/指令衰减);位置放在玩家本轮行动之前,不稀释当前指令的注意力。
+  // 明确标注唯一可扮演对象(玩家)与 NPC 对手戏角色,防止模型把叙事主体让给主角。
+  const anchors: string[] = []
+  if (effPlayer) {
+    anchors.push(`【唯一可扮演对象·玩家】${playerName}:${cardBrief(effPlayer, dyn[playerName])}`)
+  }
+  for (const c of others) {
+    anchors.push(`【NPC 对手戏角色,不可扮演,只能以玩家视角观察其言行】${c.name}:${cardBrief(c, dyn[c.name])}`)
+  }
   if (anchors.length > 0) {
-    userParts.push({ label: '角色卡与人设', content: `【人设提醒】再次强调,以下核心角色严格忠于设定,勿 OOC:\n${anchors.map((a, i) => `${i + 1}. ${a}`).join('\n')}` })
+    userParts.push({ label: '角色卡与人设', content: `【人设提醒】再次强调:玩家「${playerName}」是唯一可扮演对象,其余角色均为 NPC 仅供对手戏(禁止以任何 NPC 的视角叙事或替其做决定)。核心角色严格忠于设定,勿 OOC:\n${anchors.map((a, i) => `${i + 1}. ${a}`).join('\n')}` })
   }
   // 开场设定防稀释:非首回合时压缩复述开场背景(首回合已全量注入),世界前提不随对话推移丢失
   if (hasStoryContext && opening?.scene?.trim()) {

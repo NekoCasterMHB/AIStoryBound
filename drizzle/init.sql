@@ -212,6 +212,20 @@ CREATE TABLE IF NOT EXISTS `saves` (
 	`created_at` text NOT NULL
 );
 
+-- ---- 作品整包备份(书架「同步云端」:作品+游戏会话+存盘点打包 ZIP 上传 R2,本表记录元数据) ----
+CREATE TABLE IF NOT EXISTS `work_backups` (
+	`id` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`work_id` text NOT NULL,
+	`title` text,
+	`r2_key` text NOT NULL,
+	`size_bytes` integer,
+	`game_count` integer,
+	`message_count` integer,
+	`work_updated_at` text,
+	`uploaded_at` text NOT NULL
+);
+
 -- ---- 解析任务 ----
 CREATE TABLE IF NOT EXISTS `jobs` (
 	`id` text PRIMARY KEY NOT NULL,
@@ -547,6 +561,8 @@ CREATE INDEX IF NOT EXISTS `idx_games_novel` ON `games` (`novel_id`);
 CREATE INDEX IF NOT EXISTS `idx_messages_game` ON `game_messages` (`game_id`);
 CREATE INDEX IF NOT EXISTS `idx_options_game` ON `game_options` (`game_id`);
 CREATE INDEX IF NOT EXISTS `idx_saves_game` ON `saves` (`game_id`);
+CREATE INDEX IF NOT EXISTS `idx_work_backups_user` ON `work_backups` (`user_id`);
+CREATE UNIQUE INDEX IF NOT EXISTS `uniq_work_backups_user_work` ON `work_backups` (`user_id`, `work_id`);
 CREATE INDEX IF NOT EXISTS `idx_jobs_status` ON `jobs` (`status`);
 CREATE INDEX IF NOT EXISTS `idx_skill_seller` ON `skill_products` (`seller_id`);
 CREATE INDEX IF NOT EXISTS `idx_skill_status` ON `skill_products` (`status`,`featured`);

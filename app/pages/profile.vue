@@ -8,7 +8,6 @@ import type { TokenPackage } from '#shared/quota-packages'
 import { AI_API_FORMATS, aiFormatMeta, AI_USER_CONFIG_LIMIT } from '#shared/ai-config'
 import type { AiApiFormat } from '#shared/ai-config'
 import { useAuthSession } from '../utils/auth-client'
-import { isCloudSaveEnabled, setCloudSaveEnabled } from '../utils/cloudSave'
 import { isAdultModeEnabled, setAdultModeEnabled } from '../utils/adultMode'
 import { loadScenePrefs, saveScenePrefs } from '../utils/scenePrefs'
 import {
@@ -847,8 +846,6 @@ async function submitGenLimits() {
 }
 
 // ---- 云端同步(本地偏好):本地存档是否上云,默认关闭 ----
-const cloudSaveOn = ref(isCloudSaveEnabled())
-watch(cloudSaveOn, v => setCloudSaveEnabled(v))
 
 /** 成人模式(本地偏好,默认关闭):开启后游玩时成人内容出现频率大幅上升 */
 const adultModeOn = ref(isAdultModeEnabled())
@@ -1561,18 +1558,17 @@ watch(narrLength, v => saveNarrLength(v))
             </div>
           </UCard>
 
-          <!-- 云端同步:本地存档是否上云(默认关闭,本地优先) -->
+          <!-- 云端备份:书架「同步云端」整包备份(作品+游戏会话+存盘点),跨设备在书架「云端备份」恢复 -->
           <UCard class="mb-6">
-            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div class="flex items-center justify-between gap-3">
               <div>
                 <p class="font-semibold">
-                  云端同步
+                  云端备份
                 </p>
                 <p class="text-xs text-neutral-500">
-                  开启后,游戏进度会在每回合结束后自动上传云端(需登录账号),可在其他设备从「书架 → 云端游戏」恢复续玩;默认关闭,存档仅保存在本机
+                  在「书架 → 本地作品」卡片菜单点「同步云端」,即可把作品、游戏会话与存盘点整包备份到云端(需登录账号),可在其他设备从「书架 → 云端备份」恢复续玩
                 </p>
               </div>
-              <USwitch v-model="cloudSaveOn" />
             </div>
           </UCard>
         </div>

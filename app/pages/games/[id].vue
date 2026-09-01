@@ -11,8 +11,7 @@ import { loadEnabledAiSkillObjects, listInstalledSkills, loadEnabledAiSkills, sa
 import { ADULT_CONTENT_POLICY, buildTurnPrompt, cardBrief, effectiveCards, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, estimateTurnPromptBreakdown, REINJECT_CHAPTER_EVERY, REINJECT_WINDOW_CHARS } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { CharacterDynamicState, GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
-import { getLocalGame, saveLocalGame, syncGameToCloud } from '../../utils/gameStore'
-import { isCloudSaveEnabled } from '../../utils/cloudSave'
+import { getLocalGame, saveLocalGame } from '../../utils/gameStore'
 import { getWork, touchWork, addWorkTokens } from '../../utils/worldGen'
 import type { AiSkill } from '#shared/ai-skills'
 import { saveGamePoint, listGamePoints, pruneGamePoints, capGamePoints } from '../../utils/gameSaveStore'
@@ -45,8 +44,6 @@ const messages = ref<LocalGame['messages']>([])
 const options = ref<{ idx: number, text: string }[]>([])
 const loadError = ref<string | null>(null)
 
-/** 「本地存档上云」开关(个人中心设置,默认关闭):关闭时不上传任何云端数据 */
-const cloudSaveEnabled = ref(isCloudSaveEnabled())
 /** 「成人模式」开关(游戏内设置弹窗/个人中心,默认关闭):开启后成人内容频率大幅上升 */
 const adultMode = ref(isAdultModeEnabled())
 watch(adultMode, v => setAdultModeEnabled(v))
@@ -132,7 +129,7 @@ function advancePlotBeat(reportedBeat: number | null | undefined): void {
 }
 
 /** 构建段回注:当前段情节摘要 + 段起始原文窗口 + 后段走向摘要(全部来自细纲,不经章节) */
-function buildBeatReinject(): { beatTitle?: string, beatSummary?: string, window: string, nextBeat?: { title?: string, summary?: string } } | undefined {
+function buildBeatReinject(): { beatIndex?: number, beatTitle?: string, beatSummary?: string, window: string, nextBeat?: { title?: string, summary?: string } } | undefined {
   const beats = storylineBeats.value
   const beat = beats[plotBeat.value]
   if (!beat) return undefined
@@ -140,6 +137,7 @@ function buildBeatReinject(): { beatTitle?: string, beatSummary?: string, window
   const window = joinedText.value.slice(start, start + REINJECT_WINDOW_CHARS)
   const next = beats[plotBeat.value + 1]
   return {
+    beatIndex: beat.index,
     beatTitle: beat.label,
     beatSummary: beat.summary,
     window,
@@ -163,7 +161,18 @@ void loadToySettings().then((s) => {
   toySettings.value = s
 })
 
+/** 页面生命周期内的清理钩子(挂载时注册,卸载时统一执行) */
+let pageCleanup: (() => void)[] = []
+
 onMounted(async () => {
+  // 游戏界面为沉浸式全屏交互(剧情流内部滚动),锁定 document 的 overscroll,
+  // 阻止移动端浏览器在剧情流顶部继续下拉时触发整页刷新/橡皮筋回弹。
+  const prevOverscroll = document.documentElement.style.overscrollBehaviorY
+  document.documentElement.style.overscrollBehaviorY = 'none'
+  pageCleanup.push(() => {
+    document.documentElement.style.overscrollBehaviorY = prevOverscroll
+  })
+
   const g = await getLocalGame(gameId)
   if (!g) {
     loadError.value = '本地未找到该游戏会话(可能已在新设备上;请到书架「云端游戏」恢复)'
@@ -188,8 +197,6 @@ onMounted(async () => {
   options.value = last ? (g.optionsByMessage?.[last.id] ?? []) : []
   // 初始存档点:保证第一轮行动也有回滚目标
   await savePointNow()
-  // 开启上云时,进入游戏先把最新进度推到云端
-  if (cloudSaveEnabled.value) void syncGameToCloud(game.value)
 })
 
 const playerName = computed(() => game.value?.playerName ?? '玩家')
@@ -285,6 +292,14 @@ onUnmounted(() => {
   turnAbort = null
   typewriter?.dispose()
   typewriter = null
+  for (const fn of pageCleanup) {
+    try {
+      fn()
+    } catch {
+      /* 单条清理失败不影响其余 */
+    }
+  }
+  pageCleanup = []
 })
 
 // ---- 技能管理(模态框:启用/禁用已安装技能,切换后立即影响后续回合注入) ----
@@ -513,8 +528,10 @@ const openingCards = ref<OpeningCard[] | null>(null)
 const openingPick = ref(0)
 const generatingOpening = ref(false)
 const openingError = ref<string | null>(null)
+/** 开场选择模态框:AI 生成成功后弹出,左右滑动/箭头切换,确认后开始故事 */
+const openingModalOpen = ref(false)
 
-/** 生成 3~4 个开场设定,默认选中第一个,玩家可改选后开始 */
+/** 生成 4 个开场设定,默认选中第一个,玩家可改选后开始 */
 async function generateOpenings() {
   if (generatingOpening.value) return
   generatingOpening.value = true
@@ -526,14 +543,14 @@ async function generateOpenings() {
     const openingMessages = [
       {
         role: 'system' as const,
-        content: `${ADULT_CONTENT_POLICY}\n你是故事开场设计师。基于作品设定与玩家角色,构思 3~4 个互不相同的开场剧情点,每个包含标题与场景描述(须写清玩家所处场景与第一个矛盾,80~150 字,第二人称叙述)。允许成人向开场,不要因题材拒绝。输出 JSON:\n{"openings":[{"title":"开场标题","scene":"场景描述"}]}`
+        content: `${ADULT_CONTENT_POLICY}\n你是故事开场设计师。基于作品设定与玩家角色,构思 4 个互不相同的开场剧情点(必须恰好 4 个,不要多也不要少),每个包含标题与场景描述(须写清玩家所处场景与第一个矛盾,80~150 字,第二人称叙述)。允许成人向开场,不要因题材拒绝。输出 JSON:\n{"openings":[{"title":"开场标题","scene":"场景描述"},{"title":"开场标题","scene":"场景描述"},{"title":"开场标题","scene":"场景描述"},{"title":"开场标题","scene":"场景描述"}]}`
       },
       {
         role: 'user' as const,
         content: `作品《${work.value?.overlay?.title || '未命名小说'}》,题材:${work.value?.overlay?.genre ?? '未知'}${work.value?.overlay?.orientation ? `，性向:${work.value.overlay.orientation}` : ''}${work.value?.overlay?.heat ? `，尺度:${work.value.overlay.heat}` : ''}${work.value?.overlay?.setting ? `，舞台:${work.value.overlay.setting}` : ''}${work.value?.overlay?.tags?.length ? `，标签:${work.value.overlay.tags.slice(0, 8).join('、')}` : ''}\n故事背景:${work.value?.overlay?.summary ?? '无'}\n玩家扮演:${brief}\n当前状态:${JSON.stringify(state.value)}`
       }
     ]
-    // maxTokens 2400(与叙事一致):开场 3~4 条约 760 字,中文 tokenizer 下 800 可能截断,截断易致少卡/非法 JSON
+    // maxTokens 2400(与叙事一致):4 个开场约 800 字,中文 tokenizer 下 800 可能截断,截断易致少卡/非法 JSON
     const openingCall = () => aiChatJson<{ openings: OpeningCard[] }>(openingMessages, { maxTokens: 2400, temperature: 1.0 })
     let res = await openingCall()
     let retryTokens = res.ok ? 0 : (res.usage?.totalTokens ?? 0)
@@ -551,10 +568,37 @@ async function generateOpenings() {
     if (list.length === 0) throw new Error('AI 未返回开场设定,请重试')
     openingCards.value = list
     openingPick.value = 0
+    openingModalOpen.value = true
   } catch (e) {
     openingError.value = e instanceof Error ? e.message : String(e)
   } finally {
     generatingOpening.value = false
+  }
+}
+
+/** 左右滑/箭头切换:上一张/下一张开场卡 */
+function openingPrev() {
+  if (openingPick.value > 0) openingPick.value--
+}
+function openingNext() {
+  if (openingCards.value && openingPick.value < openingCards.value.length - 1) openingPick.value++
+}
+/** 触摸滑动起点(用于区分横向滑动与纵向滚动) */
+let swipeStartX = 0
+let swipeStartY = 0
+function onOpeningSwipeStart(e: TouchEvent) {
+  swipeStartX = e.touches[0]?.clientX ?? 0
+  swipeStartY = e.touches[0]?.clientY ?? 0
+}
+function onOpeningSwipeEnd(e: TouchEvent) {
+  const t = e.changedTouches[0]
+  if (!t) return
+  const dx = t.clientX - swipeStartX
+  const dy = t.clientY - swipeStartY
+  // 横向位移明显大于纵向(约 1.5 倍)才视为切换手势,避免与模态框内滚动冲突
+  if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+    if (dx < 0) openingNext()
+    else openingPrev()
   }
 }
 
@@ -565,6 +609,7 @@ function confirmOpening() {
   if (!game.value.opening) game.value.opening = { mode: 'ai' }
   game.value.opening.scene = `${card.title}。${card.scene}`
   persist()
+  openingModalOpen.value = false
   openingCards.value = null
   sendTurn()
 }
@@ -726,8 +771,6 @@ async function runOptionsPhase(
   }]
   persist()
   await savePointNow()
-  // 开启「本地存档上云」时,每回合结束自动同步(未登录或失败静默跳过)
-  if (cloudSaveEnabled.value) void syncGameToCloud(game.value)
 }
 
 /** 收尾失败/选项为空后的重试:旁白已上屏,只补跑选项阶段 */
@@ -888,6 +931,8 @@ async function sendTurn(choice?: string) {
       entities: work.value?.entities,
       conflicts: work.value?.conflicts,
       storyline: work.value?.storyline,
+      characterArcs: work.value?.characterArcs,
+      playerArcCharacter: game.value?.characterName,
       overlayMeta: work.value?.overlay
         ? {
             orientation: work.value.overlay.orientation,
@@ -1104,7 +1149,6 @@ async function rollbackAction() {
   persist()
   await pruneGamePoints(gameId, msg.idx)
   await savePointNow()
-  if (cloudSaveEnabled.value && game.value) void syncGameToCloud(game.value)
 }
 
 // ---- 分享(菜单:剧情 TXT / 全部 ZIP) ----
@@ -1136,23 +1180,6 @@ function onExportTxt() {
     messages: messages.value
   })
   if (!ok) toast.add({ title: '还没有剧情可导出', description: '先开始故事,产生一段旁白后再导出', color: 'warning' })
-}
-
-// ---- 云端同步 ----
-
-const syncing = ref(false)
-const syncMsg = ref<string | null>(null)
-
-async function onSyncCloud() {
-  if (!game.value || syncing.value) return
-  syncing.value = true
-  syncMsg.value = null
-  try {
-    const ok = await syncGameToCloud(game.value)
-    syncMsg.value = ok ? '已同步到云端' : '同步失败(未登录或网络错误)'
-  } finally {
-    syncing.value = false
-  }
 }
 
 // 新内容自动滚到底部
@@ -1188,7 +1215,7 @@ watch([messages, streamDisplay], async () => {
   </div>
   <div
     v-else
-    class="flex h-full flex-col px-4"
+    class="flex h-full flex-col overscroll-y-none px-4"
   >
     <div class="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden">
       <!-- 顶栏(固定置顶):标题行 + 地点/时间等状态排 -->
@@ -1219,16 +1246,6 @@ watch([messages, streamDisplay], async () => {
               size="sm"
               title="查看本回合 token 消耗构成"
               @click="costModalOpen = true"
-            />
-            <UButton
-              v-if="cloudSaveEnabled"
-              label="同步"
-              icon="i-lucide-cloud-upload"
-              color="neutral"
-              variant="outline"
-              size="sm"
-              :loading="syncing"
-              @click="onSyncCloud"
             />
             <UDropdownMenu
               :items="shareMenuItems"
@@ -1276,12 +1293,6 @@ watch([messages, streamDisplay], async () => {
           color="error"
           variant="soft"
           :title="loadError"
-        />
-        <UAlert
-          v-if="syncMsg"
-          color="success"
-          variant="soft"
-          :title="syncMsg"
         />
 
         <!-- 公开状态面板 -->
@@ -1907,13 +1918,13 @@ watch([messages, streamDisplay], async () => {
       <!-- 剧情流:充满剩余空间,内部滚动 -->
       <div
         ref="chatRef"
-        class="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-xl border border-neutral-200 p-4 dark:border-neutral-700"
+        class="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-y-contain rounded-xl border border-neutral-200 p-4 dark:border-neutral-700"
       >
         <div
           v-if="!started && !streaming"
           class="flex h-full flex-col items-center justify-center gap-3 text-center"
         >
-          <!-- AI 开场模式且未选定场景:先生成开场供选择 -->
+          <!-- AI 开场模式且未选定场景:生成后弹模态框供左右滑选择 -->
           <template v-if="game?.opening?.mode === 'ai' && !game.opening.scene">
             <template v-if="generatingOpening">
               <UIcon
@@ -1937,43 +1948,6 @@ watch([messages, streamDisplay], async () => {
                 color="primary"
                 icon="i-lucide-refresh-cw"
                 @click="generateOpenings()"
-              />
-            </template>
-            <template v-else-if="openingCards?.length">
-              <p class="text-sm font-medium text-neutral-700 dark:text-neutral-200">
-                选择一个开场设定,开始故事
-              </p>
-              <div class="grid w-full max-w-2xl gap-2 sm:grid-cols-2">
-                <button
-                  v-for="(c, i) in openingCards"
-                  :key="i"
-                  class="rounded-xl border p-3 text-left transition"
-                  :class="i === openingPick
-                    ? 'border-primary-500 bg-primary-500/10'
-                    : 'border-neutral-200 hover:border-primary-400 dark:border-neutral-700'"
-                  @click="openingPick = i"
-                >
-                  <p
-                    class="flex items-center gap-1.5 text-sm font-semibold"
-                    :class="i === openingPick ? 'text-primary-600 dark:text-primary-400' : ''"
-                  >
-                    <UIcon
-                      v-if="i === openingPick"
-                      name="i-lucide-check-circle-2"
-                      class="size-4"
-                    />
-                    {{ c.title }}
-                  </p>
-                  <p class="mt-1 whitespace-pre-line text-xs text-neutral-500">
-                    {{ c.scene }}
-                  </p>
-                </button>
-              </div>
-              <UButton
-                label="以选中的开场开始"
-                color="primary"
-                icon="i-lucide-play"
-                @click="confirmOpening()"
               />
             </template>
             <template v-else>
@@ -2189,6 +2163,106 @@ watch([messages, streamDisplay], async () => {
           />
         </div>
       </Teleport>
+
+      <!-- AI 开场选择模态框:左右滑动/箭头切换开场设定,确认后开始故事 -->
+      <UModal
+        v-model:open="openingModalOpen"
+        title="选择开场设定"
+        description="左右滑动或点击箭头切换,选择后开始故事"
+        :ui="{ content: 'sm:max-w-lg' }"
+      >
+        <template #body>
+          <p
+            v-if="openingError && !openingCards?.length"
+            class="text-sm text-red-500"
+          >
+            {{ openingError }}
+          </p>
+          <div
+            v-if="openingCards?.length"
+            class="flex flex-col gap-4"
+          >
+            <!-- 左右滑切换的开场卡 -->
+            <div
+              class="relative overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700"
+              @touchstart.passive="onOpeningSwipeStart"
+              @touchend.passive="onOpeningSwipeEnd"
+            >
+              <div
+                class="flex transition-transform duration-300 ease-out"
+                :style="{ transform: `translateX(-${openingPick * 100}%)` }"
+              >
+                <div
+                  v-for="(c, i) in openingCards"
+                  :key="i"
+                  class="w-full shrink-0 px-4 py-3"
+                >
+                  <p class="flex items-center gap-1.5 text-sm font-semibold text-highlighted">
+                    <UIcon
+                      name="i-lucide-sparkles"
+                      class="size-4 shrink-0"
+                    />
+                    {{ c.title }}
+                  </p>
+                  <p class="mt-2 whitespace-pre-line text-sm text-neutral-600 dark:text-neutral-300">
+                    {{ c.scene }}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <!-- 分页指示 + 左右箭头 -->
+            <div class="flex items-center justify-between gap-3">
+              <UButton
+                icon="i-lucide-chevron-left"
+                color="neutral"
+                variant="soft"
+                square
+                size="sm"
+                :disabled="openingPick === 0"
+                aria-label="上一个开场"
+                @click="openingPrev()"
+              />
+              <div class="flex items-center gap-1.5">
+                <span
+                  v-for="(c, i) in openingCards"
+                  :key="i"
+                  class="size-2 rounded-full transition-colors"
+                  :class="i === openingPick ? 'bg-primary-500' : 'bg-neutral-300 dark:bg-neutral-700'"
+                />
+              </div>
+              <UButton
+                icon="i-lucide-chevron-right"
+                color="neutral"
+                variant="soft"
+                square
+                size="sm"
+                :disabled="openingPick >= openingCards.length - 1"
+                aria-label="下一个开场"
+                @click="openingNext()"
+              />
+            </div>
+
+            <UButton
+              label="以选中的开场开始"
+              color="primary"
+              icon="i-lucide-play"
+              block
+              :loading="generatingOpening"
+              @click="confirmOpening()"
+            />
+          </div>
+          <div
+            v-else-if="!openingError"
+            class="flex justify-center py-6"
+          >
+            <UIcon
+              name="i-lucide-loader-circle"
+              class="size-6 animate-spin text-neutral-300"
+            />
+          </div>
+        </template>
+      </UModal>
     </div>
   </div>
 </template>

@@ -3,11 +3,13 @@
 //  - 每个提取单元一个 step(自动重试/重放),合并结果与成书 overlay 走 R2 scratch;
 //  - 取消:API 端点把任务行置 cancelled 后调用 env.WORLD_GEN.get(taskId).terminate(),
 //    各步骤入口的 assertNotCancelled 兜底提前终止;
-//  - 失败:run 顶层 catch 统一 markTaskFailed(置状态 + 按实耗结算 + 清 key 暂存)。
+//  - 失败:run 顶层 catch 统一 markTaskFailed(置状态 + 按实耗结算 + 清 key 暂存);
+//  - 部署重置自愈:代码更新会重置正在运行的实例(DO 内存清零,持久化数据不受影响),
+//    catch 识别该错误后自动另起新实例续跑(已完成单元从 world_gen_units 跳过),而非判失败。
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers'
 import {
-  createWorldGenCtx, extractUnitAt, markTask, markTaskFailed, markTaskPaused, stepAuthorAi, stepCheck,
-  stepFinalize, stepMerge, stepParseSource, stepPlanUnits, stepSynthesize, requireTask,
+  createWorldGenCtx, extractUnitAt, isDeployResetError, markTask, markTaskFailed, markTaskPaused, stepAuthorAi, stepCharacterArcs,
+  stepCheck, stepFinalize, stepMerge, stepParseSource, stepPlanUnits, stepSynthesize, requireTask,
   WorldGenCancelledError, InsufficientTokensError, EXTRACT_CONCURRENCY
 } from '../utils/world-gen-pipeline'
 import type { WorldGenEnv } from '../utils/world-gen-pipeline'
@@ -67,6 +69,11 @@ export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowPa
         retries: { limit: 3, delay: '15 second', backoff: 'exponential' }
       }, () => stepSynthesize(ctx))
 
+      // 7.5) 配角独立故事线(完整模式;失败降级不中止,写 scratch 供 finalize 落盘)
+      if (task.mode !== 'eco') {
+        await step.do('character-arcs', { retries: { limit: 1, delay: '5 second' } }, () => stepCharacterArcs(ctx))
+      }
+
       // 8) 落 R2 缓存 + 入库 + 结算 + 清 key/scratch
       await step.do('finalize', {
         retries: { limit: 3, delay: '5 second', backoff: 'exponential' }
@@ -76,6 +83,20 @@ export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowPa
       if (e instanceof InsufficientTokensError) {
         // 余额不足:任务转 paused(进度/单元明细保留),充值后在书架手动续跑,这里正常结束实例
         await markTaskPaused(ctx, e.message).catch(() => {})
+        return
+      }
+      // 部署新代码会重置正在运行的 Workflow 实例(DO 内存清零,持久化数据不受影响)。
+      // 管线步骤全部幂等,自动另起新实例续跑(已完成单元从 world_gen_units 跳过),而非判失败。
+      if (isDeployResetError(e instanceof Error ? e.message : String(e))) {
+        console.warn('[world-gen workflow] 实例因代码更新被重置,自动续跑', { taskId: event.payload.taskId })
+        const newInstanceId = `${event.payload.taskId}-r${Date.now()}`
+        try {
+          await this.env.WORLD_GEN.create({ id: newInstanceId, params: { taskId: event.payload.taskId } })
+        } catch (restartErr) {
+          // 续跑实例创建失败(罕见):交给轮询自愈/孤儿清扫兜底,不再重复尝试
+          console.error('[world-gen workflow] 自动续跑创建实例失败', { taskId: event.payload.taskId }, restartErr)
+          await markTaskFailed(ctx, '任务执行被部署更新中断,自动恢复失败;请在书架取消后重新上传').catch(() => {})
+        }
         return
       }
       console.error('[world-gen workflow] 任务失败', { taskId: event.payload.taskId }, e)

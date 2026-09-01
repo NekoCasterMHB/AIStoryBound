@@ -1,11 +1,16 @@
 <script setup lang="ts">
 // /works — 我的书架(登录后):推荐书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
 import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
-import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments, isLegacyChapteredWork } from '../utils/worldGen'
+import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments, isLegacyChapteredWork, supplementCharacterArcs } from '../utils/worldGen'
 import { NOVEL_ENCODING_LABELS } from '#shared/novel-encoding'
-import { listLocalGames, saveLocalGame, deleteLocalGame } from '../utils/gameStore'
+import { listLocalGames, deleteLocalGame } from '../utils/gameStore'
 import { deleteGamePoints } from '../utils/gameSaveStore'
 import { importWorkFromZip } from '../utils/shareZip'
+import {
+  fetchBackups, fetchBackupMeta, uploadWorkBackup, downloadWorkBackup, deleteCloudBackup,
+  buildWorkBackupZip, parseWorkBackupZip, importBackupData, MAX_BACKUP_BYTES,
+  type CloudBackupMeta
+} from '../utils/backupStore'
 import { listReadingProgress } from '../utils/readingStore'
 import { fetchPrebuiltWorld, installPrebuiltWork } from '../utils/prebuiltWorld'
 import type { PrebuiltWorld } from '../utils/prebuiltWorld'
@@ -15,17 +20,15 @@ import {
   resumeWorldGenTask, worldGenTaskPercent, worldGenStageLabel
 } from '../utils/worldGenCloud'
 import type { WorldGenTaskDTO } from '../utils/worldGenCloud'
-import { type LocalWork, type LocalGame, type GameState, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
+import { type LocalWork, type LocalGame, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
 
 useHead({ title: 'AI Word2World · 我的书架' })
 
 const works = ref<LocalWork[]>([])
 const games = ref<Awaited<ReturnType<typeof listLocalGames>>>([])
-const cloudWorks = ref<{ id: string, title: string, chapter_count: number, created_at: string }[]>([])
-const cloudLoaded = ref(false)
-/** 云端游戏会话(跨设备续玩:在个人中心开启「本地存档上云」后自动上传) */
-const cloudGames = ref<{ id: string, player_character_name: string | null, current_chapter: string | null, status: string | null, updated_at: string | null }[]>([])
-const cloudGamesLoaded = ref(false)
+/** 云端备份(每作品整包:作品+游戏会话+存盘点;与本地作品按 workId 对应) */
+const backups = ref<CloudBackupMeta[]>([])
+const backupsLoaded = ref(false)
 
 // ---- 阅读进度(沉浸式阅读页写入,key = src:id) ----
 const readingProgress = ref<Record<string, ReadingProgress>>({})
@@ -132,134 +135,107 @@ onMounted(() => {
   void refreshLocal()
   void loadOfficialWorks()
   void loadReadingProgress()
-  void loadCloudGames()
+  void loadBackups()
   void loadCloudTasks()
 })
 
-// ---- 云端同步(手动):成功/失败都出 toast,不再静默吞 ----
+// ---- 云端备份(按作品整包:作品+游戏会话+存盘点 ZIP 上传 R2,D1 记元数据;书架唯一云端同步入口) ----
 const syncingWorkId = ref<string | null>(null)
+const restoringBackupId = ref<string | null>(null)
 
-async function syncWorkToCloud(work: LocalWork) {
+async function loadBackups() {
+  backups.value = await fetchBackups()
+  backupsLoaded.value = true
+}
+
+/** 本地作品是否有比云端备份更新的改动(有 → 作品卡显示「有更新待同步」) */
+function backupStale(work: LocalWork): boolean {
+  const b = backups.value.find(x => x.workId === work.id)
+  if (!b) return false
+  return (work.updatedAt ?? work.createdAt) > (b.workUpdatedAt ?? '')
+}
+
+/** 同步到云端:先查同 id 是否传过,传过则显示上次上传时间并确认覆盖 */
+async function syncWorkToCloudZip(work: LocalWork) {
   if (syncingWorkId.value) return
   syncingWorkId.value = work.id
   try {
-    const res = await $fetch('/api/works', { method: 'POST', body: JSON.parse(JSON.stringify(work)) }).catch(() => null)
-    if (!res) {
-      toast.add({ title: '同步失败,请稍后重试', color: 'error' })
+    const existing = await fetchBackupMeta(work.id)
+    if (existing) {
+      const ok = await askOverwriteModal(
+        '覆盖云端备份',
+        `《${work.title}》上次上传时间:${fmtTime(existing.uploadedAt)}。重新上传会把作品、${existing.gameCount ?? '全部'} 个游戏会话与存盘点打包,覆盖云端旧备份,确定继续?`
+      )
+      if (!ok) return
+    }
+    const { zip, meta } = await buildWorkBackupZip(work.id)
+    if (zip.byteLength > MAX_BACKUP_BYTES) {
+      toast.add({ title: '备份包过大,无法上传', color: 'error' })
       return
     }
+    await uploadWorkBackup(zip, meta)
     work.syncStatus = 'synced'
     await saveWork(work)
-    await refreshLocal()
-    toast.add({ title: '已同步到云端', color: 'success' })
+    await Promise.all([refreshLocal(), loadBackups()])
+    toast.add({ title: '已同步到云端', description: '作品、游戏会话与存盘点已完整备份', color: 'success' })
+  } catch (e) {
+    toast.add({ title: '同步失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
   } finally {
     syncingWorkId.value = null
   }
 }
 
-async function loadCloudWorks() {
-  cloudWorks.value = await $fetch('/api/works').catch(() => [])
-  cloudLoaded.value = true
-}
-
-async function restoreFromCloud(id: string) {
-  const data = await $fetch<{
-    id: string
-    title: string
-    author: string | null
-    chapter_count: number
-    created_at: string
-    overlay: LocalWork['overlay'] | null
-    entities?: LocalWork['entities']
-    conflicts?: LocalWork['conflicts']
-    warnings?: LocalWork['warnings']
-    storyline?: LocalWork['storyline']
-  }>(`/api/works/${id}`).catch(() => null)
-  if (!data) return
-  const existing = await getWork(id)
-  await saveWork({
-    id: data.id,
-    title: data.title,
-    author: existing?.author ?? data.author ?? undefined,
-    createdAt: existing?.createdAt ?? data.created_at,
-    chapters: existing?.chapters ?? [],
-    syncStatus: 'synced',
-    entities: data.entities,
-    conflicts: data.conflicts,
-    warnings: data.warnings,
-    overlay: data.overlay ?? undefined,
-    storyline: data.storyline ?? existing?.storyline
-  })
-  await refreshLocal()
-}
-
-async function loadCloudGames() {
-  cloudGames.value = await $fetch('/api/games').catch(() => [])
-  cloudGamesLoaded.value = true
-}
-
-/** 从云端恢复游戏会话到本机(新设备续玩);作品未在本地时,用云端世界观兜底重建(章节正文不上云) */
-async function restoreCloudGame(id: string) {
-  const data = await $fetch<{
-    id: string
-    novel_id: string | null
-    player_character_name: string | null
-    player_character_id: string | null
-    current_chapter: string | null
-    status: string | null
-    summary: string | null
-    state: GameState | null
-    world: LocalWork['overlay'] | null
-    entities?: LocalWork['entities']
-    conflicts?: LocalWork['conflicts']
-    storyline?: LocalWork['storyline']
-    messages: LocalGame['messages']
-    optionsByMessage: Record<string, { idx: number, text: string }[]>
-  }>(`/api/games/${id}`).catch(() => null)
-  if (!data) return
-
-  if (data.novel_id && data.world && !(await getWork(data.novel_id))) {
-    await saveWork({
-      id: data.novel_id,
-      title: data.world.title ?? '未命名作品',
-      createdAt: new Date().toISOString(),
-      chapters: [],
-      syncStatus: 'synced',
-      overlay: data.world,
-      entities: data.entities,
-      conflicts: data.conflicts,
-      storyline: data.storyline
-    })
-  }
-
-  let summary: LocalGame['summary'] = null
-  if (data.summary) {
-    try {
-      summary = JSON.parse(data.summary)
-    } catch {
-      summary = null
+/** 下载云端备份到本机:自动解压导入;本地已有同 id 作品 → 确认覆盖(保留现有则跳过作品,仍导入其游戏) */
+async function restoreBackup(b: CloudBackupMeta) {
+  if (restoringBackupId.value) return
+  restoringBackupId.value = b.workId
+  try {
+    const bundle = parseWorkBackupZip(await downloadWorkBackup(b.workId))
+    const existing = await getWork(bundle.work.id)
+    let includeWork = true
+    if (existing) {
+      const ok = await askOverwriteModal(
+        '恢复云端备份',
+        `本地已有《${existing.title}》。是否用云端备份覆盖它(上次上传:${fmtTime(b.uploadedAt)})?选择「保留现有」则跳过作品,仍导入该作品下的游戏会话与存盘点。`
+      )
+      includeWork = ok
     }
+    await importBackupData(bundle, { includeWork })
+    await refreshLocal()
+    toast.add({
+      title: '已恢复到本机',
+      description: `《${bundle.work.title}》${bundle.games.length ? `及 ${bundle.games.length} 个游戏会话` : ''}已导入,可在「继续游戏」中进入`,
+      color: 'success'
+    })
+  } catch (e) {
+    toast.add({ title: '恢复失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    restoringBackupId.value = null
   }
-  // 云端镜像存的是段标签字符串(如「第3段」),恢复时反解回段号;旧格式原样忽略
-  const beatMatch = /^第(\d+)段$/.exec(data.current_chapter ?? '')
+}
 
-  await saveLocalGame({
-    id: data.id,
-    workId: data.novel_id ?? '',
-    playerName: data.player_character_name ?? '玩家',
-    characterName: data.player_character_id ?? '',
-    state: data.state ?? {},
-    messages: data.messages ?? [],
-    optionsByMessage: data.optionsByMessage,
-    currentBeat: beatMatch ? Number(beatMatch[1]) - 1 : null,
-    summary,
-    status: data.status === 'ended' ? 'ended' : 'active',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    syncStatus: 'synced'
-  })
-  await refreshLocal()
-  toast.add({ title: '已恢复到本机,可在「继续游戏」中进入' })
+// ---- 删除云端备份(二次确认) ----
+const backupDeleteOpen = ref(false)
+const backupDeleteTarget = ref<CloudBackupMeta | null>(null)
+
+function askDeleteBackup(b: CloudBackupMeta) {
+  backupDeleteTarget.value = b
+  backupDeleteOpen.value = true
+}
+
+async function confirmDeleteBackup() {
+  const b = backupDeleteTarget.value
+  if (!b) return
+  try {
+    await deleteCloudBackup(b.workId)
+    await loadBackups()
+    toast.add({ title: '已删除云端备份', color: 'neutral' })
+  } catch (e) {
+    toast.add({ title: '删除失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    backupDeleteOpen.value = false
+    backupDeleteTarget.value = null
+  }
 }
 
 // ---- 删除作品:二次确认 + 同步清理关联游戏会话/存盘点(避免孤儿数据不可见不可清) ----
@@ -330,18 +306,49 @@ function workCardTagTotal(w: LocalWork): number {
 
 /** 每部本地作品的「更多操作」菜单:世界详情 / 编辑正文 / 编辑角色卡 / 重新生成世界 / 同步云端 / 删除 */
 function workMenuItems(w: LocalWork): DropdownMenuItem[][] {
+  const firstGroup: DropdownMenuItem[] = [
+    { label: '世界详情', icon: 'i-lucide-globe', onSelect: () => openWorldDetail(w.id) },
+    { label: w.chapters.length === 0 ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
+    { label: '编辑角色卡', icon: 'i-lucide-users', onSelect: () => openCharEditor(w.id) },
+    { label: '重新生成世界', icon: 'i-lucide-refresh-cw', onSelect: () => navigateTo(`/generate?from=work&id=${w.id}`) },
+    { label: '同步云端', icon: 'i-lucide-cloud-upload', disabled: syncingWorkId.value === w.id, onSelect: () => syncWorkToCloudZip(w) }
+  ]
+  // 旧作品/未生成配角故事线的作品:提供增量补生成入口(用已有故事线补一次 AI 调用,不重跑提取)
+  if (!(w.characterArcs ?? []).length && (w.storyline?.length ?? 0) > 0) {
+    firstGroup.push({
+      label: '补充生成配角故事线',
+      icon: 'i-lucide-route',
+      disabled: supplementingArcsId.value === w.id,
+      onSelect: () => supplementWorkArcs(w)
+    })
+  }
   return [
-    [
-      { label: '世界详情', icon: 'i-lucide-globe', onSelect: () => openWorldDetail(w.id) },
-      { label: w.chapters.length === 0 ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
-      { label: '编辑角色卡', icon: 'i-lucide-users', onSelect: () => openCharEditor(w.id) },
-      { label: '重新生成世界', icon: 'i-lucide-refresh-cw', onSelect: () => navigateTo(`/generate?from=work&id=${w.id}`) },
-      { label: '同步云端', icon: 'i-lucide-cloud-upload', disabled: syncingWorkId.value === w.id, onSelect: () => syncWorkToCloud(w) }
-    ],
+    firstGroup,
     [
       { label: '删除', icon: 'i-lucide-trash-2', color: 'error', onSelect: () => askDeleteWork(w) }
     ]
   ]
+}
+
+// ---- 增量补生成配角故事线(旧作品补齐;一次性 AI 调用,失败不阻塞) ----
+const supplementingArcsId = ref<string | null>(null)
+
+async function supplementWorkArcs(w: LocalWork) {
+  if (supplementingArcsId.value) return
+  supplementingArcsId.value = w.id
+  try {
+    const { count, tokensUsed } = await supplementCharacterArcs(w.id)
+    await refreshLocal()
+    toast.add({
+      title: '配角故事线已生成',
+      description: `为 ${count} 个角色生成了独立故事线${tokensUsed ? `,消耗 ${tokensUsed.toLocaleString()} tokens` : ''};扮演配角时将以该角色的故事线推进`,
+      color: 'success'
+    })
+  } catch (e) {
+    toast.add({ title: '生成失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    supplementingArcsId.value = null
+  }
 }
 
 // ---- 世界详情弹窗(生成产物总览 + 概览元数据编辑) ----
@@ -426,24 +433,33 @@ async function cancelCloudTask(t: WorldGenTaskDTO) {
   }
 }
 
-// ---- 手动下载安装命中已安装作品:确认是否覆盖(不覆盖则保留现有,不重复添加) ----
+// ---- 覆盖确认(通用 Promise 式弹窗):云端任务重装 / 同步云端覆盖 / 备份恢复共用 ----
 const overwriteOpen = ref(false)
-const overwriteTarget = ref<LocalWork | null>(null)
+const overwriteTitle = ref('')
+const overwriteBody = ref('')
 let overwriteResolve: ((overwrite: boolean) => void) | null = null
 
-function askOverwriteCloudTask(existing: LocalWork): Promise<boolean> {
+function askOverwriteModal(title: string, body: string): Promise<boolean> {
   return new Promise((resolve) => {
-    overwriteTarget.value = existing
+    overwriteTitle.value = title
+    overwriteBody.value = body
     overwriteResolve = resolve
     overwriteOpen.value = true
   })
+}
+
+/** 手动下载安装命中已安装作品:确认是否覆盖(不覆盖则保留现有,不重复添加) */
+function askOverwriteCloudTask(existing: LocalWork): Promise<boolean> {
+  return askOverwriteModal(
+    '已安装过该任务',
+    `本地已有《${existing.title}》,来源与本次下载为同一云端任务。是否用最新内容覆盖它?选择「保留现有」则跳过下载,不重复添加。`
+  )
 }
 
 function onOverwriteConfirm(overwrite: boolean) {
   overwriteOpen.value = false
   overwriteResolve?.(overwrite)
   overwriteResolve = null
-  overwriteTarget.value = null
 }
 
 /** 继续暂停中的任务(充值后手动恢复;已完成单元自动复用,不重复扣费) */
@@ -488,6 +504,12 @@ function fmtChars(n?: number) {
   if (n >= 10000) return `${(n / 10000).toFixed(1)} 万字`
   if (n >= 1000) return `${(n / 1000).toFixed(1)} 千字`
   return `${n} 字`
+}
+
+function fmtBytes(n?: number | null) {
+  if (!n || n <= 0) return '—'
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${Math.round(n / 1024)} KB`
 }
 
 // ---- 继续游戏:作品卡片 → 选角色(模态框)→ 该角色全部存档(新页面) ----
@@ -948,15 +970,6 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
               <h2 class="font-semibold">
                 本地作品
               </h2>
-              <UButton
-                v-if="!cloudLoaded"
-                label="加载云端作品"
-                icon="i-lucide-cloud-download"
-                color="neutral"
-                variant="subtle"
-                size="sm"
-                @click="loadCloudWorks"
-              />
             </div>
             <div
               v-if="works.length === 0"
@@ -1000,6 +1013,14 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     size="sm"
                   >
                     本地
+                  </UBadge>
+                  <UBadge
+                    v-if="backupsLoaded && backupStale(w)"
+                    color="warning"
+                    variant="soft"
+                    size="sm"
+                  >
+                    有更新待同步
                   </UBadge>
                   <UBadge
                     v-if="isCloudRestored(w)"
@@ -1172,82 +1193,54 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
             </div>
           </div>
 
-          <!-- 云端作品(换设备恢复) -->
+          <!-- 云端备份(每作品整包:作品+游戏会话+存盘点;与本地作品按 workId 对应) -->
           <div
-            v-if="cloudLoaded"
+            v-if="backupsLoaded"
             class="mb-6"
           >
             <h2 class="mb-3 font-semibold">
-              云端作品
+              云端备份
             </h2>
             <div
-              v-if="cloudWorks.length === 0"
+              v-if="backups.length === 0"
               class="text-sm text-neutral-500"
             >
-              云端暂无作品(实体库不上云,只有人物卡/概要/冲突)
+              云端暂无备份。在本地作品卡片的「⋯」菜单里点「同步云端」,即可把作品、游戏会话与存盘点整包备份到云端,换设备可在此恢复。
             </div>
             <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <UCard
-                v-for="cw in cloudWorks"
-                :key="cw.id"
-                class="flex items-center justify-between gap-2"
-              >
-                <div class="min-w-0">
-                  <p class="break-words text-sm font-semibold">
-                    {{ cw.title }}
-                  </p>
-                  <p class="text-xs text-neutral-500">
-                    {{ cw.chapter_count > 1 ? `${cw.chapter_count} 章 · ` : '' }}{{ fmtTime(cw.created_at) }}
-                  </p>
-                </div>
-                <UButton
-                  label="恢复到本机"
-                  icon="i-lucide-download"
-                  color="neutral"
-                  variant="outline"
-                  size="sm"
-                  @click="restoreFromCloud(cw.id)"
-                />
-              </UCard>
-            </div>
-          </div>
-
-          <!-- 云端游戏(跨设备恢复续玩) -->
-          <div
-            v-if="cloudGamesLoaded"
-            class="mb-6"
-          >
-            <h2 class="mb-3 font-semibold">
-              云端游戏
-            </h2>
-            <div
-              v-if="cloudGames.length === 0"
-              class="text-sm text-neutral-500"
-            >
-              云端暂无游戏(在个人中心开启「本地存档上云」后,游戏进度会自动上传)
-            </div>
-            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <UCard
-                v-for="g in cloudGames"
-                :key="g.id"
+                v-for="b in backups"
+                :key="b.workId"
                 class="flex items-center justify-between gap-2"
               >
                 <div class="min-w-0">
                   <p class="truncate text-sm font-semibold">
-                    你是「{{ g.player_character_name || '玩家' }}」
+                    {{ b.title || '未命名作品' }}
                   </p>
                   <p class="truncate text-xs text-neutral-500">
-                    {{ g.current_chapter || '进行中' }} · {{ g.updated_at ? fmtTime(g.updated_at) : '—' }}
+                    {{ fmtTime(b.uploadedAt) }} · {{ b.gameCount ?? 0 }} 个游戏会话 · {{ fmtBytes(b.sizeBytes) }}
                   </p>
                 </div>
-                <UButton
-                  label="恢复到本机"
-                  icon="i-lucide-download"
-                  color="neutral"
-                  variant="outline"
-                  size="sm"
-                  @click="restoreCloudGame(g.id)"
-                />
+                <div class="flex shrink-0 gap-1.5">
+                  <UButton
+                    label="下载到本机"
+                    icon="i-lucide-download"
+                    color="neutral"
+                    variant="outline"
+                    size="sm"
+                    :loading="restoringBackupId === b.workId"
+                    :disabled="!!restoringBackupId"
+                    @click="restoreBackup(b)"
+                  />
+                  <UButton
+                    icon="i-lucide-trash-2"
+                    aria-label="删除备份"
+                    color="error"
+                    variant="ghost"
+                    size="sm"
+                    @click="askDeleteBackup(b)"
+                  />
+                </div>
               </UCard>
             </div>
           </div>
@@ -1423,16 +1416,14 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       </template>
     </UModal>
 
-    <!-- 手动下载安装命中已安装作品:确认是否覆盖 -->
+    <!-- 覆盖确认(通用:云端任务重装 / 同步云端覆盖 / 备份恢复) -->
     <UModal
       v-model:open="overwriteOpen"
-      title="已安装过该任务"
-      description="本地已有同一云端任务的成书"
+      :title="overwriteTitle"
     >
       <template #body>
         <p class="text-sm text-neutral-600 dark:text-neutral-300">
-          本地已有《{{ overwriteTarget?.title }}》,来源与本次下载为同一云端任务。
-          是否用最新内容覆盖它?选择「保留现有」则跳过下载,不重复添加。
+          {{ overwriteBody }}
         </p>
       </template>
       <template #footer>
@@ -1448,6 +1439,35 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
             icon="i-lucide-refresh-cw"
             color="primary"
             @click="onOverwriteConfirm(true)"
+          />
+        </div>
+      </template>
+    </UModal>
+
+    <!-- 删除云端备份确认 -->
+    <UModal
+      v-model:open="backupDeleteOpen"
+      title="删除云端备份"
+      description="此操作不可撤销"
+    >
+      <template #body>
+        <p class="text-sm text-neutral-600 dark:text-neutral-300">
+          确定删除《{{ backupDeleteTarget?.title || '未命名作品' }}》的云端备份?本地数据不受影响,删除后需重新「同步云端」才能恢复该备份。
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="取消"
+            color="neutral"
+            variant="outline"
+            @click="backupDeleteOpen = false"
+          />
+          <UButton
+            label="删除"
+            icon="i-lucide-trash-2"
+            color="error"
+            @click="confirmDeleteBackup"
           />
         </div>
       </template>

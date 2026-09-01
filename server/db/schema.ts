@@ -469,6 +469,26 @@ export const saves = sqliteTable('saves', {
   createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString())
 }, t => [index('idx_saves_game').on(t.gameId)])
 
+// ---- 作品整包备份(书架「同步云端」:作品+游戏会话+存盘点打包 ZIP 上传 R2,本表记录元数据) ----
+export const workBackups = sqliteTable('work_backups', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  workId: text('work_id').notNull(),
+  title: text('title'),
+  /** R2 对象键 backups/<userId>/<workId>.zip */
+  r2Key: text('r2_key').notNull(),
+  sizeBytes: integer('size_bytes'),
+  gameCount: integer('game_count'),
+  messageCount: integer('message_count'),
+  /** 上传时本地 work.updatedAt(书架用于「有更新待同步」判断) */
+  workUpdatedAt: text('work_updated_at'),
+  /** 上次上传时间(覆盖提示/列表展示) */
+  uploadedAt: text('uploaded_at').notNull()
+}, t => [
+  index('idx_work_backups_user').on(t.userId),
+  uniqueIndex('uniq_work_backups_user_work').on(t.userId, t.workId)
+])
+
 // ---- 解析任务 ----
 export const jobs = sqliteTable('jobs', {
   id: text('id').primaryKey(),

@@ -17,10 +17,10 @@ import { buildUpstreamRequest } from '../server/utils/ai-relay'
 import type { RelayTarget } from '../server/utils/ai-relay'
 import { extractJson } from '../shared/json'
 import { billedTokens, finalizeStreamUsage, mergeTokenUsage, normalizeTokenUsage } from '../shared/token-estimate'
-import type { ChapterExtraction, ChapterSegment, EntityConflict, StoryBeat, WorldEntities, WorldOverlay } from '../shared/novel'
+import type { ChapterExtraction, ChapterSegment, CharacterArc, EntityConflict, StoryBeat, WorldEntities, WorldOverlay } from '../shared/novel'
 import {
-  assembleStoryline, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
-  buildSynthesizeMessages, emptyExtraction, finalizeCards, mergeExtractions, mergeOverlayMeta,
+  assembleStoryline, buildCharacterArcsMessages, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
+  buildSynthesizeMessages, emptyExtraction, finalizeCards, mergeExtractions, mergeOverlayMeta, normalizeCharacterArcs,
   normalizeExtraction, quoteByChapter, splitUnits, summarizeWorldLocal, verifyQuotes,
   ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS
 } from '../shared/world-build'
@@ -243,6 +243,7 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
   conflicts: EntityConflict[]
   warnings: string[]
   storyline: StoryBeat[]
+  characterArcs: CharacterArc[]
   tokensUsed: number
 }> {
   const { title, chapters } = book
@@ -426,6 +427,20 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
     }
   }
 
+  // 4.5) 配角独立故事线(完整模式;失败降级不中止)
+  let characterArcs: CharacterArc[] = []
+  if (!eco && storyline.length > 0) {
+    const arcMessages = buildCharacterArcsMessages(title, entities, storyline)
+    if (arcMessages.length > 0) {
+      try {
+        const { data } = await callAI(arcMessages, { temperature: 0.3 })
+        characterArcs = normalizeCharacterArcs(data, storyline, overlay.characters)
+      } catch (e) {
+        warnings.push(`配角故事线生成失败(${(e as Error).message}),已跳过`)
+      }
+    }
+  }
+
   return {
     title: overlay.title || title,
     overlay,
@@ -433,6 +448,7 @@ async function buildWorld(book: { id: string, title: string, chapters: ChapterSe
     conflicts,
     warnings,
     storyline,
+    characterArcs,
     tokensUsed
   }
 }
@@ -476,6 +492,7 @@ for (const book of targets) {
       characters: world.overlay.characters ?? [],
       overlay: world.overlay,
       storyline: world.storyline,
+      characterArcs: world.characterArcs,
       entities: world.entities,
       conflicts: world.conflicts,
       warnings: world.warnings,

@@ -13,13 +13,14 @@ const toast = useToast()
 interface AccountBalance {
   label: string
   source: 'db' | 'env'
-  provider: 'deepseek' | 'muskapi' | 'unknown'
+  provider: 'deepseek' | 'muskapi' | 'openrouter' | 'unknown'
   supported: boolean
   available: boolean
   active: boolean
   model: string | null
   balanceInfos?: { currency: string, totalBalance: string, grantedBalance: string, toppedUpBalance: string }[]
   musk?: { balance: number | null, remaining: number | null, unit: string, isValid: boolean, mode: string | null, totalCost: number | null }
+  openrouter?: { totalCredits: number | null, totalUsage: number | null, remaining: number | null, limit: number | null, isFreeTier: boolean | null, unit: string }
   error?: string
 }
 
@@ -409,7 +410,7 @@ const pendingItems = computed(() => {
             </p>
             <template v-else>
               <p
-                v-if="acc.error && !acc.balanceInfos?.length && !acc.musk"
+                v-if="acc.error && !acc.balanceInfos?.length && !acc.musk && !acc.openrouter"
                 class="mt-2 text-sm text-red-500"
               >
                 余额查询失败:{{ acc.error }}
@@ -452,6 +453,35 @@ const pendingItems = computed(() => {
                   累计消费 {{ acc.musk.totalCost }} {{ acc.musk.unit }}
                 </span>
               </p>
+              <!-- OpenRouter -->
+              <template v-else-if="acc.openrouter">
+                <p class="mt-2">
+                  <span class="text-lg font-bold tabular-nums">
+                    ${{ acc.openrouter.remaining?.toFixed(2) ?? '—' }}
+                    <span class="text-xs font-normal text-neutral-500">剩余({{ acc.openrouter.unit }})</span>
+                  </span>
+                  <span
+                    v-if="acc.openrouter.totalCredits !== null"
+                    class="ml-2 text-xs text-neutral-500"
+                  >
+                    已购 ${{ acc.openrouter.totalCredits.toFixed(2) }}
+                  </span>
+                  <span
+                    v-if="acc.openrouter.totalUsage !== null"
+                    class="ml-2 text-xs text-neutral-500"
+                  >
+                    已用 ${{ acc.openrouter.totalUsage.toFixed(2) }}
+                  </span>
+                </p>
+                <p
+                  v-if="acc.openrouter.isFreeTier !== null || acc.openrouter.limit !== null"
+                  class="mt-1 text-xs text-neutral-500"
+                >
+                  <span v-if="acc.openrouter.isFreeTier">免费档 · </span>
+                  <span v-if="acc.openrouter.limit !== null">Key 额度上限 ${{ acc.openrouter.limit.toFixed(2) }}</span>
+                  <span v-else>Key 不限额度(pay-as-you-go)</span>
+                </p>
+              </template>
             </template>
           </div>
         </div>

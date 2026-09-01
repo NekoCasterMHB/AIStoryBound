@@ -319,6 +319,28 @@ export interface StoryBeat {
   hook?: string | null
 }
 
+/** 配角独立故事线一拍:该角色在某细纲段的戏份(以该角色为中心,未登场段无此条目) */
+export interface CharacterArcBeat {
+  /** 对齐的主线细纲段下标(0-based,对应 StoryBeat.index) */
+  beatIndex: number
+  /** 该角色在本段的行动/处境/目标推进(以该角色为中心,80~150 字) */
+  summary: string
+  /** 本段该角色的处境变化(受伤/被囚/身份转变等,无则省略) */
+  status?: string | null
+}
+
+/** 配角独立故事线(角色弧线):玩家扮演该角色时以此为主叙事线,与主角主线同时间轴 */
+export interface CharacterArc {
+  /** 角色名(与人物卡 name 对齐) */
+  character: string
+  /** 该角色全书的弧线概述(目标/宿命/处境演变,一两句话) */
+  summary: string
+  /** 按主线段序对齐的角色戏份(仅登场段有条目) */
+  beats: CharacterArcBeat[]
+  /** 结局走向(该角色在全书终局的状态,无则省略) */
+  ending?: string | null
+}
+
 /** 一个提取单元(一章或超长章节的一段)输出的结构化结果 */
 export interface ChapterExtraction {
   characters: ExtractedCharacter[]
@@ -491,6 +513,8 @@ export interface LocalWork {
   overlay?: WorldOverlay
   /** 按字数切段合并的完整故事线(与 overlay 并列,避免人物卡保存踩到大数组) */
   storyline?: StoryBeat[]
+  /** 配角独立故事线(角色弧线;成书/增量补生成时写入;旧作品缺失,可增量补齐) */
+  characterArcs?: CharacterArc[]
 }
 
 /** 本地游戏会话(浏览器驱动回合,本地落盘;登录用户可手动同步云端) */

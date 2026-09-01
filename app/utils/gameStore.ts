@@ -1,8 +1,6 @@
 // app/utils/gameStore.ts
 // 本地游戏会话库(IndexedDB games):浏览器驱动回合,本地为真源。
-// 登录用户可手动同步云端(POST /api/games/import / GET /api/games 跨设备恢复)。
-// 同步采用 gzip 压缩 + 增量上传:只传上次同步后的新消息/选项;回滚导致消息变短时自动降级全量重建。
-import { gzipSync, strToU8 } from 'fflate'
+// 云端备份由按作品整包 ZIP 承担(见 backupStore.ts),本模块不再含同步逻辑。
 import type { LocalGame, GameState } from '#shared/novel'
 import { db } from './localDb'
 
@@ -65,54 +63,8 @@ export function appendLocalMessage(game: LocalGame, msg: Omit<FlatMsg, 'idx'> & 
   game.messages.push({ idx: game.messages.length, ...msg })
 }
 
-/** 同步到云端(登录用户):gzip 压缩 + 增量上传;未登录或失败返回 false */
-export async function syncGameToCloud(game: LocalGame): Promise<boolean> {
-  try {
-    const lastIdx = game.messages.at(-1)?.idx ?? -1
-    // 增量条件:上次同步点存在且本地消息连贯未被回滚(长度与序号匹配);
-    // 回滚/新局/旧存档自动走全量重建(fromIdx=-1),保证云端镜像与本地一致
-    const incremental = game.lastSyncedIdx != null
-      && game.lastSyncedIdx >= 0
-      && lastIdx >= game.lastSyncedIdx
-      && game.messages.length >= game.lastSyncedIdx + 1
-    const fromIdx: number = incremental ? (game.lastSyncedIdx ?? -1) : -1
-    const deltaMessages = incremental ? game.messages.filter(m => m.idx > fromIdx) : game.messages
-    const deltaOptions: Record<string, { idx: number, text: string }[]> = {}
-    if (incremental) {
-      const newIds = new Set(deltaMessages.map(m => m.id))
-      for (const [k, v] of Object.entries(game.optionsByMessage ?? {})) {
-        if (newIds.has(k)) deltaOptions[k] = v
-      }
-    } else {
-      Object.assign(deltaOptions, game.optionsByMessage ?? {})
-    }
-
-    const payload = {
-      id: game.id,
-      workId: game.workId,
-      playerName: game.playerName,
-      characterName: game.characterName,
-      state: game.state,
-      summary: game.summary,
-      // 云端 D1 列为 current_chapter 字符串:上传段标签(如「第3段」),跨设备恢复时反解回段号
-      currentChapter: typeof game.currentBeat === 'number' && game.currentBeat >= 0 ? `第${game.currentBeat + 1}段` : null,
-      status: game.status,
-      fromIdx,
-      messages: deltaMessages,
-      optionsByMessage: deltaOptions
-    }
-    const gz = gzipSync(strToU8(JSON.stringify(payload)))
-    const res = await $fetch('/api/games/import', {
-      method: 'POST',
-      body: gz,
-      headers: { 'Content-Type': 'application/gzip' }
-    }).catch(() => null)
-    if (!res) return false
-    game.lastSyncedIdx = lastIdx
-    game.syncStatus = 'synced'
-    await saveLocalGame(game)
-    return true
-  } catch {
-    return false
-  }
+/** 原样写回本地(备份恢复用):保留 updatedAt/syncStatus 等字段,不被 saveLocalGame 的时间戳覆盖 */
+export async function restoreLocalGame(game: LocalGame): Promise<void> {
+  if (typeof indexedDB === 'undefined') return
+  await db.table(STORE).put(JSON.parse(JSON.stringify(game)))
 }

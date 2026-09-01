@@ -4,7 +4,7 @@
 // - 总消耗 = 注册赠送总量 + 已支付订单发放总量 + 兑换码已兑换总量 − 商城购买烧掉的手续费 − 当前全站余额
 //   (存量恒等式,含全部历史,精确;商城手续费 = 买家全额扣款 − 卖家 80% 分成,20% 流出系统非 AI 消耗)
 // - 近24h 消耗 = ai_usage 表 SUM(ai_usage 自 2026-08-27 起记录,更早的消耗无明细、由上面的恒等式兜底覆盖)
-// - 余额:扫描全部已保存配置(含未启用与环境变量),按 baseUrl 识别平台(DeepSeek / MuskAPI),
+// - 余额:扫描全部已保存配置(含未启用与环境变量),按 baseUrl 识别平台(DeepSeek / MuskAPI / OpenRouter),
 //   不支持的平台不发请求、由前端显示「不支持」。
 import { requireAdmin } from '../../utils/authz'
 import { useD1 } from '../../utils/d1'
@@ -48,10 +48,24 @@ export interface MuskAccountInfo {
   totalCost: number | null
 }
 
+export interface OpenRouterBalanceInfo {
+  /** 已购额度总额(USD,GET /api/v1/credits 的 total_credits) */
+  totalCredits: number | null
+  /** 累计已用额度(USD,同一响应的 total_usage;auth/key 兜底时为该 key 的 usage) */
+  totalUsage: number | null
+  /** 剩余额度 = total_credits − total_usage(auth/key 兜底时为 limit_remaining) */
+  remaining: number | null
+  /** key 额度上限(USD,auth/key 兜底;null=不限额/pay-as-you-go) */
+  limit: number | null
+  /** 是否免费档(auth/key 兜底返回 is_free_tier) */
+  isFreeTier: boolean | null
+  unit: string
+}
+
 export interface AccountBalance {
   label: string
   source: 'db' | 'env'
-  provider: 'deepseek' | 'muskapi' | 'unknown'
+  provider: 'deepseek' | 'muskapi' | 'openrouter' | 'unknown'
   /** 平台是否支持余额查询(不支持时前端显示「不支持」) */
   supported: boolean
   available: boolean
@@ -59,6 +73,7 @@ export interface AccountBalance {
   model: string | null
   balanceInfos?: DeepseekBalanceInfo[]
   musk?: MuskAccountInfo
+  openrouter?: OpenRouterBalanceInfo
   error?: string
 }
 
@@ -68,14 +83,15 @@ function detectProvider(baseUrl: string): AccountBalance['provider'] {
     const host = new URL(baseUrl).hostname
     if (/deepseek/i.test(host)) return 'deepseek'
     if (/muskapi/i.test(host)) return 'muskapi'
+    if (/openrouter/i.test(host)) return 'openrouter'
   } catch {
     // baseUrl 无法解析按不支持处理
   }
   return 'unknown'
 }
 
-/** 余额查询结果(fetchDeepseek / fetchMuskapi 共用返回类型) */
-type BalanceFetchResult = Pick<AccountBalance, 'available' | 'error'> & Partial<Pick<AccountBalance, 'balanceInfos' | 'musk'>>
+/** 余额查询结果(fetchDeepseek / fetchMuskapi / fetchOpenrouter 共用返回类型) */
+type BalanceFetchResult = Pick<AccountBalance, 'available' | 'error'> & Partial<Pick<AccountBalance, 'balanceInfos' | 'musk' | 'openrouter'>>
 
 /** 查 DeepSeek 官方余额(/user/balance,域名根路径) */
 async function fetchDeepseek(baseUrl: string, apiKey: string): Promise<BalanceFetchResult> {
@@ -132,6 +148,65 @@ async function fetchMuskapi(baseUrl: string, apiKey: string): Promise<BalanceFet
       totalCost: typeof data.usage?.total?.actual_cost === 'number' ? data.usage.total.actual_cost : null
     }
     return { available: info.isValid, musk: info }
+  } catch (e) {
+    return { available: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** OpenRouter 平台端点根(baseUrl 形如 https://openrouter.ai/api/v1、https://openrouter.ai/api 或 https://openrouter.ai) */
+function openrouterRoot(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, '').replace(/\/api\/v\d+$/i, '').replace(/\/api$/i, '')
+}
+
+/**
+ * 查 OpenRouter 余额(GET /api/v1/credits,见官方文档 Get remaining credits):
+ * 返回 { data: { total_credits, total_usage } },剩余 = total_credits − total_usage(需 management key,否则 403);
+ * 非 management key(403)时回退 GET /api/v1/auth/key(任意 key 可查),取 key 的 usage / limit / limit_remaining。
+ */
+async function fetchOpenrouter(baseUrl: string, apiKey: string): Promise<BalanceFetchResult> {
+  const root = openrouterRoot(baseUrl)
+  const info: OpenRouterBalanceInfo = {
+    totalCredits: null,
+    totalUsage: null,
+    remaining: null,
+    limit: null,
+    isFreeTier: null,
+    unit: 'USD'
+  }
+  try {
+    const res = await fetch(`${root}/api/v1/credits`, {
+      headers: { Authorization: `Bearer ${apiKey}` }
+    })
+    if (res.ok) {
+      const data = await res.json() as { data?: { total_credits?: number, total_usage?: number } }
+      const totalCredits = typeof data?.data?.total_credits === 'number' ? data.data.total_credits : null
+      const totalUsage = typeof data?.data?.total_usage === 'number' ? data.data.total_usage : null
+      info.totalCredits = totalCredits
+      info.totalUsage = totalUsage
+      info.remaining = totalCredits !== null && totalUsage !== null ? Math.max(0, totalCredits - totalUsage) : null
+      return { available: true, openrouter: info }
+    }
+    // 非 management key:credits 端点 403,回退 auth/key(普通 key 也可用)
+    if (res.status === 403) {
+      const keyRes = await fetch(`${root}/api/v1/auth/key`, {
+        headers: { Authorization: `Bearer ${apiKey}` }
+      })
+      if (keyRes.ok) {
+        const kd = await keyRes.json() as {
+          data?: { usage?: number, limit?: number | null, limit_remaining?: number, is_free_tier?: boolean }
+        }
+        const usage = typeof kd?.data?.usage === 'number' ? kd.data.usage : null
+        const limit = typeof kd?.data?.limit === 'number' ? kd.data.limit : null
+        const limitRemaining = typeof kd?.data?.limit_remaining === 'number' ? kd.data.limit_remaining : null
+        info.totalUsage = usage
+        info.limit = limit
+        info.remaining = limitRemaining ?? (usage !== null && limit !== null ? Math.max(0, limit - usage) : null)
+        info.isFreeTier = typeof kd?.data?.is_free_tier === 'boolean' ? kd.data.is_free_tier : null
+        return { available: true, openrouter: info }
+      }
+      return { available: false, error: `credits 端点需 management key,且 key 信息查询失败(HTTP ${keyRes.status})` }
+    }
+    return { available: false, error: `HTTP ${res.status}` }
   } catch (e) {
     return { available: false, error: e instanceof Error ? e.message : String(e) }
   }
@@ -243,10 +318,13 @@ export default defineEventHandler(async (event) => {
     }
     const r = provider === 'deepseek'
       ? await fetchDeepseek(row.baseUrl, apiKey)
-      : await fetchMuskapi(row.baseUrl, apiKey)
+      : provider === 'muskapi'
+        ? await fetchMuskapi(row.baseUrl, apiKey)
+        : await fetchOpenrouter(row.baseUrl, apiKey)
     item.available = r.available
     if (r.balanceInfos) item.balanceInfos = r.balanceInfos
     if (r.musk) item.musk = r.musk
+    if (r.openrouter) item.openrouter = r.openrouter
     if (r.error) item.error = r.error
     accounts.push(item)
   }
@@ -266,10 +344,13 @@ export default defineEventHandler(async (event) => {
     if (item.supported) {
       const r = provider === 'deepseek'
         ? await fetchDeepseek(env.baseUrl, env.apiKey)
-        : await fetchMuskapi(env.baseUrl, env.apiKey)
+        : provider === 'muskapi'
+          ? await fetchMuskapi(env.baseUrl, env.apiKey)
+          : await fetchOpenrouter(env.baseUrl, env.apiKey)
       item.available = r.available
       if (r.balanceInfos) item.balanceInfos = r.balanceInfos
       if (r.musk) item.musk = r.musk
+      if (r.openrouter) item.openrouter = r.openrouter
       if (r.error) item.error = r.error
     }
     accounts.push(item)

@@ -5,11 +5,11 @@
 import { extractFrontMatter, uuid } from '#shared/novel'
 import { detectNovelEncoding } from '#shared/novel-encoding'
 import type {
-  ChapterExtraction, ChapterSegment, EntityConflict, LocalWork, WorldOverlay
+  ChapterExtraction, ChapterSegment, CharacterArc, EntityConflict, LocalWork, WorldOverlay
 } from '#shared/novel'
 import {
-  assembleStoryline, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
-  buildSynthesizeMessages, mergeExtractions, mergeOverlayMeta, splitUnits, summarizeWorldLocal, verifyQuotes,
+  assembleStoryline, buildCharacterArcsMessages, buildCheckMessages, buildEcoSynthMessages, buildExtractMessages, buildLocalCards,
+  buildSynthesizeMessages, mergeExtractions, mergeOverlayMeta, normalizeCharacterArcs, splitUnits, summarizeWorldLocal, verifyQuotes,
   emptyExtraction, finalizeCards, normalizeExtraction, normKey, quoteByChapter,
   ADULT_GENRE, ECO_EXTRACT_MAX_TOKENS, ECO_SYNTH_MAX_TOKENS, TOP_CHARACTERS
 } from '#shared/world-build'
@@ -571,6 +571,63 @@ export async function generateWorld(
     }
   }
 
+  // ---- 配角独立故事线(角色弧线):完整模式成书后补一次 AI 调用生成;失败不阻塞成书(记告警) ----
+  // 增量补生成(书架按钮)与成书共用 buildCharacterArcsMessages,保证产物一致。
+  let characterArcs: CharacterArc[] = []
+  if (!eco && storyline.length > 0) {
+    progress('done', units.length, '正在生成配角故事线…')
+    const arcMessages = buildCharacterArcsMessages(title, entities, storyline)
+    const arcCards = overlay.characters ?? []
+    if (arcMessages.length > 0) {
+      try {
+        emitLive('synthesize')
+        const arcRes = await aiChatJson<{ arcs?: unknown }>(arcMessages, {
+          maxTokens: outputCap(genLimits.synthMaxTokens),
+          temperature: 0.3,
+          timeoutMs: relayTimeoutMs,
+          purpose: 'worldGen'
+        }, {
+          onLive: liveHandler('arc', 'synthesize'),
+          signal
+        })
+        if (isAborted()) throw new CancelledError()
+        tokensUsed += arcRes.usage?.totalTokens ?? 0
+        if (!arcRes.ok) throw toAiError(arcRes)
+        characterArcs = normalizeCharacterArcs(arcRes.data, storyline, arcCards)
+      } catch (e) {
+        if (isAborted()) throw new CancelledError()
+        if (!isRetryable(e)) {
+          warnings.push(`配角故事线生成失败(${(e as Error).message}),已跳过;可在书架用「补充生成配角故事线」补`)
+        } else {
+          // 瞬时错误:重试一次仍失败则跳过(不阻塞成书)
+          try {
+            await sleep(1500)
+            emitLive('synthesize')
+            const arcRes2 = await aiChatJson<{ arcs?: unknown }>(arcMessages, {
+              maxTokens: outputCap(genLimits.synthMaxTokens),
+              temperature: 0.3,
+              timeoutMs: relayTimeoutMs,
+              purpose: 'worldGen'
+            }, {
+              onLive: liveHandler('arc', 'synthesize'),
+              signal
+            })
+            if (isAborted()) throw new CancelledError()
+            tokensUsed += arcRes2.usage?.totalTokens ?? 0
+            if (arcRes2.ok) characterArcs = normalizeCharacterArcs(arcRes2.data, storyline, arcCards)
+            else warnings.push(`配角故事线生成失败(${arcRes2.message}),已跳过;可在书架用「补充生成配角故事线」补`)
+          } catch (e2) {
+            if (isAborted()) throw new CancelledError()
+            warnings.push(`配角故事线生成失败(${(e2 as Error).message}),已跳过;可在书架用「补充生成配角故事线」补`)
+          }
+        }
+      } finally {
+        liveCalls.delete('arc')
+        emitLive()
+      }
+    }
+  }
+
   progress('done', units.length)
 
   const now = new Date().toISOString()
@@ -588,7 +645,8 @@ export async function generateWorld(
     conflicts,
     warnings,
     overlay,
-    storyline
+    storyline,
+    characterArcs
   }
   await saveWork(work)
   return { work, usage: { tokensUsed } }
@@ -651,4 +709,33 @@ export async function addWorkTokens(id: string, tokens: number): Promise<void> {
   work.tokensUsed = (work.tokensUsed ?? 0) + tokens
   work.updatedAt = new Date().toISOString()
   await saveWork(work)
+}
+
+/** 增量补生成配角独立故事线:旧作品(缺 characterArcs)用已有 storyline/实体/人物卡补一次 AI 调用,写回作品。
+ *  幂等:已有弧线的作品直接返回;弧线缺失会重新生成。失败抛错(由调用方 toast)。 */
+export async function supplementCharacterArcs(workId: string): Promise<{ count: number, tokensUsed: number }> {
+  const work = await getWork(workId)
+  if (!work) throw new Error('本地未找到该作品')
+  if ((work.characterArcs ?? []).length > 0) return { count: work.characterArcs!.length, tokensUsed: 0 }
+  if (!work.storyline?.length) throw new Error('该作品没有故事线,无法生成配角故事线')
+  if (!work.entities) throw new Error('该作品缺少实体库,无法生成配角故事线')
+
+  const title = work.title || '未命名小说'
+  const messages = buildCharacterArcsMessages(title, work.entities, work.storyline)
+  if (messages.length === 0) throw new Error('故事线中没有登场两次以上的角色,无需生成')
+
+  const res = await aiChatJson<{ arcs?: unknown }>(messages, {
+    maxTokens: 8000,
+    temperature: 0.3,
+    purpose: 'worldGen'
+  })
+  const tokens = res.usage?.totalTokens ?? 0
+  if (!res.ok) throw new Error(res.message)
+  const arcs = normalizeCharacterArcs(res.data, work.storyline, work.overlay?.characters)
+  if (arcs.length === 0) throw new Error('AI 未返回有效的配角故事线,请重试')
+
+  work.characterArcs = arcs
+  work.updatedAt = new Date().toISOString()
+  await saveWork(work)
+  return { count: arcs.length, tokensUsed: tokens }
 }
