@@ -7,7 +7,11 @@ const { data: topDemands, status } = await useAsyncData('landing-demand-wall', (
   $fetch<DemandItem[]>('/api/demand').catch(() => [])
 )
 
-const visible = computed(() => (topDemands.value ?? []).slice(0, 3))
+const all = computed(() => topDemands.value ?? [])
+/** 未完成需求榜(前 3 条,主页只展示未完成的高赞需求) */
+const visible = computed(() => all.value.filter(d => d.status !== 'done').slice(0, 3))
+/** 有需求但全部已完成(未完成榜为空):区分「完全没需求」与「未完成的需求没有」 */
+const hasAny = computed(() => all.value.length > 0)
 </script>
 
 <template>
@@ -43,14 +47,27 @@ const visible = computed(() => (topDemands.value ?? []).slice(0, 3))
         <div class="h-8 animate-pulse rounded-lg bg-neutral-200/60 dark:bg-neutral-800/60" />
       </div>
 
-      <!-- 数据为空:降级为纯入口 -->
+      <!-- 数据为空:区分「完全没有需求」与「有需求但未完成的没有」 -->
       <div
         v-else-if="!visible.length"
         class="rounded-2xl border border-dashed border-neutral-300 px-6 py-14 text-center dark:border-neutral-700"
       >
-        <p class="text-sm text-neutral-600 dark:text-neutral-400">
-          还没有需求,去需求墙提出第一个建议吧。
-        </p>
+        <template v-if="hasAny">
+          <p class="text-sm text-neutral-600 dark:text-neutral-400">
+            未完成的需求,暂时缺席。
+          </p>
+          <p class="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+            此前的期待已尽数实现,新的想法正等你落笔。
+          </p>
+        </template>
+        <template v-else>
+          <p class="text-sm text-neutral-600 dark:text-neutral-400">
+            还没有需求上榜。
+          </p>
+          <p class="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+            你的一句话,可能就是下一个新功能。
+          </p>
+        </template>
       </div>
 
       <!-- 高赞需求榜(前三名) -->

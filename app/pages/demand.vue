@@ -41,6 +41,16 @@ function fmtTs(ts: number) {
   return new Date(ts).toLocaleString('zh-CN', { dateStyle: 'short' })
 }
 
+// ---- 状态分组(未完成=open+in_progress,已完成=done;默认展示未完成) ----
+const activeTab = ref<'pending' | 'done'>('pending')
+const demandTabs = [
+  { label: '未完成', icon: 'i-lucide-hourglass', value: 'pending' as const },
+  { label: '已完成', icon: 'i-lucide-check-circle', value: 'done' as const }
+]
+const pendingDemands = computed(() => demands.value.filter(d => d.status !== 'done'))
+const doneDemands = computed(() => demands.value.filter(d => d.status === 'done'))
+const visibleDemands = computed(() => activeTab.value === 'done' ? doneDemands.value : pendingDemands.value)
+
 // ---- 点赞(toggle,本地即时更新) ----
 const likingIds = ref<Set<string>>(new Set())
 
@@ -130,53 +140,68 @@ async function submitCreate() {
     >
       还没有需求,成为第一个提出需求的人吧
     </div>
-    <div
-      v-else
-      class="flex flex-col gap-3"
-    >
-      <UCard
-        v-for="d in demands"
-        :key="d.id"
-        class="flex flex-col"
+    <template v-else>
+      <UTabs
+        v-model="activeTab"
+        :items="demandTabs"
+        variant="link"
+        color="primary"
+        class="mb-4"
+      />
+      <div
+        v-if="!visibleDemands.length"
+        class="py-10 text-center text-sm text-neutral-500"
       >
-        <div class="flex items-start gap-3">
-          <div class="min-w-0 flex-1">
-            <p class="flex flex-wrap items-center gap-2 font-semibold">
-              <span class="min-w-0">{{ d.title }}</span>
-              <UBadge
-                v-if="d.status !== 'open'"
-                size="sm"
-                :color="STATUS_BADGE_COLORS[d.status]"
-                variant="soft"
-                :icon="d.status === 'done' ? 'i-lucide-check' : (d.status === 'in_progress' ? 'i-lucide-hammer' : undefined)"
-                leading
-                class="shrink-0"
-              >
-                {{ DEMAND_STATUS_LABELS[d.status] }}
-              </UBadge>
-            </p>
-            <p class="mt-1 whitespace-pre-line text-sm text-neutral-600 dark:text-neutral-400">
-              {{ d.desc }}
-            </p>
-            <p class="mt-2 text-xs text-neutral-400">
-              {{ d.authorName }} · {{ fmtTs(d.createdAt) }}
-            </p>
+        {{ activeTab === 'done' ? '还没有已实现的需求' : '当前没有未完成的需求,看看已完成的有哪些吧' }}
+      </div>
+      <div
+        v-else
+        class="flex flex-col gap-3"
+      >
+        <UCard
+          v-for="d in visibleDemands"
+          :key="d.id"
+          class="flex flex-col"
+        >
+          <div class="flex items-start gap-3">
+            <div class="min-w-0 flex-1">
+              <p class="flex flex-wrap items-center gap-2 font-semibold">
+                <span class="min-w-0">{{ d.title }}</span>
+                <UBadge
+                  v-if="d.status !== 'open'"
+                  size="sm"
+                  :color="STATUS_BADGE_COLORS[d.status]"
+                  variant="soft"
+                  :icon="d.status === 'done' ? 'i-lucide-check' : (d.status === 'in_progress' ? 'i-lucide-hammer' : undefined)"
+                  leading
+                  class="shrink-0"
+                >
+                  {{ DEMAND_STATUS_LABELS[d.status] }}
+                </UBadge>
+              </p>
+              <p class="mt-1 whitespace-pre-line text-sm text-neutral-600 dark:text-neutral-400">
+                {{ d.desc }}
+              </p>
+              <p class="mt-2 text-xs text-neutral-400">
+                {{ d.authorName }} · {{ fmtTs(d.createdAt) }}
+              </p>
+            </div>
+            <!-- 点赞:未登录点击弹登录框 -->
+            <UButton
+              :color="d.liked ? 'primary' : 'neutral'"
+              :variant="d.liked ? 'solid' : 'outline'"
+              size="sm"
+              icon="i-lucide-thumbs-up"
+              :loading="likingIds.has(d.id)"
+              class="shrink-0 tabular-nums"
+              @click="onLike(d)"
+            >
+              {{ d.likeCount }}
+            </UButton>
           </div>
-          <!-- 点赞:未登录点击弹登录框 -->
-          <UButton
-            :color="d.liked ? 'primary' : 'neutral'"
-            :variant="d.liked ? 'solid' : 'outline'"
-            size="sm"
-            icon="i-lucide-thumbs-up"
-            :loading="likingIds.has(d.id)"
-            class="shrink-0 tabular-nums"
-            @click="onLike(d)"
-          >
-            {{ d.likeCount }}
-          </UButton>
-        </div>
-      </UCard>
-    </div>
+        </UCard>
+      </div>
+    </template>
 
     <!-- 发起需求表单 -->
     <UModal
