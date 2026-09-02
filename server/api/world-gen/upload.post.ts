@@ -12,8 +12,8 @@ import { useD1 } from '../../utils/d1'
 import { requireUser } from '../../utils/authz'
 import { user as usersTable, aiConfigVerifications, worldGenTasks, worldCache } from '../../db/schema'
 import { uuid } from '../../../shared/novel'
-import { cacheHalfCost, estimateWorldGenTokens } from '../../../shared/world-gen-task'
-import type { WorldCacheHit } from '../../../shared/world-gen-task'
+import { cacheHalfCost, estimateWorldGenTokens, parseWorldGenSteps } from '../../../shared/world-gen-task'
+import type { WorldCacheHit, WorldGenMode } from '../../../shared/world-gen-task'
 import { isAiApiFormat } from '../../../shared/ai-config'
 import { getSkillBucket } from '../../utils/r2'
 import { encryptJson } from '../../utils/crypto'
@@ -43,7 +43,9 @@ export default defineEventHandler(async (event) => {
   if (!parts) throw createError({ statusCode: 400, statusMessage: '必须以 multipart 表单上传' })
 
   const filePart = parts.find(p => p.name === 'file')
-  const mode = parts.find(p => p.name === 'mode')?.data.toString() === 'eco' ? 'eco' : 'full'
+  const modeRaw = parts.find(p => p.name === 'mode')?.data.toString()
+  const mode: WorldGenMode = modeRaw === 'eco' ? 'eco' : modeRaw === 'custom' ? 'custom' : 'full'
+  const stepsRaw = parts.find(p => p.name === 'steps')?.data.toString()
   const charCountRaw = Number(parts.find(p => p.name === 'charCount')?.data.toString())
   const configRaw = parts.find(p => p.name === 'config')?.data.toString()
 
@@ -98,10 +100,14 @@ export default defineEventHandler(async (event) => {
     }
   }
 
+  // 自定义模式的步骤开关(仅 mode=custom 使用;非法回退全开),随任务落库供管线读取
+  const steps = mode === 'custom' ? parseWorldGenSteps(stepsRaw) : null
+
   // ---- 共享缓存命中:未显式要求重新生成时,不建任务,把命中信息返回给客户端选择(拉取半价 / 重新生成)。
-  // 与 /api/world-gen/check 同口径(该接口保留兼容);命中时不存 R2 原文,避免无用占用。 ----
+  // 与 /api/world-gen/check 同口径(该接口保留兼容);命中时不存 R2 原文,避免无用占用。
+  // 自定义模式不参与共享缓存(开关组合与 full/eco 缓存桶不等价),直接跳过命中查询。 ----
   const forceRegenerate = parts.find(p => p.name === 'forceRegenerate')?.data.toString() === '1'
-  if (!forceRegenerate) {
+  if (!forceRegenerate && mode !== 'custom') {
     const db = useD1(event)
     const hitRow = await db.select()
       .from(worldCache)
@@ -135,7 +141,7 @@ export default defineEventHandler(async (event) => {
   const chars = Number.isFinite(charCountRaw) && charCountRaw > 0
     ? Math.min(Math.round(charCountRaw), sourceChars) // 转换后字符数不可能超过原文长度,防客户端虚报
     : sourceChars
-  const estimatedTokens = estimateWorldGenTokens(chars, mode === 'eco')
+  const estimatedTokens = estimateWorldGenTokens(chars, mode === 'eco', undefined, steps)
   if (!escrow && estimatedTokens > 0) {
     const me = await db.select({ aiTokenBalance: usersTable.aiTokenBalance })
       .from(usersTable)
@@ -163,6 +169,8 @@ export default defineEventHandler(async (event) => {
     fileSize: bytes.length,
     title,
     mode,
+    // 自定义模式的步骤开关持久化到 payload(JSON),管线按它路由各 AI 步骤;full/eco 为 null
+    payload: steps ? JSON.stringify(steps) : null,
     keySource: escrow ? 'user' : 'platform',
     keyCiphertext: escrow?.ciphertext ?? null,
     keyIv: escrow?.iv ?? null,

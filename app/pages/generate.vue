@@ -7,6 +7,8 @@
 import { parseLocalNovel, getWork, toContentSegments } from '../utils/worldGen'
 import { CancelledError } from '../utils/aiRelay'
 import { checkWorldGenQuota, estimateWorldGenTokens } from '../utils/tokenQuota'
+import { DEFAULT_STEP_SWITCHES, parseWorldGenSteps } from '#shared/world-gen-task'
+import type { WorldGenStepSwitches } from '#shared/world-gen-task'
 import { loadPresetChapters } from '../utils/chapters'
 import { fetchPrebuiltWorld, installPrebuiltWork } from '../utils/prebuiltWorld'
 import type { PrebuiltWorld } from '../utils/prebuiltWorld'
@@ -93,8 +95,52 @@ void refreshUserKeyMode()
 /** 解析完成、待用户确认的原稿(确认后才进入生成管线) */
 const pendingGen = ref<{ title: string, chapters: ChapterSegment[], frontMatter: string } | null>(null)
 
-/** 生成模式:false=完整(默认),true=节约(跳过一致性检查与人物卡润色,省约一半 token) */
-const ecoMode = ref(false)
+/** 生成模式:full=完整(默认) | eco=节约 | custom=自定义(按步骤开关控制) */
+const genMode = ref<'full' | 'eco' | 'custom'>('full')
+
+/** 自定义模式的步骤开关(仅 custom 使用;存 localStorage,发起任务时随 mode 上传) */
+const stepSwitches = ref<WorldGenStepSwitches>({ ...DEFAULT_STEP_SWITCHES })
+
+/** localStorage 键:自定义步骤开关配置(纯本地偏好,不上传账户) */
+const STEPS_STORAGE_KEY = 'gen-steps-config-v1'
+
+function loadStepsFromStorage() {
+  try {
+    const raw = localStorage.getItem(STEPS_STORAGE_KEY)
+    if (raw) stepSwitches.value = parseWorldGenSteps(raw)
+  } catch {
+    // localStorage 不可用(隐私模式等)用默认全开
+  }
+}
+function persistSteps() {
+  try {
+    localStorage.setItem(STEPS_STORAGE_KEY, JSON.stringify(stepSwitches.value))
+  } catch {
+    // 写入失败不影响本次生成
+  }
+}
+loadStepsFromStorage()
+
+/** 当前生效模式是否为节约(供估算/预检/上传复用) */
+const isEco = computed(() => genMode.value === 'eco')
+
+/** 当前步骤开关(full/eco 模式下恒为全开,上传时仅 custom 透传) */
+const effectiveSteps = computed<WorldGenStepSwitches | null>(() =>
+  genMode.value === 'custom' ? stepSwitches.value : null
+)
+
+/** 自定义模式开关列表(UI 展示用;开关名与 shared WorldGenStepSwitches 对齐) */
+const stepDefs = [
+  { key: 'author', label: '作者识别', desc: '书名页/文件名正则未命中时,由 AI 识别原著作者' },
+  { key: 'check', label: '一致性检查', desc: 'AI 逐冲突裁决设定矛盾,产出更自洽(最耗 token 之一)' },
+  { key: 'synth', label: '人物卡 AI 润色', desc: '完整成书:AI 生成详细人物卡;关闭则轻量概览+本地直拼朴素卡' },
+  { key: 'arcs', label: '配角故事线', desc: '为登场配角逐人生成独立故事线(最耗 token 之一)' }
+] as const
+
+function toggleStep(key: keyof WorldGenStepSwitches, v: boolean) {
+  stepSwitches.value = { ...stepSwitches.value, [key]: v }
+  persistSteps()
+}
 
 /** 确认页缓存预检:解析完成后按当前文本 hash + 模式提前查共享缓存,命中即在确认页提示(不必等点生成) */
 const precheckHit = ref<WorldCacheHit | null>(null)
@@ -121,9 +167,15 @@ const genState = ref<{
 /**
  * 运行预检。文本口径与服务端一致:清洗规则见 toContentSegments(去 \r、合并 3+ 连续换行、trim),
  * 服务端 parseNovelBytes 同规则,故 hashText(清洗后全文) 与服务端上传后 hash 一致。
+ * 自定义模式不参与共享缓存,直接跳过预检。
  */
 async function precheckCacheHit() {
   if (genState.value.phase !== 'confirm' || !pendingGen.value?.chapters.length) return
+  if (genMode.value === 'custom') {
+    prechecking.value = false
+    precheckHit.value = null
+    return
+  }
   prechecking.value = true
   precheckHit.value = null
   const seq = runSeq
@@ -131,7 +183,7 @@ async function precheckCacheHit() {
     const text = pendingGen.value.chapters.map(c => c.content).join('\n')
     const hash = await hashText(text)
     if (seq !== runSeq) return // 期间被取消/换文件
-    const hit = await checkWorldDuplicate(hash, ecoMode.value ? 'eco' : 'full')
+    const hit = await checkWorldDuplicate(hash, isEco.value ? 'eco' : 'full')
     if (seq !== runSeq) return
     precheckHit.value = hit
   } catch {
@@ -141,8 +193,8 @@ async function precheckCacheHit() {
   }
 }
 
-/** 模式/内容变化时重新预检(节约模式会命中另一桶缓存) */
-watch([() => genState.value.phase, pendingGen, ecoMode], () => {
+/** 模式/开关/内容变化时重新预检(节约模式命中另一桶缓存) */
+watch([() => genState.value.phase, pendingGen, genMode, stepSwitches], () => {
   void precheckCacheHit()
 })
 
@@ -151,13 +203,13 @@ const totalChars = computed(() =>
   pendingGen.value?.chapters.reduce((sum, c) => sum + c.content.length, 0) ?? 0
 )
 
-/** 预估本次生成消耗(按流水线分阶段建模,与平台额度预检同一函数;缺省生成参数) */
-const estimatedTokens = computed(() => estimateWorldGenTokens(totalChars.value, ecoMode.value))
+/** 预估本次生成消耗(按流水线分阶段建模,与平台额度预检同一函数;自定义模式按开关组合估算) */
+const estimatedTokens = computed(() => estimateWorldGenTokens(totalChars.value, isEco.value, undefined, effectiveSteps.value))
 
-/** 切换生成模式后刷新额度预检(估算系数随模式变化) */
-watch(ecoMode, async (eco) => {
+/** 切换生成模式/开关后刷新额度预检(估算系数随模式与开关变化) */
+watch([genMode, stepSwitches], async () => {
   if (genState.value.phase === 'confirm' && pendingGen.value) {
-    quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco })
+    quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco: isEco.value })
   }
 })
 
@@ -302,9 +354,12 @@ async function startCloudGeneration(opts: { charCount?: number, forceRegenerate?
       config = null
     }
     usingUserKey.value = !!config
+    // 自定义模式:开关配置随任务上送(服务端持久化到任务行 payload);full/eco 不传 steps
+    if (genMode.value === 'custom') persistSteps()
     const res = await uploadWorldGenTask({
       file,
-      mode: ecoMode.value ? 'eco' : 'full',
+      mode: genMode.value,
+      steps: effectiveSteps.value,
       charCount: opts.charCount ?? totalChars.value,
       config,
       forceRegenerate: opts.forceRegenerate,
@@ -473,7 +528,7 @@ onMounted(async () => {
       await requireLogin()
       askingLogin.value = false
     }
-    if (route.query.eco === '1') ecoMode.value = true
+    if (route.query.eco === '1') genMode.value = 'eco'
     await loadWorkIntoConfirm(workSource.value)
     return
   }
@@ -485,7 +540,7 @@ onMounted(async () => {
       askingLogin.value = false
     }
     // 详情页勾选的节约模式随跳转带过来
-    if (route.query.eco === '1') ecoMode.value = true
+    if (route.query.eco === '1') genMode.value = 'eco'
     await loadPresetIntoConfirm(presetSource.value)
     return
   }
@@ -542,7 +597,7 @@ async function handleFile(file: File) {
     if (seq !== runSeq) return // 解析期间已被取消
     pendingGen.value = { title: parsed.title, chapters: parsed.chapters, frontMatter: parsed.frontMatter }
     // 生成前预检平台 token 额度(不足时提示,不阻断)
-    quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco: ecoMode.value })
+    quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco: isEco.value })
     // 云端任务:保留原始文件(特征码由服务端按转换后 UTF-8 文本重算,命中缓存在上传后弹窗选择)
     cloudFile.value = file
     // 预览与编码识别:展示自动转换结果(识别编码 → UTF-8 文本前 400 字)
@@ -612,7 +667,7 @@ async function loadPresetIntoConfirm(presetId: string) {
     genState.value.title = useTitle
     // 先展示字数与预估消耗,用户确认后才进入生成管线
     genState.value.phase = 'confirm'
-    quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco: ecoMode.value })
+    quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco: isEco.value })
   } catch (err) {
     if (seq !== runSeq) return // 已取消或被新任务接管
     fromPreset.value = false
@@ -661,7 +716,7 @@ async function loadWorkIntoConfirm(workId: string) {
     genState.value.title = work.title
     // 先展示字数与预估消耗,用户确认后才进入生成管线
     genState.value.phase = 'confirm'
-    quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco: ecoMode.value })
+    quotaWarn.value = await checkWorldGenQuota(totalChars.value, { eco: isEco.value })
   } catch (err) {
     if (seq !== runSeq) return // 已取消或被新任务接管
     fromPreset.value = false
@@ -1074,46 +1129,70 @@ const features = [
             </span>
           </p>
 
-          <!-- 生成模式:完整(默认)/ 节约 -->
-          <div class="flex flex-col items-center gap-2">
+          <!-- 生成模式:完整(默认)/ 节约 / 自定义 -->
+          <div class="flex flex-col items-center gap-2.5">
             <div class="inline-flex items-center rounded-full border border-neutral-200 bg-neutral-50 p-1 dark:border-neutral-800 dark:bg-neutral-950/40">
               <button
+                v-for="m in ([{ key: 'full', label: '完整模式', icon: 'i-lucide-sparkles' }, { key: 'eco', label: '节约模式', icon: 'i-lucide-leaf' }, { key: 'custom', label: '自定义模式', icon: 'i-lucide-sliders-horizontal' }] as const)"
+                :key="m.key"
                 type="button"
                 class="inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-semibold transition-colors"
-                :class="!ecoMode
+                :class="genMode === m.key
                   ? 'bg-primary-500 text-white shadow-sm shadow-primary-500/30'
                   : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'"
-                @click="ecoMode = false"
+                @click="genMode = m.key"
               >
                 <UIcon
-                  name="i-lucide-sparkles"
+                  :name="m.icon"
                   class="size-3.5"
                 />
-                完整模式
-              </button>
-              <button
-                type="button"
-                class="inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-semibold transition-colors"
-                :class="ecoMode
-                  ? 'bg-primary-500 text-white shadow-sm shadow-primary-500/30'
-                  : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'"
-                @click="ecoMode = true"
-              >
-                <UIcon
-                  name="i-lucide-leaf"
-                  class="size-3.5"
-                />
-                节约模式
+                {{ m.label }}
               </button>
             </div>
             <p class="flex items-center gap-1.5 text-xs text-neutral-400 dark:text-neutral-500">
               <UIcon
-                :name="ecoMode ? 'i-lucide-leaf' : 'i-lucide-sparkles'"
+                :name="genMode === 'eco' ? 'i-lucide-leaf' : genMode === 'custom' ? 'i-lucide-sliders-horizontal' : 'i-lucide-sparkles'"
                 class="size-3.5"
               />
-              <span v-if="ecoMode">节约模式:跳过 AI 一致性检查与人物卡润色,仅提取核心设定,约省 15%~25% token;人物卡更朴素</span>
+              <span v-if="genMode === 'eco'">节约模式:跳过 AI 一致性检查与人物卡润色,仅提取核心设定,约省 15%~25% token;人物卡更朴素</span>
+              <span v-else-if="genMode === 'custom'">自定义模式:自由开关各 AI 步骤,按需控制消耗与还原度</span>
               <span v-else>完整模式:含一致性检查与 AI 润色的人物卡,世界观还原更全</span>
             </p>
+
+            <!-- 自定义模式:逐步骤开关(配置仅存本地,发起任务时上传) -->
+            <div
+              v-if="genMode === 'custom'"
+              class="w-full max-w-md rounded-xl border border-neutral-200/70 bg-neutral-50/80 p-3 text-left dark:border-neutral-800 dark:bg-neutral-900/40"
+            >
+              <p class="mb-2 flex items-center gap-1.5 text-xs font-medium text-neutral-500 dark:text-neutral-400">
+                <UIcon
+                  name="i-lucide-sliders-horizontal"
+                  class="size-3.5"
+                />
+                步骤开关(提取为必需步骤,固定开启)
+              </p>
+              <div class="flex flex-col gap-2.5">
+                <div
+                  v-for="s in stepDefs"
+                  :key="s.key"
+                  class="flex items-center justify-between gap-3"
+                >
+                  <div class="min-w-0">
+                    <p class="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                      {{ s.label }}
+                    </p>
+                    <p class="text-xs text-neutral-400">
+                      {{ s.desc }}
+                    </p>
+                  </div>
+                  <USwitch
+                    :model-value="stepSwitches[s.key]"
+                    color="primary"
+                    @update:model-value="(v: boolean) => toggleStep(s.key, v)"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="flex flex-wrap items-center justify-end gap-3">

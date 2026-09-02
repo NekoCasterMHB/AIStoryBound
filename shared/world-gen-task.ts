@@ -6,9 +6,50 @@
 import { CJK_TOKEN_PER_CHAR } from './token-estimate'
 import { DEFAULT_GEN_LIMITS } from './gen-limits'
 import type { GenLimits } from './gen-limits'
+import { ARC_CHARACTER_LIMIT } from './world-build'
 
-/** full=完整(提取+检查+AI成书)| eco=节约(无检查,人物卡本地直拼) */
-export type WorldGenMode = 'full' | 'eco'
+/** full=完整(提取+检查+AI成书)| eco=节约(无检查,人物卡本地直拼)| custom=按步骤开关自定义 */
+export type WorldGenMode = 'full' | 'eco' | 'custom'
+
+/**
+ * 自定义模式的步骤开关(full/eco 不使用;缺省全开)。
+ * 开关配置仅存浏览器本地 localStorage,发起任务时作为参数上传,任务行 payload 里持久化。
+ */
+export interface WorldGenStepSwitches {
+  /** 作者识别(正文/文件名正则未命中时的 AI 检索) */
+  author: boolean
+  /** 一致性检查(AI 逐冲突裁决) */
+  check: boolean
+  /** 人物卡 AI 润色(完整成书;关闭=轻量成书+本地直拼朴素卡) */
+  synth: boolean
+  /** 配角故事线(逐角色生成独立弧线) */
+  arcs: boolean
+}
+
+/** 自定义模式开关缺省值:全开 = 与完整模式一致 */
+export const DEFAULT_STEP_SWITCHES: WorldGenStepSwitches = {
+  author: true,
+  check: true,
+  synth: true,
+  arcs: true
+}
+
+/** 任务行 payload JSON → 步骤开关;非法/缺失回退全开 */
+export function parseWorldGenSteps(payload: string | null | undefined): WorldGenStepSwitches {
+  if (!payload) return { ...DEFAULT_STEP_SWITCHES }
+  try {
+    const raw = JSON.parse(payload) as Partial<WorldGenStepSwitches> | null
+    if (!raw || typeof raw !== 'object') return { ...DEFAULT_STEP_SWITCHES }
+    return {
+      author: typeof raw.author === 'boolean' ? raw.author : DEFAULT_STEP_SWITCHES.author,
+      check: typeof raw.check === 'boolean' ? raw.check : DEFAULT_STEP_SWITCHES.check,
+      synth: typeof raw.synth === 'boolean' ? raw.synth : DEFAULT_STEP_SWITCHES.synth,
+      arcs: typeof raw.arcs === 'boolean' ? raw.arcs : DEFAULT_STEP_SWITCHES.arcs
+    }
+  } catch {
+    return { ...DEFAULT_STEP_SWITCHES }
+  }
+}
 
 export type WorldGenTaskStatus = 'uploaded' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
 
@@ -92,6 +133,16 @@ const ECO_SYNTH_INPUT_TOKEN_RATIO = 0.06
 const ECO_SYNTH_OUTPUT_TOKENS = 800
 /** 作者识别(正文抽样输入 + 未命中时联网检索,输出极少) */
 const AUTHOR_TOKENS = 1200
+/** 配角故事线:每候选角色的输入开销(tokens;主线 beats 节选 + 角色素材 + 登场段原文窗口 3×2500 字) */
+const ARCS_UNIT_INPUT_TOKENS = 4000
+/** 配角故事线:每候选角色的典型输出(tokens;单条独立弧线 JSON,覆盖全部登场段) */
+const ARCS_UNIT_OUTPUT_TOKENS = 1500
+/** 配角故事线候选数量:登场 2 段以上角色数,按全书规模估算(有界于 ARC_CHARACTER_LIMIT;登场角色随书长亚线性) */
+function arcsCandidateCount(totalChars: number): number {
+  // 粗模型:约每 4000 字一个登场角色,候选 ≈ 登场角色的一半(登场≥2 段),封顶 10
+  const candidates = Math.max(1, Math.round(totalChars / 4000 / 2))
+  return Math.min(ARC_CHARACTER_LIMIT, candidates)
+}
 /** 综合余量:失败重试 + 切段重叠(默认重叠 1000 字/单元 ≈ 10% 输入)等(预检宁高勿低) */
 const SAFETY_FACTOR = 1.1
 
@@ -100,25 +151,42 @@ const SAFETY_FACTOR = 1.1
  * (提取全量正文 → 一致性检查压缩实体 → 成书头部卡片 + 作者识别),随生成参数收敛。
  * 正文按 CJK_TOKEN_PER_CHAR(0.7 token/汉字,实测主流 tokenizer 校准)折算;
  * 典型结果 ≈ 全书字数的 1.0~1.4 倍(节约模式更低),与真实入账同量级。
+ * steps 为自定义模式的步骤开关(仅 mode=custom 时使用):关掉的步骤不计入,
+ * synth 关闭=轻量成书(同节约模式成书项),arcs 开启时按候选角色上限计入。
  */
-export function estimateWorldGenTokens(totalChars: number, eco = false, limits: GenLimits = DEFAULT_GEN_LIMITS): number {
+export function estimateWorldGenTokens(
+  totalChars: number,
+  eco = false,
+  limits: GenLimits = DEFAULT_GEN_LIMITS,
+  steps?: WorldGenStepSwitches | null
+): number {
   if (!Number.isFinite(totalChars) || totalChars <= 0) return 1
   const unitMax = Math.max(1000, limits.unitMaxChars || DEFAULT_GEN_LIMITS.unitMaxChars)
   const units = Math.max(1, Math.ceil(totalChars / unitMax))
-  // 提取:输入 = 全书正文 + 每单元提示词开销;输出 = 每单元典型提取 JSON
+  // 提取:输入 = 全书正文 + 每单元提示词开销;输出 = 每单元典型提取 JSON(自定义模式提取必做)
   const textTokens = Math.ceil(totalChars * CJK_TOKEN_PER_CHAR)
   const extract = textTokens
     + units * EXTRACT_INPUT_OVERHEAD_TOKENS
     + units * (eco ? ECO_EXTRACT_OUTPUT_TOKENS : EXTRACT_OUTPUT_TOKENS)
-  // 一致性检查(节约模式跳过):输入 = 压缩实体库 + 指令,输出 = 批注/新冲突
-  const check = eco
-    ? 0
-    : Math.ceil(textTokens * CHECK_INPUT_TOKEN_RATIO) + CHECK_INPUT_OVERHEAD_TOKENS + CHECK_OUTPUT_TOKENS
-  // 成书:输入 = 头部卡片素材 + 指令,输出 = 卡片/概览
-  const synth = Math.ceil(textTokens * (eco ? ECO_SYNTH_INPUT_TOKEN_RATIO : SYNTH_INPUT_TOKEN_RATIO))
+  // 一致性检查(节约模式或自定义关闭时跳过):输入 = 压缩实体库 + 指令,输出 = 批注/新冲突
+  const checkOn = !eco && (steps ? steps.check : true)
+  const check = checkOn
+    ? Math.ceil(textTokens * CHECK_INPUT_TOKEN_RATIO) + CHECK_INPUT_OVERHEAD_TOKENS + CHECK_OUTPUT_TOKENS
+    : 0
+  // 成书:完整(或自定义开启)= AI 完整卡;节约/自定义关闭 = 轻量成书 + 本地直拼
+  const synthFull = !eco && (steps ? steps.synth : true)
+  const synth = Math.ceil(textTokens * (synthFull ? SYNTH_INPUT_TOKEN_RATIO : ECO_SYNTH_INPUT_TOKEN_RATIO))
     + SYNTH_INPUT_OVERHEAD_TOKENS
-    + (eco ? ECO_SYNTH_OUTPUT_TOKENS : SYNTH_OUTPUT_TOKENS)
-  return Math.max(1, Math.round((extract + check + synth + AUTHOR_TOKENS) * SAFETY_FACTOR))
+    + (synthFull ? SYNTH_OUTPUT_TOKENS : ECO_SYNTH_OUTPUT_TOKENS)
+  // 作者识别(自定义关闭时跳过):正文抽样输入 + 未命中时联网检索,输出极少
+  const author = steps && !steps.author ? 0 : AUTHOR_TOKENS
+  // 配角故事线(仅自定义开启或完整模式计入;eco 与自定义关闭为 0):
+  // 每候选角色一次调用(输入含主线 beats 节选 + 角色素材 + 登场段原文窗口,输出独立弧线)
+  const arcsOn = !eco && (steps ? steps.arcs : true)
+  const arcs = arcsOn
+    ? arcsCandidateCount(totalChars) * (ARCS_UNIT_INPUT_TOKENS + ARCS_UNIT_OUTPUT_TOKENS)
+    : 0
+  return Math.max(1, Math.round((extract + check + synth + author + arcs) * SAFETY_FACTOR))
 }
 
 /** 拉取共享缓存的价格:记录消耗的一半(向下取整;0 消耗的缓存免费) */

@@ -9,7 +9,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers'
 import {
   createWorldGenCtx, extractUnitAt, isDeployResetError, markTask, markTaskFailed, markTaskPaused, stepAuthorAi,
-  stepCheck, stepFinalize, stepMerge, stepParseAndPlan, stepSupplementArcs, stepSynthesize, requireTask,
+  stepCheck, stepEnabled, stepFinalize, stepMerge, stepParseAndPlan, stepSupplementArcs, stepSynthesize, requireTask,
   WorldGenCancelledError, InsufficientTokensError, EXTRACT_CONCURRENCY
 } from '../utils/world-gen-pipeline'
 import type { WorldGenEnv } from '../utils/world-gen-pipeline'
@@ -41,11 +41,11 @@ export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowPa
         retries: { limit: 3, delay: '5 second', backoff: 'exponential' }
       }, () => stepParseAndPlan(ctx))
 
-      // 3) 分块提取:author 识别(正则未命中时)与第一批并发,后续批次并发 4 分批
+      // 3) 分块提取:author 识别(开关开启且正则未命中时)与第一批并发,后续批次并发 4 分批
       //    (每单元独立 step,重试互不影响)
       const firstBatch = plan.units.map((_, i) => i).slice(0, EXTRACT_CONCURRENCY)
       await Promise.all([
-        ...(parsed.author
+        ...(parsed.author || !stepEnabled(task, 'author')
           ? []
           : [
               step.do('author-ai', { retries: { limit: 1, delay: '5 second' } }, () => stepAuthorAi(ctx))
@@ -70,18 +70,18 @@ export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowPa
         retries: { limit: 3, delay: '10 second', backoff: 'exponential' }
       }, () => stepMerge(ctx, plan))
 
-      // 6) 一致性检查(完整模式;失败降级为告警,不中止)
-      if (task.mode !== 'eco') {
+      // 6) 一致性检查(开关开启时;失败降级为告警,不中止)
+      if (stepEnabled(task, 'check')) {
         await step.do('check', { retries: { limit: 1, delay: '10 second' } }, () => stepCheck(ctx))
       }
 
-      // 7) 成书(瞬时错误由 step 重试兜底)
+      // 7) 成书(瞬时错误由 step 重试兜底;custom 关润色时内部走轻量成书)
       await step.do('synthesize', {
         retries: { limit: 3, delay: '15 second', backoff: 'exponential' }
       }, () => stepSynthesize(ctx))
 
-      // 7.5) 配角独立故事线(完整模式;逐单元生成,写 scratch 供 finalize 落盘;失败降级不中止)
-      if (task.mode !== 'eco') {
+      // 7.5) 配角独立故事线(开关开启时;逐单元生成,写 scratch 供 finalize 落盘;失败降级不中止)
+      if (stepEnabled(task, 'arcs')) {
         await step.do('supplement-arcs', { retries: { limit: 1, delay: '10 second' } }, () => stepSupplementArcs(ctx))
       }
 

@@ -674,10 +674,15 @@ function fmtBytes(n?: number | null) {
   return `${Math.round(n / 1024)} KB`
 }
 
-// ---- 继续游戏:作品卡片 → 选角色(模态框)→ 该角色全部存档(新页面) ----
+// ---- 继续游戏:作品卡片 → 模态框(按角色分组列出存档,每档可继续/删除)+ 重新开局 ----
 const continueOpen = ref(false)
 const continueWorkTitle = ref('')
+const continueWorkId = ref<string | null>(null)
 const continueGames = ref<LocalGame[]>([])
+/** 逐档删除确认的目标存档 id(confirmDeleteId 范式,null=未在确认) */
+const deleteSaveId = ref<string | null>(null)
+/** 重新开局确认弹窗 */
+const restartOpen = ref(false)
 
 /** 该作品是否有本地游戏会话(有则作品卡片显示「继续游戏」按钮) */
 function hasGamesFor(workId: string): boolean {
@@ -686,6 +691,7 @@ function hasGamesFor(workId: string): boolean {
 
 function openContinue(w: LocalWork) {
   continueWorkTitle.value = w.title
+  continueWorkId.value = w.id
   continueGames.value = games.value.filter(g => g.workId === w.id)
   continueOpen.value = true
 }
@@ -740,7 +746,7 @@ function workMetaLine(w: LocalWork): string {
   return parts.join(' · ')
 }
 
-/** 该作品有存档的角色(按最后游玩时间倒序),供模态框选择 */
+/** 该作品有存档的角色分组(组内按最后游玩倒序的存档列表),供模态框选择/删除 */
 const continueRoles = computed(() => {
   const byChar = new Map<string, LocalGame[]>()
   for (const g of continueGames.value) {
@@ -749,19 +755,73 @@ const continueRoles = computed(() => {
     byChar.set(g.characterName, list)
   }
   return [...byChar.entries()]
-    .map(([name, list]) => ({
-      name,
-      count: list.length,
-      lastAt: list.reduce((mx, g) => (g.updatedAt > mx ? g.updatedAt : mx), '')
-    }))
+    .map(([name, list]) => {
+      const saves = list.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      return {
+        name,
+        count: list.length,
+        lastAt: saves[0]?.updatedAt ?? '',
+        saves
+      }
+    })
     .sort((a, b) => b.lastAt.localeCompare(a.lastAt))
 })
 
-function pickRole(name: string) {
-  const id = continueGames.value.find(g => g.characterName === name)?.workId
+function continueTo(g: LocalGame) {
   continueOpen.value = false
-  if (!id) return
-  navigateTo(`/games/continue?workId=${id}&character=${encodeURIComponent(name)}`)
+  navigateTo(`/games/${g.id}`)
+}
+
+/** 进度显示:优先段号;旧存档回退解析旧 currentChapter 字符串(如「第3段」),否则「—」 */
+function saveProgress(g: LocalGame): string {
+  if (typeof g.currentBeat === 'number' && g.currentBeat >= 0) return `第${g.currentBeat + 1}段`
+  const legacy = (g as { currentChapter?: string | null }).currentChapter
+  return legacy?.match(/^第\d+段/) ? legacy : '—'
+}
+
+const deleteSaveTarget = computed(() =>
+  deleteSaveId.value ? continueGames.value.find(g => g.id === deleteSaveId.value) ?? null : null)
+
+async function doDeleteSave() {
+  const id = deleteSaveId.value
+  const target = deleteSaveTarget.value
+  deleteSaveId.value = null
+  if (!id || !target) return
+  try {
+    await deleteGamePoints(id).catch(() => {})
+    await deleteLocalGame(id)
+    continueGames.value = continueGames.value.filter(g => g.id !== id)
+    await refreshLocal()
+    toast.add({ title: '已删除存档', description: `「${target.playerName}」的这局存档已移除`, color: 'success' })
+  } catch (e) {
+    toast.add({ title: '删除失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  }
+}
+
+const restartSaveCount = computed(() => continueGames.value.length)
+
+async function confirmRestartContinue() {
+  const workId = continueWorkId.value
+  if (!workId) return
+  const list = continueGames.value
+  restartOpen.value = false
+  try {
+    for (const g of list) {
+      await deleteGamePoints(g.id).catch(() => {})
+      await deleteLocalGame(g.id).catch(() => {})
+    }
+    continueGames.value = []
+    await refreshLocal()
+    toast.add({
+      title: '已重新开始',
+      description: `《${continueWorkTitle.value}》${list.length ? `的 ${list.length} 局存档已删除,` : ''}请重新选角开局`,
+      color: 'success'
+    })
+    continueOpen.value = false
+    navigateTo(`/play/${workId}`)
+  } catch (e) {
+    toast.add({ title: '重新开始失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  }
 }
 
 const shelfTabs = ref<TabsItem[]>([
@@ -1806,7 +1866,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       </template>
     </UModal>
 
-    <!-- 继续游戏:选择角色(该作品有会话的角色) -->
+    <!-- 继续游戏:按角色分组列出存档(每档可继续/删除),顶部可重新开局 -->
     <UModal
       :open="continueOpen"
       @update:open="continueOpen = $event"
@@ -1822,28 +1882,142 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       </template>
       <template #body>
         <p class="text-xs text-neutral-500">
-          《{{ continueWorkTitle }}》 · 选择要续玩的角色
+          《{{ continueWorkTitle }}》 · 选择要续玩的存档
         </p>
-        <div class="mt-3 flex flex-col gap-2">
-          <button
-            v-for="c in continueRoles"
-            :key="c.name"
-            class="flex items-center justify-between gap-2 rounded-xl border border-neutral-200 px-3 py-2.5 text-left transition hover:border-primary-400 dark:border-neutral-700"
-            @click="pickRole(c.name)"
+        <!-- 重新开局:删全部存档回选角页 -->
+        <div class="mt-3 flex items-center justify-between gap-2 rounded-xl border border-dashed border-error-300 bg-error-500/5 px-3 py-2.5 dark:border-error-700">
+          <div class="min-w-0">
+            <p class="text-sm font-semibold">
+              重新开始本作品
+            </p>
+            <p class="text-xs text-neutral-500">
+              删除全部存档并回到选角页重新开局
+            </p>
+          </div>
+          <UButton
+            label="重新开局"
+            icon="i-lucide-rotate-ccw"
+            color="error"
+            variant="soft"
+            size="sm"
+            @click="restartOpen = true"
+          />
+        </div>
+        <div
+          v-if="continueRoles.length"
+          class="mt-3 flex flex-col gap-3"
+        >
+          <div
+            v-for="role in continueRoles"
+            :key="role.name"
+            class="flex flex-col gap-2"
           >
-            <div class="min-w-0">
-              <p class="truncate text-sm font-semibold">
-                {{ c.name }}
-              </p>
-              <p class="text-xs text-neutral-500">
-                {{ c.count }} 局存档 · 最后 {{ fmtTime(c.lastAt) }}
-              </p>
+            <p class="text-xs font-medium text-neutral-500">
+              {{ role.name }} · {{ role.count }} 局存档
+            </p>
+            <div
+              v-for="g in role.saves"
+              :key="g.id"
+              class="flex items-center justify-between gap-2 rounded-xl border border-neutral-200 px-3 py-2.5 dark:border-neutral-700"
+            >
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold">
+                  你是「{{ g.playerName }}」
+                </p>
+                <p class="text-xs text-neutral-500">
+                  {{ saveProgress(g) }} · {{ g.messages.length }} 条剧情 · 最后 {{ fmtTime(g.updatedAt) }}
+                </p>
+              </div>
+              <div class="flex shrink-0 items-center gap-1.5">
+                <UButton
+                  label="继续"
+                  icon="i-lucide-play"
+                  color="primary"
+                  size="sm"
+                  @click="continueTo(g)"
+                />
+                <UButton
+                  label="删除"
+                  icon="i-lucide-trash-2"
+                  color="error"
+                  variant="outline"
+                  size="sm"
+                  @click="deleteSaveId = g.id"
+                />
+              </div>
             </div>
-            <UIcon
-              name="i-lucide-chevron-right"
-              class="size-4 shrink-0 text-neutral-400"
-            />
-          </button>
+          </div>
+        </div>
+        <p
+          v-else
+          class="mt-3 text-center text-sm text-neutral-400"
+        >
+          该作品暂无存档,可重新开局
+        </p>
+      </template>
+    </UModal>
+
+    <!-- 删除单档确认 -->
+    <UModal
+      :open="deleteSaveId !== null"
+      @update:open="deleteSaveId = null"
+    >
+      <template #title>
+        删除存档
+      </template>
+      <template #body>
+        <p class="text-sm text-neutral-600 dark:text-neutral-300">
+          确定删除《{{ continueWorkTitle }}》中「{{ deleteSaveTarget?.playerName }}」的这局存档?
+          删除后不可恢复。
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="取消"
+            color="neutral"
+            variant="outline"
+            @click="deleteSaveId = null"
+          />
+          <UButton
+            label="删除"
+            icon="i-lucide-trash-2"
+            color="error"
+            @click="doDeleteSave"
+          />
+        </div>
+      </template>
+    </UModal>
+
+    <!-- 重新开局确认 -->
+    <UModal
+      v-model:open="restartOpen"
+      title="重新开始本作品"
+      description="此操作不可撤销"
+    >
+      <template #body>
+        <p class="text-sm text-neutral-600 dark:text-neutral-300">
+          确定重新开始《{{ continueWorkTitle }}》?
+          <template v-if="restartSaveCount">
+            将删除全部 {{ restartSaveCount }} 局存档并回到选角页重新开局。
+          </template>
+          存档只保存在本机,删除后无法恢复。
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="取消"
+            color="neutral"
+            variant="outline"
+            @click="restartOpen = false"
+          />
+          <UButton
+            label="重新开始"
+            icon="i-lucide-rotate-ccw"
+            color="error"
+            @click="confirmRestartContinue"
+          />
         </div>
       </template>
     </UModal>

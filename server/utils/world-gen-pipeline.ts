@@ -33,6 +33,7 @@ import {
 } from '../../shared/world-build'
 import type { ExtractUnit, WorldLocalSummary } from '../../shared/world-build'
 import type { WorldGenMode, WorldGenStageDetail } from '../../shared/world-gen-task'
+import { parseWorldGenSteps } from '../../shared/world-gen-task'
 import { billedTokens } from '../../shared/token-estimate'
 import { parseNovelBytes } from './novel-parser'
 
@@ -404,14 +405,33 @@ export async function stepParseSource(ctx: WorldGenCtx): Promise<ParseOutcome> {
   return { title: parsed.title || task.title || '', encoding: parsed.encoding, author, totalChars: parsed.totalChars }
 }
 
+/** 按模式/开关判断某 AI 步骤是否执行:full=全开,eco=仅 author(其余跳过),custom=按 payload 开关 */
+export function stepEnabled(task: Pick<WorldGenTaskRow, 'mode' | 'payload'>, step: 'author' | 'check' | 'synth' | 'arcs'): boolean {
+  if (task.mode === 'eco') return step === 'author'
+  if (task.mode === 'custom') {
+    const steps = parseWorldGenSteps(task.payload)
+    return steps[step]
+  }
+  return true // full
+}
+
 /** 作者 AI 兜底:正则未识别时,用书名页片段请模型判断(可失败,失败仅视为未识别) */
 export async function stepAuthorAi(ctx: WorldGenCtx): Promise<string | null> {
   const task = await requireTask(ctx)
   await assertNotCancelled(task)
   if (task.author) return task.author
+  // 持久化检查点:已识别过直接跳过(重跑/续跑不重复扣费)
+  const done = await getScratch<{ author: string | null }>(ctx, 'author-done')
+  if (done) {
+    if (done.author && done.author !== task.author) await markTask(ctx, { author: done.author })
+    return done.author
+  }
   const text = await fetchSourceText(ctx, task)
   const front = extractFrontMatter(text, 3000)
-  if (!front.trim()) return null
+  if (!front.trim()) {
+    await putScratch(ctx, 'author-done', { author: null })
+    return null
+  }
   try {
     const relay = await relayOf(ctx, task)
     const { data, usage } = await callAiJson(relay, {
@@ -425,9 +445,11 @@ export async function stepAuthorAi(ctx: WorldGenCtx): Promise<string | null> {
     await recordTaskUsage(ctx, task, usage)
     const author = typeof (data as { author?: unknown })?.author === 'string' ? (data as { author: string }).author.trim() : ''
     if (author && author !== 'null' && author.length <= 100) {
+      await putScratch(ctx, 'author-done', { author })
       await markTask(ctx, { author })
       return author
     }
+    await putScratch(ctx, 'author-done', { author: null })
   } catch (e) {
     // 余额不足为致命错误:终止任务;其余作者识别失败不中止管线
     if (e instanceof InsufficientTokensError) throw e
@@ -630,7 +652,8 @@ export async function stepMerge(ctx: WorldGenCtx, planOverride?: UnitPlan): Prom
 
   const merged: MergedState = { entities, conflicts, warnings, storyline, localSummary }
   await putScratch(ctx, 'merged', merged)
-  await markTask(ctx, { stage: task.mode === 'eco' ? 'synthesize' : 'check' })
+  // 下一阶段:节约/自定义关 check 时直接进入成书,避免进度停在被跳过的检查阶段
+  await markTask(ctx, { stage: stepEnabled(task, 'check') ? 'check' : 'synthesize' })
   return { okUnits, totalUnits: plan.length, characters: entities.characters.length, storyline: storyline.length, warnings }
 }
 
@@ -642,6 +665,13 @@ export async function stepCheck(ctx: WorldGenCtx): Promise<{ warnings: string[] 
   if (!merged) throw new Error('合并结果缺失,无法检查')
   const { entities, conflicts, warnings } = merged
   if (entities.characters.length + entities.locations.length + entities.world_rules.length === 0) {
+    await markTask(ctx, { stage: 'synthesize' })
+    return { warnings }
+  }
+  // 持久化检查点:检查已完成(结果已并入 merged)直接跳过,重跑/续跑不重复扣费
+  const done = await getScratch<{ ok: true }>(ctx, 'check-done')
+  if (done) {
+    await putScratch(ctx, 'merged', merged)
     await markTask(ctx, { stage: 'synthesize' })
     return { warnings }
   }
@@ -692,23 +722,31 @@ export async function stepCheck(ctx: WorldGenCtx): Promise<{ warnings: string[] 
     warnings.push(`一致性检查失败: ${(e as Error).message}(仅保留代码检测冲突)`)
   }
   await putScratch(ctx, 'merged', merged)
+  await putScratch(ctx, 'check-done', { ok: true })
   await markTask(ctx, { stage: 'synthesize' })
   return { warnings }
 }
 
-/** 步骤 6:成书(完整=AI 速览+人物卡;节约=轻量概览+本地直拼卡)→ scratch/overlay.json */
+/** 步骤 6:成书(完整=AI 速览+人物卡;节约/自定义关润色=轻量概览+本地直拼卡)→ scratch/overlay.json */
 export async function stepSynthesize(ctx: WorldGenCtx): Promise<{ cardCount: number, title: string }> {
   const task = await requireTask(ctx)
   await assertNotCancelled(task)
+  // 持久化检查点:成书已完成直接跳过,重跑/续跑不重复扣费
+  const existing = await getScratch<WorldOverlay>(ctx, 'overlay')
+  if (existing) {
+    await markTask(ctx, { stage: 'done' })
+    return { cardCount: (existing.characters ?? []).length, title: existing.title || task.title || '小说' }
+  }
   const merged = await getScratch<MergedState>(ctx, 'merged')
   if (!merged) throw new Error('合并结果缺失,无法成书')
   const { entities, conflicts, warnings, localSummary } = merged
   const title = task.title || '小说'
   const relay = await relayOf(ctx, task)
-  const eco = task.mode === 'eco'
+  // 轻量成书:节约模式,或自定义模式关闭了人物卡 AI 润色(行为与节约一致:轻量概览 + 本地直拼卡)
+  const synthLight = task.mode === 'eco' || (task.mode === 'custom' && !stepEnabled(task, 'synth'))
 
   let overlay: WorldOverlay
-  if (eco) {
+  if (synthLight) {
     let ecoSynth: (WorldOverlay & { roles?: { name?: string, role?: string }[] }) | null = null
     try {
       const { data, usage } = await callAiJson(relay, {
@@ -784,8 +822,21 @@ function parseArcsPayload(raw: string | null): ArcsTaskPayload | null {
  *  - 每单元一次 AI 调用,成功即原子扣费(余额不足抛 InsufficientTokensError → paused);
  *  - 单单元失败(非余额)降级跳过并记 warning;全部失败 → 抛错判 failed;至少 1 条成功 → 完成;
  *  - 结果写 scratch arcs.json(world 任务由 finalize 落盘成书,arcs 任务由 /tasks/[id]/arcs 读取);
+ *  - 单元级检查点:每候选结果落 scratch arc-unit-<i>.json,重跑/续跑已完成单元直接跳过,不重复扣费;
  *  - 每单元注入该角色前几个登场段的原文节选,模型据此还原细节(忠实度接近按原文提取)。
  */
+
+/** 配角故事线完成数刷新(按 scratch 单元检查点文件数,重跑时进度单调不减) */
+async function bumpArcsProgress(ctx: WorldGenCtx, totalUnits: number): Promise<void> {
+  const task = await requireTask(ctx)
+  const detail = parseStageDetail(task.stageDetail)
+  let done = 0
+  for (let i = 0; i < totalUnits; i++) {
+    if (await getScratch<CharacterArc>(ctx, `arc-unit-${i}`)) done++
+  }
+  await markTask(ctx, { stageDetail: JSON.stringify({ doneUnits: done, totalUnits, plan: detail.plan }) })
+}
+
 export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: number }> {
   const task = await requireTask(ctx)
   await assertNotCancelled(task)
@@ -840,9 +891,17 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
   const warnings: string[] = []
   const relay = await relayOf(ctx, task)
   // 单 step 内并发(与提取同款批量);arcs 数组为同执行环境共享内存,顺序 push 无竞态。
-  // 未完成单元不做持久化检查点:重跑会重跑全部单元并重新扣费,与「续跑重跑并重扣费」语义一致。
+  // 单元级持久化检查点:每个候选的生成结果落 R2 scratch(arc-unit-<i>.json),重跑/续跑时已完成单元直接跳过,不重复扣费。
   await pool(candidates.map((_, i) => i), EXTRACT_CONCURRENCY, async (i) => {
     const candidate = candidates[i]!
+    const arcKey = `arc-unit-${i}`
+    // 检查点命中:已完成单元直接读回结果聚合
+    const doneArc = await getScratch<CharacterArc>(ctx, arcKey)
+    if (doneArc) {
+      arcs.push(doneArc)
+      await bumpArcsProgress(ctx, totalUnits)
+      return
+    }
     try {
       // 不设 maxTokens:输出上限交给上游模型自身,避免登场段多时被低上限截断丢段
       const { data, usage } = await callAiJson(relay, {
@@ -852,7 +911,12 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
       // 先扣费再落结果:余额不足抛出时该条结果不计入,续跑重跑并重新扣费,不漏账
       await recordTaskUsage(ctx, task, usage)
       const normalized = normalizeCharacterArcs(data, storyline, entities.characters)
-      if (normalized.length > 0) arcs.push(normalized[0]!)
+      if (normalized.length > 0) {
+        const arc = normalized[0]!
+        await putScratch(ctx, arcKey, arc)
+        arcs.push(arc)
+      }
+      await bumpArcsProgress(ctx, totalUnits)
     } catch (e) {
       if (e instanceof InsufficientTokensError) throw e
       warnings.push(`「${candidate.card.name}」故事线生成失败:${e instanceof Error ? e.message : String(e)}`)
@@ -905,7 +969,7 @@ export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: strin
   if (!merged || !overlay) throw new Error('成书中间产物缺失,无法落盘')
   const fresh = await requireTask(ctx)
 
-  const mode: WorldGenMode = task.mode === 'eco' ? 'eco' : 'full'
+  const mode: WorldGenMode = task.mode === 'eco' ? 'eco' : task.mode === 'custom' ? 'custom' : 'full'
   const resultKey = worldCacheObjectKey(task.sourceHash, mode)
   const characterArcs = await getScratch<CharacterArc[]>(ctx, 'arcs') ?? []
   const payload: WorldJsonPayload = {
@@ -928,31 +992,35 @@ export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: strin
   }
   await ctx.bucket.put(resultKey, JSON.stringify(payload))
 
-  // 缓存入库:同一 (hash, mode) 更新为最新成书(用户选择重新生成时按预期刷新缓存与消耗记录)
-  const cacheId = uuid()
-  await ctx.db.insert(worldCache).values({
-    id: cacheId,
-    sourceHash: task.sourceHash,
-    mode,
-    fileSize: task.fileSize,
-    title: payload.title,
-    author: task.author ?? null,
-    worldKey: resultKey,
-    tokensUsed: payload.tokensUsed,
-    createdBy: task.userId,
-    createdAt: new Date(),
-    updatedAt: new Date()
-  }).onConflictDoUpdate({
-    target: [worldCache.sourceHash, worldCache.mode],
-    set: {
-      worldKey: resultKey,
-      tokensUsed: payload.tokensUsed,
+  // 缓存入库:同一 (hash, mode) 更新为最新成书(用户选择重新生成时按预期刷新缓存与消耗记录)。
+  // 自定义模式不参与共享缓存(开关组合与 full/eco 缓存桶不等价),跳过入库,但成书 R2 文件仍保留供本任务下载。
+  let cacheId: string | null = null
+  if (task.mode !== 'custom') {
+    cacheId = uuid()
+    await ctx.db.insert(worldCache).values({
+      id: cacheId,
+      sourceHash: task.sourceHash,
+      mode,
+      fileSize: task.fileSize,
       title: payload.title,
       author: task.author ?? null,
-      fileSize: task.fileSize,
+      worldKey: resultKey,
+      tokensUsed: payload.tokensUsed,
+      createdBy: task.userId,
+      createdAt: new Date(),
       updatedAt: new Date()
-    }
-  }).run()
+    }).onConflictDoUpdate({
+      target: [worldCache.sourceHash, worldCache.mode],
+      set: {
+        worldKey: resultKey,
+        tokensUsed: payload.tokensUsed,
+        title: payload.title,
+        author: task.author ?? null,
+        fileSize: task.fileSize,
+        updatedAt: new Date()
+      }
+    }).run()
+  }
 
   await markTask(ctx, {
     status: 'completed',
@@ -963,9 +1031,14 @@ export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: strin
   await settleTaskBilling(ctx)
   await clearTaskKey(ctx)
   await cleanupScratch(ctx)
-  const hit = await ctx.db.select({ id: worldCache.id }).from(worldCache)
-    .where(and(eq(worldCache.sourceHash, task.sourceHash), eq(worldCache.mode, mode))).get()
-  return { resultKey, cacheId: hit?.id ?? cacheId }
+  // 自定义模式不参与共享缓存,直接返回 null
+  let cacheIdOut: string | null = cacheId
+  if (task.mode !== 'custom') {
+    const hit = await ctx.db.select({ id: worldCache.id }).from(worldCache)
+      .where(and(eq(worldCache.sourceHash, task.sourceHash), eq(worldCache.mode, mode))).get()
+    cacheIdOut = hit?.id ?? cacheId
+  }
+  return { resultKey, cacheId: cacheIdOut }
 }
 
 // ---- inline 兜底执行(本地 dev 无 Workflow binding 时,waitUntil 内顺序跑同一套步骤) ----
@@ -996,19 +1069,19 @@ export async function runWorldGenPipelineInline(ctx: WorldGenCtx): Promise<void>
       return
     }
     const { parsed, plan } = await stepParseAndPlan(ctx)
-    // author 识别(正则未命中时)与第一批提取并行,后续批次照旧
+    // author 识别(开关开启且正则未命中时)与第一批提取并行,后续批次照旧
     const firstBatch = plan.units.map((_, i) => i).slice(0, EXTRACT_CONCURRENCY)
     await Promise.all([
-      ...(parsed.author ? [] : [stepAuthorAi(ctx)]),
+      ...(parsed.author || !stepEnabled(task, 'author') ? [] : [stepAuthorAi(ctx)]),
       ...firstBatch.map(i => extractUnitAt(ctx, plan, i))
     ])
     await pool(plan.units.map((_, i) => i).slice(firstBatch.length), EXTRACT_CONCURRENCY, async (i) => {
       await extractUnitAt(ctx, plan, i)
     })
     await stepMerge(ctx, plan)
-    if (task.mode !== 'eco') await stepCheck(ctx)
+    if (stepEnabled(task, 'check')) await stepCheck(ctx)
     await stepSynthesize(ctx)
-    if (task.mode !== 'eco') await stepSupplementArcs(ctx)
+    if (stepEnabled(task, 'arcs')) await stepSupplementArcs(ctx)
     await stepFinalize(ctx)
   } catch (e) {
     if (e instanceof WorldGenCancelledError) return

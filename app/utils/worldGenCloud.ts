@@ -2,12 +2,12 @@
 // 云端世界生成任务的客户端编排:文件哈希 → 查重 → 上传建任务 → 轮询进度 → 下载 zip 自动安装。
 // 服务端负责全部 AI 调用(Workflows),本模块只做传输、进度展示与结果安装;
 // 自建 key 配置随上传表单上送云端加密暂存(任务结束即删),任务执行期间无需客户端在线。
-import type { WorldCacheHit, WorldGenMode, WorldGenTaskDTO } from '#shared/world-gen-task'
+import type { WorldCacheHit, WorldGenMode, WorldGenStepSwitches, WorldGenTaskDTO } from '#shared/world-gen-task'
 import { saveWork, getWorkBySourceTask } from './worldGen'
 import { importWorkFromBytes } from './shareZip'
 import type { CharacterArc, LocalWork } from '#shared/novel'
 
-export type { WorldCacheHit, WorldGenMode, WorldGenTaskDTO }
+export type { WorldCacheHit, WorldGenMode, WorldGenStepSwitches, WorldGenTaskDTO }
 
 export const WORLD_GEN_TASKS_URL = '/api/world-gen/tasks'
 
@@ -37,6 +37,8 @@ export async function checkWorldDuplicate(hash: string, mode: WorldGenMode): Pro
 export interface UploadOptions {
   file: File
   mode: WorldGenMode
+  /** 自定义模式的步骤开关(仅 mode=custom 使用;随任务上送,服务端持久化到任务行 payload) */
+  steps?: WorldGenStepSwitches | null
   /** 客户端解析出的正文字数(服务端预授权估算用) */
   charCount: number
   /** 自建 key 配置(浏览器本地已验证的激活配置;上送云端加密暂存,任务结束即删) */
@@ -58,6 +60,7 @@ export function uploadWorldGenTask(opts: UploadOptions): Promise<UploadWorldGenR
   form.append('file', opts.file, opts.file.name)
   form.append('mode', opts.mode)
   form.append('charCount', String(Math.max(0, Math.round(opts.charCount))))
+  if (opts.mode === 'custom' && opts.steps) form.append('steps', JSON.stringify(opts.steps))
   if (opts.config) form.append('config', JSON.stringify(opts.config))
   if (opts.forceRegenerate) form.append('forceRegenerate', '1')
 
