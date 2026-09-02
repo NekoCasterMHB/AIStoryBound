@@ -23,7 +23,8 @@ const items = computed<NavigationMenuItem[]>(() => [
   { label: '小说审核', icon: 'i-lucide-book-open', to: '/admin/novels', active: route.path === '/admin/novels' },
   { label: '需求管理', icon: 'i-lucide-list-checks', to: '/admin/requests', active: route.path === '/admin/requests' },
   { label: '缓存管理', icon: 'i-lucide-database', to: '/admin/cache', active: route.path === '/admin/cache' },
-  { label: '公告管理', icon: 'i-lucide-megaphone', to: '/admin/announcements', active: route.path === '/admin/announcements' }
+  { label: '公告管理', icon: 'i-lucide-megaphone', to: '/admin/announcements', active: route.path === '/admin/announcements' },
+  { label: '站内邮件', icon: 'i-lucide-mail', to: '/admin/mail', active: route.path === '/admin/mail' }
 ])
 </script>
 

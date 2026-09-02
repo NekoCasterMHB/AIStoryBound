@@ -541,6 +541,21 @@ CREATE TABLE IF NOT EXISTS `announcements` (
 	`updated_at` integer NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS `mail_sent` (
+	`id` text PRIMARY KEY NOT NULL,
+	`sender_id` text NOT NULL,
+	`recipient_id` text NOT NULL,
+	`recipient_email` text NOT NULL,
+	`recipient_name` text,
+	`subject` text NOT NULL,
+	`content` text NOT NULL,
+	`status` text DEFAULT 'sent' NOT NULL,
+	`error` text,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`sender_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`recipient_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+
 -- ---- 索引 ----
 CREATE UNIQUE INDEX IF NOT EXISTS `user_email_unique` ON `user` (`email`);
 CREATE INDEX IF NOT EXISTS `idx_user_email` ON `user` (`email`);
@@ -584,6 +599,8 @@ CREATE INDEX IF NOT EXISTS `idx_ai_usage_user` ON `ai_usage` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_aipc_active` ON `ai_provider_configs` (`active`);
 CREATE INDEX IF NOT EXISTS `idx_acv_user` ON `ai_config_verifications` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_ann_published_created` ON `announcements` (`published`,`created_at`);
+CREATE INDEX IF NOT EXISTS `idx_mail_created` ON `mail_sent` (`created_at`);
+CREATE INDEX IF NOT EXISTS `idx_mail_recipient` ON `mail_sent` (`recipient_id`);
 CREATE INDEX IF NOT EXISTS `idx_skill_purchase_buyer` ON `skill_purchases` (`buyer_id`);CREATE INDEX IF NOT EXISTS `idx_wgt_user` ON `world_gen_tasks` (`user_id`);
 CREATE INDEX IF NOT EXISTS `idx_wgt_status` ON `world_gen_tasks` (`status`);
 CREATE UNIQUE INDEX IF NOT EXISTS `idx_wgu_unique` ON `world_gen_units` (`task_id`,`unit_index`);

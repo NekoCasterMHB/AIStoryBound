@@ -39,24 +39,27 @@ const TYPE_LABEL: Record<OtpType, string> = {
   'forget-password': '重置密码验证码'
 }
 
-/** 发送验证码邮件;回调内无 event,直接接收 EmailCtx(见 getAuth 闭包) */
-export async function sendOtpEmail(email: string, otp: string, type: OtpType | string, ctx: EmailCtx = {}): Promise<void> {
+/** 通用邮件请求参数(管理后台站内邮件与验证码共用) */
+export interface SendMailArgs {
+  to: string
+  subject: string
+  html: string
+  text: string
+  ctx?: EmailCtx
+}
+
+/** 发送邮件(Cloudflare Email Service REST API)。未配置 accountId/token/发件人 → dev 降级打印日志;
+ *  发送失败抛 Error(消息以「发送邮件失败:」开头)。 */
+export async function sendEmail(args: SendMailArgs): Promise<void> {
+  const ctx = args.ctx ?? {}
   const accountId = ctx.CLOUDFLARE_ACCOUNT_ID?.trim()
   const token = ctx.CF_API_TOKEN_SEND_EMAIL?.trim()
   const from = ctx.EMAIL_FROM?.trim()
   if (!accountId || !token || !from) {
-    // dev 降级:未配置发信密钥/发件人 → 验证码打印到日志
-    console.log(`[email:dev] ${TYPE_LABEL[type as OtpType] ?? type} for ${email}: ${otp}`)
+    // dev 降级:未配置发信密钥/发件人 → 邮件打到日志
+    console.log(`[email:dev] ${args.subject} → ${args.to}\n${args.text}`)
     return
   }
-  const label = TYPE_LABEL[type as OtpType] ?? type
-  const html = `
-    <div style="font-family: sans-serif; max-width: 420px; margin: 0 auto; padding: 24px;">
-      <h2 style="color: #1f2937;">AI Word2World</h2>
-      <p style="color: #374151;">你的${label}是:</p>
-      <p style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #0f172a;">${otp}</p>
-      <p style="color: #6b7280; font-size: 13px;">验证码 15 分钟内有效。若非本人操作请忽略本邮件。</p>
-    </div>`
   try {
     const res = await fetch(`${CF_API_BASE}/accounts/${encodeURIComponent(accountId)}/email/sending/send`, {
       method: 'POST',
@@ -65,20 +68,39 @@ export async function sendOtpEmail(email: string, otp: string, type: OtpType | s
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        to: email,
+        to: args.to,
         from,
-        subject: `【AI Word2World】${label}`,
-        html,
-        text: `你的${label}是: ${otp},15 分钟内有效。若非本人操作请忽略本邮件。`
+        subject: args.subject,
+        html: args.html,
+        text: args.text
       })
     })
     const data = await res.json().catch(() => null) as { success?: boolean, errors?: Array<{ code?: number, message?: string }> } | null
     if (!res.ok || !data?.success) {
       const msg = data?.errors?.map(e => e.message).filter(Boolean).join('; ') || `HTTP ${res.status}`
-      throw new Error(`发送验证码邮件失败: ${msg}`)
+      throw new Error(`发送邮件失败: ${msg}`)
     }
   } catch (e) {
-    if (e instanceof Error && e.message.startsWith('发送验证码邮件失败')) throw e
-    throw new Error(`发送验证码邮件失败: ${e instanceof Error ? e.message : String(e)}`, { cause: e })
+    if (e instanceof Error && e.message.startsWith('发送邮件失败')) throw e
+    throw new Error(`发送邮件失败: ${e instanceof Error ? e.message : String(e)}`, { cause: e })
   }
+}
+
+/** 发送验证码邮件(OTP 专用模板;底层走通用 sendEmail);回调内无 event,直接接收 EmailCtx(见 getAuth 闭包) */
+export async function sendOtpEmail(email: string, otp: string, type: OtpType | string, ctx: EmailCtx = {}): Promise<void> {
+  const label = TYPE_LABEL[type as OtpType] ?? type
+  const html = `
+    <div style="font-family: sans-serif; max-width: 420px; margin: 0 auto; padding: 24px;">
+      <h2 style="color: #1f2937;">AI Word2World</h2>
+      <p style="color: #374151;">你的${label}是:</p>
+      <p style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #0f172a;">${otp}</p>
+      <p style="color: #6b7280; font-size: 13px;">验证码 15 分钟内有效。若非本人操作请忽略本邮件。</p>
+    </div>`
+  await sendEmail({
+    to: email,
+    subject: `【AI Word2World】${label}`,
+    html,
+    text: `你的${label}是: ${otp},15 分钟内有效。若非本人操作请忽略本邮件。`,
+    ctx
+  })
 }

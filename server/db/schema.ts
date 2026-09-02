@@ -682,3 +682,24 @@ export const announcements = sqliteTable('announcements', {
 }, t => [
   index('idx_ann_published_created').on(t.published, t.createdAt)
 ])
+
+// ---- 站内邮件(管理后台发送记录:管理员选用户发真实邮件,逐封落库,成功/失败均可追溯) ----
+export const mailSent = sqliteTable('mail_sent', {
+  id: text('id').primaryKey(),
+  /** 发件人(管理员 user.id) */
+  senderId: text('sender_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** 收件人 user.id */
+  recipientId: text('recipient_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** 收件人邮箱/昵称快照(防用户后续改邮箱后历史展示丢失) */
+  recipientEmail: text('recipient_email').notNull(),
+  recipientName: text('recipient_name'),
+  subject: text('subject').notNull(),
+  content: text('content').notNull(),
+  /** sent=发送成功 | failed=发送失败(失败原因见 error) */
+  status: text('status').notNull().default('sent'),
+  error: text('error'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [
+  index('idx_mail_created').on(t.createdAt),
+  index('idx_mail_recipient').on(t.recipientId)
+])
