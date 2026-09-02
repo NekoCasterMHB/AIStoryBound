@@ -133,6 +133,124 @@ export interface CharacterCard {
   chapterVariants?: CharacterChapterVariant[]
 }
 
+// ---- 角色卡兼容归一(外部/旧版本导出的 zip 可能把 appearance 存成结构化对象、personality 存成字符串等) ----
+
+/** 单段文本字段归一:字符串去首尾;数组按 '；' 拼;结构化对象(异版本外貌/背景)取非空字段拼成描述 */
+function coerceCardText(v: unknown): string | null {
+  if (typeof v === 'string') {
+    const s = v.trim()
+    return s || null
+  }
+  if (Array.isArray(v)) {
+    const parts = v.filter((x): x is string => typeof x === 'string' && !!x.trim()).map(x => x.trim())
+    return parts.length ? parts.join('；') : null
+  }
+  if (v && typeof v === 'object') {
+    const label: Record<string, string> = {
+      height: '身高', build: '体型', hair: '发型', eyes: '眼睛', clothing: '衣着',
+      distinguishingFeatures: '特征', figure: '身材', fingers: '手指', condom: '是否戴套'
+    }
+    const parts: string[] = []
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if (val == null || val === '') continue
+      if (typeof val === 'string') parts.push(`${label[k] ?? k}:${val.trim()}`)
+      else if (typeof val === 'boolean') parts.push(`${label[k] ?? k}:${val ? '是' : '否'}`)
+      else if (typeof val === 'number') parts.push(`${label[k] ?? k}:${val}`)
+    }
+    return parts.length ? parts.join('，') : null
+  }
+  return null
+}
+
+/** 列表字段归一:数组过滤非空字符串;字符串按常见分隔符拆 */
+function coerceCardList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === 'string').map(x => x.trim()).filter(Boolean)
+  if (typeof v === 'string') {
+    const s = v.trim()
+    if (!s) return []
+    return s.split(/[、，,;；\n]/).map(x => x.trim()).filter(Boolean)
+  }
+  return []
+}
+
+/**
+ * 把外部/旧版本导出的角色卡归一为当前 CharacterCard 形状(结构化外貌对象→文字、性格字符串→数组等),
+ * 保证选角 / 游戏 prompt / 展示等下游逻辑不因字段类型异常崩溃。缺名字或非法条目返回 undefined,由调用方过滤。
+ */
+export function normalizeCharacterCard(raw: unknown): CharacterCard | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const c = raw as Record<string, unknown>
+  const name = typeof c.name === 'string' ? c.name.trim() : ''
+  if (!name) return undefined
+  const role = typeof c.role === 'string' && c.role.trim() ? c.role.trim() : '配角'
+
+  const out: CharacterCard = {
+    name,
+    role,
+    alias: coerceCardText(c.alias) ?? undefined,
+    gender: coerceCardText(c.gender) ?? undefined,
+    age: coerceCardText(c.age) ?? undefined,
+    identity: coerceCardText(c.identity) ?? undefined,
+    appearance: coerceCardText(c.appearance) ?? undefined,
+    background: coerceCardText(c.background) ?? undefined,
+    first_appearance: coerceCardText(c.first_appearance) ?? undefined,
+    personality: coerceCardList(c.personality),
+    speech_style: coerceCardList(c.speech_style),
+    abilities: coerceCardList(c.abilities),
+    goals: coerceCardList(c.goals),
+    fears: coerceCardList(c.fears),
+    secrets: coerceCardList(c.secrets),
+    dead: typeof c.dead === 'boolean' ? c.dead : null,
+    patience: typeof c.patience === 'number' ? c.patience : null,
+    softness: typeof c.softness === 'number' ? c.softness : null,
+    desire: typeof c.desire === 'number' ? c.desire : null
+  }
+
+  if (Array.isArray(c.relationships)) {
+    const rels = c.relationships.flatMap((r): { name: string, type: string, value: number }[] => {
+      if (!r || typeof r !== 'object') return []
+      const rel = r as Record<string, unknown>
+      const rName = typeof rel.name === 'string' ? rel.name.trim() : ''
+      if (!rName) return []
+      return [{
+        name: rName,
+        // 异版本可能没有 type(关系说明在 description),type 兜底取 description
+        type: typeof rel.type === 'string' && rel.type.trim() ? rel.type.trim()
+          : (typeof rel.description === 'string' && rel.description.trim() ? rel.description.trim() : ''),
+        value: typeof rel.value === 'number' && Number.isFinite(rel.value) ? rel.value : 0
+      }]
+    })
+    if (rels.length) out.relationships = rels
+  }
+  if (Array.isArray(c.kinks)) {
+    const kinks = c.kinks.flatMap((k): { theme: string, view: string | null, role: string | null, detail: string | null }[] => {
+      if (!k || typeof k !== 'object') return []
+      const kk = k as Record<string, unknown>
+      const theme = typeof kk.theme === 'string' && kk.theme.trim() ? kk.theme.trim() : ''
+      if (!theme) return []
+      return [{
+        theme,
+        view: typeof kk.view === 'string' && kk.view.trim() ? kk.view.trim() : null,
+        role: typeof kk.role === 'string' && kk.role.trim() ? kk.role.trim() : null,
+        detail: typeof kk.detail === 'string' && kk.detail.trim() ? kk.detail.trim() : null
+      }]
+    })
+    if (kinks.length) out.kinks = kinks
+  }
+  if (c.sex && typeof c.sex === 'object') out.sex = c.sex as SexAttrs
+  if (Array.isArray(c.chapterVariants)) {
+    const variants = c.chapterVariants.filter((v): v is CharacterChapterVariant =>
+      !!v && typeof v === 'object' && typeof (v as { patch?: unknown }).patch === 'object' && (v as { patch?: unknown }).patch !== null)
+    if (variants.length) out.chapterVariants = variants
+  }
+  return out
+}
+
+/** 归一化整批角色卡(过滤非法条目) */
+export function normalizeCharacterCards(list: unknown): CharacterCard[] {
+  return Array.isArray(list) ? list.map(normalizeCharacterCard).filter((c): c is CharacterCard => !!c) : []
+}
+
 /** 角色在某阶段(细纲段/提取单元)与基础卡(或上一段快照)的差异;patch 只记录变化的字段 */
 export interface CharacterChapterVariant {
   /** 0-based 阶段段号(对应 storyline 细纲段下标,与提取单元一一对应) */

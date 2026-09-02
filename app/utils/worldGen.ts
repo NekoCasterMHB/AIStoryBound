@@ -1,7 +1,7 @@
 // app/utils/worldGen.ts
 // 本地作品库(IndexedDB works)与小说文本解析工具。
 // 世界生成统一走云端任务(见 worldGenCloud.ts / server Workflows),浏览器端不再编排生成管线。
-import { extractFrontMatter } from '#shared/novel'
+import { extractFrontMatter, normalizeCharacterCards } from '#shared/novel'
 import { detectNovelEncoding } from '#shared/novel-encoding'
 import type { ChapterSegment, LocalWork } from '#shared/novel'
 import { db } from './localDb'
@@ -57,24 +57,33 @@ export function isLegacyChapteredWork(w: { chapters: ChapterSegment[], worldForm
 
 const STORE_WORKS = 'works'
 
+/** 读出的作品统一把 overlay.characters 归一为当前 CharacterCard 形状(兼容外部/旧版本 zip 导入的结构化外貌等),返回新对象不改库 */
+function normalizeWork(w: LocalWork): LocalWork {
+  const chars = w.overlay?.characters
+  if (!chars || !chars.length) return w
+  return { ...w, overlay: { ...w.overlay, characters: normalizeCharacterCards(chars) } }
+}
+
 export async function listWorks(): Promise<LocalWork[]> {
   if (typeof indexedDB === 'undefined') return []
   // 按最后操作时间倒序(无 updatedAt 的旧数据回退创建时间)
-  return (await db.table(STORE_WORKS).toArray()).sort((a, b) =>
+  return (await db.table(STORE_WORKS).toArray()).map(normalizeWork).sort((a, b) =>
     (b.updatedAt ?? b.createdAt).localeCompare(a.updatedAt ?? a.createdAt)
   )
 }
 
 export async function getWork(id: string): Promise<LocalWork | null> {
   if (typeof indexedDB === 'undefined') return null
-  return (await db.table(STORE_WORKS).get(id)) ?? null
+  const w = (await db.table(STORE_WORKS).get(id)) ?? null
+  return w ? normalizeWork(w) : null
 }
 
 /** 按来源云端任务 id 查已安装作品(手动下载时判定"该任务是否已装过",防同一任务重复落库) */
 export async function getWorkBySourceTask(taskId: string): Promise<LocalWork | null> {
   if (typeof indexedDB === 'undefined' || !taskId) return null
   const all = await db.table(STORE_WORKS).toArray()
-  return all.find(w => w.sourceTaskId === taskId) ?? null
+  const found = all.find(w => w.sourceTaskId === taskId)
+  return found ? normalizeWork(found) : null
 }
 
 export async function saveWork(work: LocalWork): Promise<void> {

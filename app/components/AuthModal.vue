@@ -129,6 +129,28 @@ async function onSendRegOtp() {
   }
   sendingRegOtp.value = true
   try {
+    // 预检邮箱:better-auth 对已存在邮箱的 signUp 返回伪造成功(防枚举)且不发验证码,
+    // 不先查会让用户卡在「等邮件」且无提示;已存在 → 明确提示并引导登录。
+    let exists = false
+    try {
+      const status = await $fetch<{ exists: boolean }>('/api/register/email-status', {
+        method: 'POST',
+        body: { email: regForm.email.trim() }
+      })
+      exists = status.exists
+    } catch {
+      // 预检失败(限流/网络)不阻断:继续走 signUp,由服务端兜底
+    }
+    if (exists) {
+      // 切回登录视图的验证码 tab:邮箱已带入,提示直接获取验证码即可登录
+      const email = regForm.email.trim()
+      regError.value = ''
+      view.value = 'login'
+      otpForm.email = email
+      switchToOtpLogin()
+      errorMsg.value = '该邮箱已注册,请直接登录(已为你填入邮箱,点击「获取验证码」即可)'
+      return
+    }
     const { error } = await authClient.signUp.email({
       name: regForm.username.trim(),
       email: regForm.email,
@@ -211,6 +233,7 @@ const modalDescription = computed(() => view.value === 'login'
 
 function switchToRegister() {
   errorMsg.value = ''
+  loginTab.value = 'password'
   resetRegister()
   view.value = 'register'
 }
@@ -243,6 +266,7 @@ function onOpenChange(v: boolean) {
   // 从外部关闭(遮罩/ESC)→ 未成功的等待者视为放弃,并复位到登录视图
   if (!v) {
     resetRegister()
+    loginTab.value = 'password'
     view.value = 'login'
   }
 }
@@ -251,6 +275,14 @@ const tabs = ref<TabsItem[]>([
   { label: '邮箱+密码', slot: 'password' },
   { label: '邮箱+验证码', slot: 'otp' }
 ])
+/** 登录视图当前 tab(password/otp;注册预检到已存在邮箱时自动切到验证码登录) */
+const loginTab = ref('password')
+function switchToOtpLogin() {
+  loginTab.value = 'otp'
+  otpForm.otp = ''
+  otpSent.value = false
+  otpCountdown.value = 0
+}
 </script>
 
 <template>
@@ -266,6 +298,7 @@ const tabs = ref<TabsItem[]>([
       <!-- 登录视图:邮箱+密码 / 邮箱+验证码 双 tab -->
       <template v-if="view === 'login'">
         <UTabs
+          v-model="loginTab"
           :items="tabs"
           class="w-full"
           variant="pill"

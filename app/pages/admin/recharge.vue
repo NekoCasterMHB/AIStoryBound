@@ -405,7 +405,7 @@ function fmtTs(ts: number | null) {
               </td>
               <td class="py-2.5">
                 <UButton
-                  v-if="r.status !== 'paid'"
+                  v-if="r.status === 'pending'"
                   size="xs"
                   color="primary"
                   variant="soft"

@@ -2,7 +2,7 @@
 // 游戏会话「分享全部」:作品 + 会话 + 剧情打包为 ZIP(fflate 同步压缩,全本地);
 // 书架端「导入 ZIP 分享包」:校验格式与结构后,作为新的个人作品入库。
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
-import { uuid } from '#shared/novel'
+import { uuid, normalizeCharacterCards } from '#shared/novel'
 import type { ChapterSegment, HeatLevel, KinkProfileEntry, LocalGame, LocalWork, WorldOverlay } from '#shared/novel'
 import { SHARE_FORMAT, SHARE_VERSION } from '#shared/share-format'
 import { buildGameTxt, buildWorkTxt, sanitizeFilename } from './exportStory'
@@ -216,7 +216,8 @@ function normalizeWork(raw: unknown): LocalWork {
       title: typeof o.title === 'string' ? o.title : undefined,
       genre: typeof o.genre === 'string' ? o.genre : undefined,
       summary: typeof o.summary === 'string' ? o.summary : undefined,
-      characters: Array.isArray(o.characters) ? o.characters : undefined,
+      // 角色卡归一为当前 CharacterCard 形状:外部/旧版本 zip 可能把 appearance 存成结构化对象、personality 存成字符串
+      characters: Array.isArray(o.characters) ? normalizeCharacterCards(o.characters) : undefined,
       tags: Array.isArray(o.tags) ? o.tags.filter((t): t is string => typeof t === 'string') : undefined,
       orientation: typeof o.orientation === 'string' ? o.orientation : undefined,
       setting: typeof o.setting === 'string' ? o.setting : undefined,
