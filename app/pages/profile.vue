@@ -119,9 +119,9 @@ function openPluginConfig(id: string) {
   configOpen.value = true
 }
 
-/** 该适配器是否正处于连接中(卡片右上角显示绿色「已连接」tag) */
+/** 该适配器是否正处于连接中(卡片右上角显示绿色「已连接」tag;多连接按槽位判断) */
 function isConnectedTo(id: string): boolean {
-  return toyController.state.connected && toyController.state.adapterId === id
+  return !!toyController.slotOf(id)?.connected
 }
 
 // ---- 卡片右上角标签:未连接 → 打开自定义设备选择器;已连接 → 确认框断开 ----
@@ -148,7 +148,8 @@ async function doTagAction() {
   if (!act || tagBusy.value) return
   tagBusy.value = true
   try {
-    await toyController.disconnect()
+    // 只断开该插件对应连接(多连接下不影响其它已连接插件)
+    await toyController.disconnect(act.id)
     toast.add({ title: '已断开', color: 'neutral' })
   } finally {
     tagBusy.value = false
@@ -163,6 +164,7 @@ const importedAdapterIds = ref<string[]>([])
 const importedAdapters = computed(() => allAdapters.value.filter(a => importedAdapterIds.value.includes(a.manifest.id)))
 const adapterSettings = ref<ToySettings>({ ...DEFAULT_TOY_SETTINGS })
 const guideOpen = ref(false)
+const testOpen = ref(false)
 const importBusy = ref(false)
 const importFileRef = ref<HTMLInputElement | null>(null)
 
@@ -180,8 +182,8 @@ function toggleAdapter(a: ToyAdapter, on: boolean) {
 }
 
 async function onRemoveAdapter(id: string) {
-  if (toyController.state.adapterId === id) {
-    await toyController.disconnect()
+  if (toyController.slotOf(id)?.connected) {
+    await toyController.disconnect(id)
   }
   await removeImportedAdapter(id)
   await loadAdapters()
@@ -1629,6 +1631,15 @@ watch(narrLength, v => saveNarrLength(v))
             <div class="flex gap-2">
               <UButton
                 size="xs"
+                color="primary"
+                variant="soft"
+                icon="i-lucide-flask-conical"
+                @click="testOpen = true"
+              >
+                测试能力
+              </UButton>
+              <UButton
+                size="xs"
                 variant="soft"
                 icon="i-lucide-book-open"
                 @click="guideOpen = true"
@@ -1818,6 +1829,8 @@ watch(narrLength, v => saveNarrLength(v))
       v-model:open="configOpen"
       :plugin-id="configPluginId"
     />
+    <!-- 功能插件能力测试(预制提示词暴露能力给 AI 逐个调用测试) -->
+    <PluginTestModal v-model:open="testOpen" />
     <!-- 快捷连接自定义设备选择器(已授权设备列表 + 电量;新设备才走系统选择器) -->
     <ToyQuickConnectModal
       v-model:open="pickerOpen"

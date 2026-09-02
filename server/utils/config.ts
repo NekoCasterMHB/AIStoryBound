@@ -10,6 +10,9 @@ import { useD1 } from './d1'
 /** 充值开关:1=关闭(维护中),0/缺省=开放 */
 export const CONFIG_KEY_PAYMENT_DISABLED = 'payment_disabled'
 
+/** 进入维护的原因(健康检查自动关闭/管理员手动关闭时写入;恢复开放时清除) */
+export const CONFIG_KEY_PAYMENT_DISABLED_REASON = 'payment_disabled_reason'
+
 type Db = DrizzleD1Database<Record<string, unknown>>
 
 export async function getAppConfig(db: Db, key: string): Promise<string | undefined> {
@@ -26,10 +29,20 @@ export async function setAppConfig(db: Db, key: string, value: string): Promise<
     .run()
 }
 
+/** 删除一条配置(用于恢复开放时清除维护原因) */
+export async function deleteAppConfig(db: Db, key: string): Promise<void> {
+  await db.delete(appConfig).where(eq(appConfig.key, key)).run()
+}
+
 /** 充值是否处于关闭(维护)状态:读取配置,缺省开放 */
 export async function isPaymentDisabled(db: Db): Promise<boolean> {
   const v = await getAppConfig(db, CONFIG_KEY_PAYMENT_DISABLED)
   return v === '1'
+}
+
+/** 当前维护原因(未维护/无原因返回 undefined) */
+export function getPaymentDisabledReason(db: Db): Promise<string | undefined> {
+  return getAppConfig(db, CONFIG_KEY_PAYMENT_DISABLED_REASON)
 }
 
 /** 充值是否处于关闭状态(带 event 便捷版,供支付相关接口使用) */

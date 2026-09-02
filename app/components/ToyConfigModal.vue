@@ -1,16 +1,16 @@
 <script setup lang="ts">
 // ToyConfigModal.vue — 单个适配器的「详细配置」弹窗(由个人中心 → 功能插件 的适配器列表打开)。
 // 只负责该适配器的配置与控制:安全设置、连接、手动控制(纵向滑块,拖动即发,0 即停,倒计时自动归零)。
-// 适配器导入/删除/启用管理在个人中心 → 功能插件 tab(所有适配器同级,啵啵贝也是其中之一)。
+// 多连接:本弹窗只操作 props.pluginId 对应的连接槽位;每插件使用独立 transport 实例(真机/模拟),互不干扰。
 import { computed, ref, watch } from 'vue'
-import { DEFAULT_FUNCTION_MAX_INTENSITY, DEFAULT_TOY_SETTINGS, functionLimitOf, isAiFunctionEnabled, toggleAiFunctionEnabled } from '#shared/toy'
+import { DEFAULT_FUNCTION_MAX_INTENSITY, DEFAULT_TOY_SETTINGS, functionLimitOf, isAiFunctionEnabled, toggleAiFunctionEnabled, functionKey } from '#shared/toy'
 import type { ToyAdapter, ToyFunctionLimit, ToySettings } from '#shared/toy'
 import type { PluginSpec } from '#shared/plugin'
 import { toyController } from '../toy/api'
 import { loadToySettings, saveToySettings } from '../toy/store'
-import { mockTransport, mockTransportState } from '../toy/transports/mock'
-import { webBluetoothTransport } from '../toy/transports/web-bluetooth'
-import type { ToyTransportDevice } from '../toy/transports/transport'
+import { createMockTransport } from '../toy/transports/mock'
+import { createWebBluetoothTransport } from '../toy/transports/web-bluetooth'
+import type { ToyTransport, ToyTransportDevice } from '../toy/transports/transport'
 import { loadAllAdapters, loadAllPluginSpecs } from '../toy/runtime/adapter-loader'
 
 const props = defineProps<{ open: boolean, pluginId: string }>()
@@ -31,22 +31,38 @@ const capabilities = computed(() => adapter.value?.manifest.capabilities?.functi
 const realBle = ref(false)
 const connecting = ref(false)
 
-const transport = computed(() => (realBle.value ? webBluetoothTransport : mockTransport))
-const mockLog = computed(() => mockTransportState.writeLog.slice(-3).join('\n'))
+/** 当前连接槽位(多连接:按 pluginId 定位,与其它插件互不干扰) */
+const slot = computed(() => toyController.slotOf(props.pluginId))
+const connected = computed(() => !!slot.value?.connected)
+const connectedMock = computed(() => slot.value?.connected && slot.value.transportId === 'mock')
+const connectedBadge = computed(() => {
+  if (!connected.value) return realBle.value ? '未连接' : '未连接 · 模拟模式'
+  return connectedMock.value ? `模拟测试 · ${slot.value?.deviceName}` : `已连接 · ${slot.value?.deviceName}`
+})
 
-// ---- 按能力单独的限制(未单独设置的字段回落全局默认) ----
+/** 本插件已连接时使用的 transport 实例(电量/模拟日志读取;多连接下每插件独立实例) */
+const liveTransport = ref<ToyTransport | null>(null)
+
+/** 模拟传输日志(本插件连接的实例;独立于其它插件的模拟状态) */
+const mockLog = computed(() => {
+  const t = liveTransport.value as { state?: { writeLog?: string[] } } | null
+  return t?.state?.writeLog?.slice(-3).join('\n') ?? ''
+})
+
+// ---- 按能力单独的限制(未单独设置的字段回落全局默认;多设备按 pluginId 命名空间) ----
 
 function fnLimitOf(fnId: string): { maxIntensity: number } {
   // 生效上限 = min(清单声明强度上限, 用户覆盖);清单声明值来自 manifest.capabilities
   const fn = capabilities.value.find(f => f.id === fnId)
   const declaredMax = fn?.intensityRange?.[1] ?? DEFAULT_FUNCTION_MAX_INTENSITY
-  return functionLimitOf(settings.value, fnId, declaredMax)
+  return functionLimitOf(settings.value, fnId, declaredMax, props.pluginId)
 }
 
 function setFnLimit(fnId: string, patch: Partial<ToyFunctionLimit>) {
+  const key = functionKey(props.pluginId, fnId)
   settings.value.functionLimits = {
     ...(settings.value.functionLimits ?? {}),
-    [fnId]: { ...(settings.value.functionLimits?.[fnId] ?? {}), ...patch }
+    [key]: { ...(settings.value.functionLimits?.[key] ?? {}), ...patch }
   }
 }
 
@@ -57,6 +73,7 @@ watch(() => props.open, async (open) => {
   const [all, specs] = await Promise.all([loadAllAdapters(), loadAllPluginSpecs()])
   adapter.value = all.find(a => a.manifest.id === props.pluginId) ?? null
   spec.value = specs.find(s => s.descriptor.id === props.pluginId) ?? null
+  liveTransport.value = null
   modalTab.value = 'config'
 }, { immediate: true })
 
@@ -66,17 +83,11 @@ watch(settings, (s) => {
 
 // ---- 连接 ----
 
-/** 连接状态:模拟测试(开关关)/ 真实蓝牙 二选一,以实际连接的 transport 为准 */
-const connectedMock = computed(() => toyController.state.connected && toyController.state.transportId === 'mock')
-const connectedBadge = computed(() => {
-  if (!toyController.state.connected) return realBle.value ? '未连接' : '未连接 · 模拟模式'
-  return connectedMock.value ? `模拟测试 · ${toyController.state.deviceName}` : `已连接 · ${toyController.state.deviceName}`
-})
-
 /** 已授权设备(Web Bluetooth getDevices,免系统选择器;仅含此前用户授权过的设备,点击即直连) */
 const knownDevices = ref<ToyTransportDevice[]>([])
 async function loadKnownDevices() {
-  knownDevices.value = (await transport.value.listKnownDevices?.()) ?? []
+  const bt = createWebBluetoothTransport()
+  knownDevices.value = (await bt.listKnownDevices?.()) ?? []
 }
 // 打开弹窗/切到真机时刷新已授权设备列表
 watch(realBle, (on) => {
@@ -84,20 +95,23 @@ watch(realBle, (on) => {
 })
 
 async function doConnect(device?: ToyTransportDevice) {
-  if (!adapter.value || connecting.value || toyController.state.connected) return
+  if (!adapter.value || connecting.value || connected.value) return
   connecting.value = true
   try {
-    const res = await toyController.connect(adapter.value, transport.value, device ? { device } : {})
+    // 每插件独立 transport 实例(多连接下 mock/真机各自状态;连接成功后保存实例供电量/日志读取)
+    const transport = realBle.value ? createWebBluetoothTransport() : createMockTransport()
+    const res = await toyController.connect(adapter.value, transport, device ? { device } : {})
     if (!res.ok) {
       toast.add({ title: '连接失败', description: res.reason, color: 'error' })
       return
     }
+    liveTransport.value = transport
     // 真机通过系统选择器连上后刷新列表,下次可免选择器直连
     void loadKnownDevices()
     if (connectedMock.value) {
       toast.add({ title: '模拟测试已连接', description: '当前为模拟设备,不会控制真实硬件;打开「真实蓝牙连接」开关即可连真机', color: 'success' })
     } else {
-      toast.add({ title: '已连接', description: `${adapter.value.manifest.name} · ${toyController.state.deviceName}`, color: 'success' })
+      toast.add({ title: '已连接', description: `${adapter.value.manifest.name} · ${slot.value?.deviceName}`, color: 'success' })
     }
   } finally {
     connecting.value = false
@@ -105,7 +119,8 @@ async function doConnect(device?: ToyTransportDevice) {
 }
 
 async function doDisconnect() {
-  await toyController.disconnect()
+  await toyController.disconnect(props.pluginId)
+  liveTransport.value = null
   toast.add({ title: '已断开', color: 'neutral' })
 }
 
@@ -113,8 +128,9 @@ async function doDisconnect() {
 
 /** 真机连接时的电量缓存(连接时读取;模拟设备无电量) */
 const batteryNow = computed(() => {
-  if (toyController.state.transportId !== 'web-bluetooth' || !toyController.state.deviceId) return null
-  return webBluetoothTransport.getBattery?.(toyController.state.deviceId) ?? null
+  const s = slot.value
+  if (!s || s.transportId !== 'web-bluetooth' || !s.deviceId) return null
+  return liveTransport.value?.getBattery?.(s.deviceId) ?? null
 })
 </script>
 
@@ -188,16 +204,16 @@ const batteryNow = computed(() => {
                             <span class="text-xs text-neutral-500">AI 控制</span>
                             <USwitch
                               size="sm"
-                              :model-value="isAiFunctionEnabled(settings, fn.id)"
+                              :model-value="isAiFunctionEnabled(settings, fn.id, props.pluginId)"
                               @update:model-value="(v: boolean) => {
-                                settings.aiEnabledFunctions = toggleAiFunctionEnabled(settings, fn.id, v)
+                                settings.aiEnabledFunctions = toggleAiFunctionEnabled(settings, fn.id, v, props.pluginId)
                               }"
                             />
                           </div>
                         </div>
                         <!-- AI 控制未开启:参数部分显示提示,不渲染设置项 -->
                         <p
-                          v-if="!isAiFunctionEnabled(settings, fn.id)"
+                          v-if="!isAiFunctionEnabled(settings, fn.id, props.pluginId)"
                           class="mt-2 text-xs text-neutral-500"
                         >
                           启用 AI 控制后可设置参数
@@ -228,7 +244,7 @@ const batteryNow = computed(() => {
                   <span class="text-sm font-semibold">连接</span>
                   <UBadge
                     variant="soft"
-                    :color="toyController.state.connected ? (connectedMock ? 'warning' : 'success') : 'neutral'"
+                    :color="connected ? (connectedMock ? 'warning' : 'success') : 'neutral'"
                   >
                     {{ connectedBadge }}
                   </UBadge>
@@ -246,7 +262,7 @@ const batteryNow = computed(() => {
                 </div>
                 <div class="mt-3 flex gap-2">
                   <UButton
-                    v-if="!toyController.state.connected"
+                    v-if="!connected"
                     color="primary"
                     size="sm"
                     :loading="connecting"
@@ -266,7 +282,7 @@ const batteryNow = computed(() => {
                     color="error"
                     size="sm"
                     icon="i-lucide-octagon-alert"
-                    :disabled="!toyController.state.connected"
+                    :disabled="!connected"
                     @click="toyController.emergencyStop()"
                   >
                     紧急停止
@@ -274,7 +290,7 @@ const batteryNow = computed(() => {
                 </div>
                 <!-- 已授权设备:免系统选择器,点击即直连(首次仍需过一次系统选择器授权) -->
                 <div
-                  v-if="realBle && !toyController.state.connected && knownDevices.length"
+                  v-if="realBle && !connected && knownDevices.length"
                   class="mt-2 space-y-1"
                 >
                   <p class="text-[11px] text-neutral-500">
@@ -313,7 +329,7 @@ const batteryNow = computed(() => {
               没有可用的插件:请先到个人中心 → 功能插件 导入或启用。
             </div>
             <div
-              v-else-if="!toyController.state.connected"
+              v-else-if="!connected"
               class="flex flex-col items-center gap-3 py-10 text-center"
             >
               <UIcon
@@ -348,7 +364,7 @@ const batteryNow = computed(() => {
                 :spec="spec"
                 :settings="settings"
                 source="manual"
-                :auto-active="toyController.state.autoActive"
+                :auto-active="slot?.autoActive ?? false"
                 :battery="batteryNow"
               />
             </div>

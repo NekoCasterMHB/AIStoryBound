@@ -4,7 +4,7 @@
 // 新硬件走「扫描新设备」,仅此一步需要系统选择器,授权后进入已授权列表,之后不再弹出。
 // 断开走卡片标签的确认框,不在本弹窗内。
 import { toyController } from '../toy/api'
-import { webBluetoothTransport } from '../toy/transports/web-bluetooth'
+import { createWebBluetoothTransport } from '../toy/transports/web-bluetooth'
 import type { ToyTransportDevice } from '../toy/transports/transport'
 import { loadAllAdapters } from '../toy/runtime/adapter-loader'
 import type { ToyAdapter } from '#shared/toy'
@@ -22,12 +22,13 @@ const adapter = ref<ToyAdapter | null>(null)
 const devices = ref<PickerDevice[]>([])
 const busy = ref(false)
 
-/** 刷新已授权设备列表(电量取连接时缓存,未连过为未知) */
+/** 刷新已授权设备列表(电量取连接时缓存,未连过为未知);真机列表与实例无关,复用全局缓存查询 */
 async function refreshKnown() {
-  const known = (await webBluetoothTransport.listKnownDevices?.()) ?? []
+  const bt = createWebBluetoothTransport()
+  const known = (await bt.listKnownDevices?.()) ?? []
   devices.value = known.map(d => ({
     ...d,
-    battery: webBluetoothTransport.getBattery?.(d.id) ?? null
+    battery: bt.getBattery?.(d.id) ?? null
   }))
 }
 
@@ -38,32 +39,25 @@ watch(() => props.open, async (open) => {
   void refreshKnown()
 })
 
-/** 单连接槽位:已连其他适配器时先断开 */
-async function ensureFreeSlot(): Promise<void> {
-  if (toyController.state.connected && toyController.state.adapterId !== props.adapterId) {
-    await toyController.disconnect()
-  }
-}
-
-/** 通过系统选择器连接新设备/重新授权(返回是否成功) */
+/** 通过系统选择器连接新设备/重新授权(返回是否成功);多连接:只建本插件槽位,不打断其它连接 */
 async function connectWithChooser(): Promise<boolean> {
   if (!adapter.value) return false
-  await ensureFreeSlot()
-  const res = await toyController.connect(adapter.value, webBluetoothTransport)
+  const bt = createWebBluetoothTransport()
+  const res = await toyController.connect(adapter.value, bt)
   if (!res.ok) {
     toast.add({ title: '连接失败', description: res.reason, color: 'error' })
     return false
   }
   await refreshKnown()
-  toast.add({ title: '已连接', description: `${adapter.value.manifest.name} · ${toyController.state.deviceName}`, color: 'success' })
+  toast.add({ title: '已连接', description: `${adapter.value.manifest.name} · ${toyController.slotOf(props.adapterId)?.deviceName}`, color: 'success' })
   return true
 }
 
 /** 连接一个设备(已授权列表项);成功返回 true */
 async function connectDevice(d: PickerDevice): Promise<boolean> {
   if (!adapter.value) return false
-  await ensureFreeSlot()
-  const res = await toyController.connect(adapter.value, webBluetoothTransport, { device: d })
+  const bt = createWebBluetoothTransport()
+  const res = await toyController.connect(adapter.value, bt, { device: d })
   if (!res.ok) {
     // 本地缓存有记录但 Chrome 拿不到设备句柄(getDevices 未返回)→ 只能重新授权一次
     if (res.reason.includes('授权记录丢失')) {
@@ -73,8 +67,8 @@ async function connectDevice(d: PickerDevice): Promise<boolean> {
     toast.add({ title: '连接失败', description: res.reason, color: 'error' })
     return false
   }
-  d.battery = webBluetoothTransport.getBattery?.(d.id) ?? null
-  toast.add({ title: '已连接', description: `${adapter.value.manifest.name} · ${toyController.state.deviceName}`, color: 'success' })
+  d.battery = bt.getBattery?.(d.id) ?? null
+  toast.add({ title: '已连接', description: `${adapter.value.manifest.name} · ${toyController.slotOf(props.adapterId)?.deviceName}`, color: 'success' })
   return true
 }
 

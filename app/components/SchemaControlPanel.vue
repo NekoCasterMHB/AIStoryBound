@@ -72,7 +72,7 @@ function sendCapability(capId: string): void {
   if (duration !== undefined && Number(duration) > 0) {
     event.duration = Math.round(Number(duration))
   }
-  void toyController.execute(event, { source: props.source, settings: props.settings }).then((res) => {
+  void toyController.execute(event, { source: props.source, settings: props.settings, targetId: props.spec.descriptor.id }).then((res) => {
     if (!res.ok) {
       toast.add({ title: '指令被拒绝', description: res.reason, color: 'error' })
     }
@@ -109,8 +109,11 @@ function onAction(c: Extract<ControlDef, { type: 'action' }>): void {
 
 // ---- 实时状态(display 控件与滑块回显) ----
 
+/** 本面板对应插件的连接槽位(多连接:按 spec.descriptor.id 定位,与其它插件互不干扰) */
+const slot = computed(() => toyController.slotOf(props.spec.descriptor.id))
+
 function liveValueOf(capId: string, paramKey: string): string | number {
-  const st = toyController.state.functions[capId]
+  const st = slot.value?.functions[capId]
   if (!st) return '—'
   if (paramKey === 'intensity') return st.intensity
   if (paramKey === 'mode') return st.mode ?? 1
@@ -118,7 +121,8 @@ function liveValueOf(capId: string, paramKey: string): string | number {
 }
 
 // 设备状态变化 → 滑块回显(用户拖动中不打断)
-watch(() => toyController.state.functions, (fns) => {
+watch(() => slot.value?.functions, (fns) => {
+  if (!fns) return
   for (const [capId, st] of Object.entries(fns)) {
     if (sendTimers.has(capId)) continue
     const cur = draft[capId]?.intensity
@@ -131,7 +135,7 @@ watch(() => toyController.state.functions, (fns) => {
 // ---- 渲染辅助 ----
 
 const groups = computed(() => props.spec.uiSchema.groups)
-const connected = computed(() => toyController.state.connected && toyController.state.adapterId === props.spec.descriptor.id)
+const connected = computed(() => !!slot.value?.connected)
 
 function capabilityOf(capId: string): CapabilityDef | undefined {
   return props.spec.capabilities.find(c => c.id === capId)
@@ -177,24 +181,24 @@ function waveCapsOf(group: UiGroup): CapabilityDef[] {
 const draftPattern = reactive<Record<string, TrainPattern>>({})
 
 function patternOf(capId: string): TrainPattern {
-  return draftPattern[capId] ?? toyController.wavePatternOf(capId) ?? 'random'
+  return draftPattern[capId] ?? toyController.wavePatternOf(capId, props.spec.descriptor.id) ?? 'random'
 }
 
 function toggleWave(capId: string): void {
   const cap = capabilityOf(capId)
   if (!cap) return
-  if (toyController.isWaveActive(capId)) {
-    toyController.stopWave(capId)
+  if (toyController.isWaveActive(capId, props.spec.descriptor.id)) {
+    toyController.stopWave(capId, props.spec.descriptor.id)
     return
   }
-  void toyController.startWave(capId, capabilityIntensityRange(cap), { pattern: patternOf(capId), settings: props.settings })
+  void toyController.startWave(capId, capabilityIntensityRange(cap), { pattern: patternOf(capId), settings: props.settings, adapterId: props.spec.descriptor.id })
 }
 
 function selectWavePattern(capId: string, p: TrainPattern): void {
   draftPattern[capId] = p
   const cap = capabilityOf(capId)
-  if (cap && toyController.isWaveActive(capId)) {
-    void toyController.startWave(capId, capabilityIntensityRange(cap), { pattern: p, settings: props.settings })
+  if (cap && toyController.isWaveActive(capId, props.spec.descriptor.id)) {
+    void toyController.startWave(capId, capabilityIntensityRange(cap), { pattern: p, settings: props.settings, adapterId: props.spec.descriptor.id })
   }
 }
 </script>
@@ -359,11 +363,11 @@ function selectWavePattern(capId: string, p: TrainPattern): void {
               size="xs"
               variant="soft"
               icon="i-lucide-waves"
-              :color="toyController.isWaveActive(cap.id) ? 'primary' : 'neutral'"
+              :color="toyController.isWaveActive(cap.id, props.spec.descriptor.id) ? 'primary' : 'neutral'"
               :disabled="autoActive"
               @click="toggleWave(cap.id)"
             >
-              {{ toyController.isWaveActive(cap.id) ? '调教中' : '调教' }}
+              {{ toyController.isWaveActive(cap.id, props.spec.descriptor.id) ? '调教中' : '调教' }}
             </UButton>
             <span class="text-[11px] leading-none text-neutral-500">形态</span>
             <div class="grid grid-cols-4 gap-1">

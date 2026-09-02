@@ -881,9 +881,11 @@ async function sendTurn(choice?: string) {
         streamDisplay.value = t
       },
       onExecute: (cmd) => {
-        // 指令分发:dev 单次事件 / wave 调教(AI 门槛+上限钳制)/ stop 停止调教
+        // 指令分发:dev 单次事件 / wave 调教(AI 门槛+上限钳制)/ stop 停止调教。
+        // 多设备:指令 token 带 adapter(插件 id)时路由到对应连接;无则走 active 连接。
+        const adapterId = (cmd as { adapter?: string }).adapter
         if (cmd.kind === 'wave') {
-          return toyController.startWaveForAI(cmd.function, cmd.pattern, cmd.duration, toySettings.value ?? DEFAULT_TOY_SETTINGS).then((r) => {
+          return toyController.startWaveForAI(cmd.function, cmd.pattern, cmd.duration, toySettings.value ?? DEFAULT_TOY_SETTINGS, adapterId).then((r) => {
             if (!r.ok) {
               toast.add({ title: '调教指令被拒绝', description: r.reason, color: 'error' })
             }
@@ -891,10 +893,11 @@ async function sendTurn(choice?: string) {
           })
         }
         if (cmd.kind === 'stop') {
-          toyController.stopWave(cmd.function)
+          toyController.stopWave(cmd.function, adapterId)
           return true
         }
         return toyController.execute({
+          ...(adapterId ? { adapter: adapterId } : {}),
           function: cmd.function,
           intensity: cmd.intensity,
           ...(cmd.mode != null ? { mode: cmd.mode } : {}),
@@ -932,7 +935,7 @@ async function sendTurn(choice?: string) {
     const enabledBriefs = settingsNow
       ? (await loadAllPluginSpecs())
           .filter(s => isAdapterEnabled(settingsNow, s.descriptor.id))
-          .map(s => describePlugin(s, toyController.state.adapterId === s.descriptor.id))
+          .map(s => describePlugin(s, !!toyController.slotOf(s.descriptor.id)))
       : []
     const deviceEnabled = !!settingsNow?.aiEnabled && enabledBriefs.length > 0
     const deviceSpec = deviceEnabled ? narratorDeviceSpec(enabledBriefs) : ''

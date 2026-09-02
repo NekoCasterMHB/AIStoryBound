@@ -76,21 +76,25 @@ function fmtYuan(fen: number) {
 
 // ---- 充值开关(存 app_config 表,即时生效,无需重新部署) ----
 const paymentDisabled = ref(false)
+/** 进入维护的原因(健康检查自动关闭 / 管理员手动关闭) */
+const maintenanceReason = ref('')
 const configBusy = ref(false)
 
 async function loadConfig() {
-  paymentDisabled.value = await $fetch<{ paymentDisabled: boolean }>('/api/payment/config')
-    .then(r => r.paymentDisabled)
-    .catch(() => false)
+  const cfg = await $fetch<{ paymentDisabled: boolean, reason?: string }>('/api/payment/config')
+    .catch(() => null)
+  paymentDisabled.value = cfg?.paymentDisabled ?? false
+  maintenanceReason.value = cfg?.reason ?? ''
 }
 async function togglePayment() {
   configBusy.value = true
   try {
-    const res = await $fetch<{ paymentDisabled: boolean }>('/api/admin/recharge/config', {
+    const res = await $fetch<{ paymentDisabled: boolean, reason?: string }>('/api/admin/recharge/config', {
       method: 'PUT',
       body: { paymentDisabled: !paymentDisabled.value }
     })
     paymentDisabled.value = res.paymentDisabled
+    maintenanceReason.value = res.reason ?? ''
     toast.add({
       title: res.paymentDisabled ? '已关闭充值入口' : '已开启充值入口',
       description: res.paymentDisabled ? '用户端充值按钮将禁用并显示维护提示' : '用户端可正常下单充值',
@@ -109,6 +113,32 @@ onMounted(() => {
 function pickStatus(s: string) {
   statusFilter.value = s
   void load(1)
+}
+
+// ---- 查询到账:对非 paid 订单主动查网关,确认已支付则补入账(状态置 paid + 发放 token) ----
+const queryBusyId = ref<string | null>(null)
+
+async function queryArrival(r: RechargeRow) {
+  if (queryBusyId.value) return
+  queryBusyId.value = r.id
+  try {
+    const res = await $fetch<{ status: string, credited: boolean, message: string }>('/api/admin/recharge/query-order', {
+      method: 'POST',
+      body: { orderNo: r.orderNo }
+    })
+    if (res.credited) {
+      toast.add({ title: '已到账', description: `${r.packageName} 已更新为已支付并发放 token`, color: 'success' })
+      await load(page.value)
+    } else if (res.status === 'paid') {
+      toast.add({ title: '订单已支付', description: res.message, color: 'success' })
+    } else {
+      toast.add({ title: '尚未到账', description: res.message, color: 'warning' })
+    }
+  } catch (e) {
+    toast.add({ title: '查询到账失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    queryBusyId.value = null
+  }
 }
 
 // ---- 充值测试:创建 0.1 元订单,走真实支付回调链路验证到账 ----
@@ -180,6 +210,14 @@ function fmtTs(ts: number | null) {
             :class="paymentDisabled ? 'text-amber-600' : 'text-emerald-600'"
           >
             {{ paymentDisabled ? '维护中(已关闭)' : '开放中' }}
+          </p>
+          <!-- 维护原因:健康检查自动关闭或管理员手动关闭时记录,便于定位 -->
+          <p
+            v-if="paymentDisabled && maintenanceReason"
+            class="max-w-64 text-right text-xs text-amber-600"
+            :title="maintenanceReason"
+          >
+            原因:{{ maintenanceReason }}
           </p>
         </div>
         <UButton
@@ -302,12 +340,15 @@ function fmtTs(ts: number | null) {
               <th class="py-2 font-medium">
                 订单号
               </th>
+              <th class="py-2 font-medium">
+                操作
+              </th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="loading">
               <td
-                colspan="8"
+                colspan="9"
                 class="py-6 text-center text-neutral-500"
               >
                 加载中…
@@ -315,7 +356,7 @@ function fmtTs(ts: number | null) {
             </tr>
             <tr v-else-if="!rows.length">
               <td
-                colspan="8"
+                colspan="9"
                 class="py-6 text-center text-neutral-500"
               >
                 暂无充值记录
@@ -361,6 +402,26 @@ function fmtTs(ts: number | null) {
               </td>
               <td class="py-2.5 font-mono text-xs text-neutral-500">
                 {{ r.orderNo }}
+              </td>
+              <td class="py-2.5">
+                <UButton
+                  v-if="r.status !== 'paid'"
+                  size="xs"
+                  color="primary"
+                  variant="soft"
+                  icon="i-lucide-refresh-cw"
+                  :loading="queryBusyId === r.id"
+                  :disabled="queryBusyId !== null && queryBusyId !== r.id"
+                  @click="queryArrival(r)"
+                >
+                  查询到账
+                </UButton>
+                <span
+                  v-else
+                  class="text-xs text-neutral-300 dark:text-neutral-700"
+                >
+                  —
+                </span>
               </td>
             </tr>
           </tbody>

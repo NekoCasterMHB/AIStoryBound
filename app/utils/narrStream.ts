@@ -5,9 +5,9 @@
 
 export type NarrToken
   = | { type: 'text', text: string }
-    | { type: 'device', function: string, intensity: number, mode?: number, duration?: number }
-    | { type: 'wave', function: string, pattern: string, duration?: number }
-    | { type: 'stop', function: string }
+    | { type: 'device', adapter?: string, function: string, intensity: number, mode?: number, duration?: number }
+    | { type: 'wave', adapter?: string, function: string, pattern: string, duration?: number }
+    | { type: 'stop', adapter?: string, function: string }
     | { type: 'pause', ms: number }
 
 /** 解析 [[...]] 内部内容;非法返回 null(静默丢弃) */
@@ -19,17 +19,24 @@ function parseDirective(inner: string): NarrToken | null {
     return null
   }
   if (s.startsWith('dev:')) {
-    // [[dev:ACTION:INTENSITY[:MODE[:DURATION]]]]
+    // [[dev:[插件id:]功能id:INTENSITY[:MODE[:DURATION]]]] — 首段非数字(功能强度)即视为插件 id 前缀(多设备路由)
     const parts = s.slice('dev:'.length).split(':').map(x => x.trim())
-    const fn = parts[0]
-    const intensity = Number(parts[1])
+    let adapter: string | undefined
+    let fn = parts[0]
+    let intensity = Number(parts[1])
+    if (parts.length >= 3 && !Number.isFinite(Number(parts[1]))) {
+      adapter = parts[0]
+      fn = parts[1]
+      intensity = Number(parts[2])
+    }
     if (!fn || !Number.isFinite(intensity)) return null
-    const mode = parts[2] != null && parts[2] !== '' ? Number(parts[2]) : undefined
-    const duration = parts[3] != null && parts[3] !== '' ? Number(parts[3]) : undefined
+    const mode = parts[adapter ? 3 : 2] != null && parts[adapter ? 3 : 2] !== '' ? Number(parts[adapter ? 3 : 2]) : undefined
+    const duration = parts[adapter ? 4 : 3] != null && parts[adapter ? 4 : 3] !== '' ? Number(parts[adapter ? 4 : 3]) : undefined
     if (mode !== undefined && !Number.isFinite(mode)) return null
     if (duration !== undefined && !Number.isFinite(duration)) return null
     return {
       type: 'device',
+      ...(adapter ? { adapter } : {}),
       function: fn,
       intensity: Math.round(intensity),
       ...(mode !== undefined ? { mode: Math.round(mode) } : {}),
@@ -37,25 +44,38 @@ function parseDirective(inner: string): NarrToken | null {
     }
   }
   if (s.startsWith('wave:')) {
-    // [[wave:ACTION:PATTERN[:DURATION]]] — 调教模式(可调强度的能力统一提供)
+    // [[wave:[插件id:]功能id:PATTERN[:DURATION]]] — 调教模式(可调强度的能力统一提供)
     const parts = s.slice('wave:'.length).split(':').map(x => x.trim())
-    const fn = parts[0]
-    const pattern = parts[1]
+    let adapter: string | undefined
+    let fn = parts[0]
+    let pattern = parts[1]
+    const PATTERNS = ['sine', 'pulse', 'sawtooth', 'heartbeat', 'random', 'constant', 'auto']
+    if (parts.length >= 3 && !PATTERNS.includes(parts[1] ?? '')) {
+      adapter = parts[0]
+      fn = parts[1]
+      pattern = parts[2]
+    }
     if (!fn || !pattern) return null
-    const duration = parts[2] != null && parts[2] !== '' ? Number(parts[2]) : undefined
+    const duration = parts[adapter ? 3 : 2] != null && parts[adapter ? 3 : 2] !== '' ? Number(parts[adapter ? 3 : 2]) : undefined
     if (duration !== undefined && !Number.isFinite(duration)) return null
     return {
       type: 'wave',
+      ...(adapter ? { adapter } : {}),
       function: fn,
       pattern,
       ...(duration !== undefined ? { duration: Math.round(duration) } : {})
     }
   }
   if (s.startsWith('stop:')) {
-    // [[stop:ACTION]] — 停止该功能的调教并归零
-    const fn = s.slice('stop:'.length).trim()
+    // [[stop:[插件id:]功能id]] — 停止该功能的调教并归零
+    const parts = s.slice('stop:'.length).split(':').map(x => x.trim())
+    const fn = parts[parts.length - 1]
     if (!fn) return null
-    return { type: 'stop', function: fn }
+    return {
+      type: 'stop',
+      ...(parts.length >= 2 ? { adapter: parts[0] } : {}),
+      function: fn
+    }
   }
   // 通用插件扩展语法(本期预留):[[act:PLUGIN:ACTION:JSON参数]] — 识别但暂不产出可执行 token
   if (s.startsWith('act:')) {

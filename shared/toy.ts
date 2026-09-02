@@ -68,6 +68,11 @@ export const DEFAULT_TOY_SETTINGS: ToySettings = {
 /** 能力未声明强度范围时的回退上限(正常情况下强度上限由清单 capabilities 声明) */
 export const DEFAULT_FUNCTION_MAX_INTENSITY = 100
 
+/** 设置命名空间键:多设备下同名能力分别限制;adapterId 缺省 = 裸功能键(旧存档/单设备) */
+export function functionKey(adapterId: string | undefined, fnId: string): string {
+  return adapterId ? `${adapterId}:${fnId}` : fnId
+}
+
 /** 适配器是否启用(设置缺省 = 全部启用) */
 export function isAdapterEnabled(settings: ToySettings, adapterId: string): boolean {
   return settings.enabledAdapters == null || settings.enabledAdapters.includes(adapterId)
@@ -82,19 +87,25 @@ export function toggleAdapterEnabled(settings: ToySettings, adapterId: string, e
   return next
 }
 
-/** 功能是否允许 AI 控制(显式列表时只放行列表内;缺省 = 全部允许) */
-export function isAiFunctionEnabled(settings: ToySettings, fnId: string): boolean {
-  return settings.aiEnabledFunctions == null || settings.aiEnabledFunctions.includes(fnId)
+/** 功能是否允许 AI 控制(显式列表时只放行列表内;缺省 = 全部允许)。
+ *  多设备:键为 ${adapterId}:${fnId};同时兼容旧存档的裸 fnId(任一命中即放行)。 */
+export function isAiFunctionEnabled(settings: ToySettings, fnId: string, adapterId?: string): boolean {
+  if (settings.aiEnabledFunctions == null) return true
+  return settings.aiEnabledFunctions.includes(fnId)
+    || settings.aiEnabledFunctions.includes(functionKey(adapterId, fnId))
 }
 
-/** 切换功能的 AI 控制开关,返回新的 aiEnabledFunctions(全部允许恢复 undefined) */
-export function toggleAiFunctionEnabled(settings: ToySettings, fnId: string, enabled: boolean): string[] | undefined {
+/** 切换功能的 AI 控制开关(adapterId 缺省 = 裸键/旧存档),返回新的 aiEnabledFunctions(全部允许恢复 undefined) */
+export function toggleAiFunctionEnabled(settings: ToySettings, fnId: string, enabled: boolean, adapterId?: string): string[] | undefined {
   const cur = settings.aiEnabledFunctions ?? []
+  const key = functionKey(adapterId, fnId)
+  const has = cur.includes(fnId) || cur.includes(key)
   if (enabled) {
-    const next = [...new Set([...cur, fnId])]
+    if (has) return cur.length ? cur : undefined
+    const next = [...new Set([...cur, key])]
     return next.length === 0 ? undefined : next
   }
-  const next = cur.filter(id => id !== fnId)
+  const next = cur.filter(id => id !== fnId && id !== key)
   return next.length === 0 ? [] : next
 }
 
@@ -232,23 +243,25 @@ export type ToyLimitResult
  * 生效的最大强度 = min(能力声明上限, 用户覆盖)。
  * declaredMax 为该能力清单声明的强度上限(validateDeviceEvent 已按此钳制);
  * 用户可在安全设置中进一步调低(ToySettings.functionLimits),取较小值。
+ * adapterId 用于命名空间键(多设备同名能力分别限制);缺省 = 裸键(旧存档/单设备)。
  */
-export function functionLimitOf(settings: ToySettings, fnId: string, declaredMax: number): { maxIntensity: number } {
-  const userMax = settings.functionLimits?.[fnId]?.maxIntensity
+export function functionLimitOf(settings: ToySettings, fnId: string, declaredMax: number, adapterId?: string): { maxIntensity: number } {
+  const userMax = settings.functionLimits?.[functionKey(adapterId, fnId)]?.maxIntensity
+    ?? settings.functionLimits?.[fnId]?.maxIntensity // 兼容旧存档裸键
   return { maxIntensity: userMax != null ? Math.min(declaredMax, userMax) : declaredMax }
 }
 
-export function checkHardLimits(event: DeviceEvent, settings: ToySettings, source: 'ai' | 'manual', caps?: ToyCapabilities): ToyLimitResult {
+export function checkHardLimits(event: DeviceEvent, settings: ToySettings, source: 'ai' | 'manual', caps?: ToyCapabilities, adapterId?: string): ToyLimitResult {
   if (source === 'ai') {
     if (!settings.aiEnabled) return { ok: false, reason: 'AI 设备控制总开关已关闭' }
-    // 分能力单独启用:显式列表时只放行列表内的功能(缺省 = 全部允许)
-    if (settings.aiEnabledFunctions != null && !settings.aiEnabledFunctions.includes(event.function)) {
+    // 分能力单独启用:显式列表时只放行列表内的功能(缺省 = 全部允许;多设备按 adapterId 命名空间)
+    if (!isAiFunctionEnabled(settings, event.function, adapterId)) {
       return { ok: false, reason: `功能「${event.function}」未开启 AI 控制,请在详细配置中启用` }
     }
     // 生效上限 = min(清单声明上限, 用户覆盖);强度超出直接拒绝,不做静默降级
     const fn = caps?.functions.find(f => f.id === event.function)
     const declaredMax = fn?.intensityRange?.[1] ?? DEFAULT_FUNCTION_MAX_INTENSITY
-    const lim = functionLimitOf(settings, event.function, declaredMax)
+    const lim = functionLimitOf(settings, event.function, declaredMax, adapterId)
     if (event.intensity > lim.maxIntensity) {
       return { ok: false, reason: `强度 ${event.intensity} 超过最大限制 ${lim.maxIntensity}` }
     }
