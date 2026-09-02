@@ -1,7 +1,7 @@
 // app/utils/gameSaveStore.ts
 // 游戏存档点(本地 IndexedDB):每次行动完成后把整局快照(消息流+状态+章节)落盘,
 // 长按/右键行动气泡可回滚到任意历史节点。仅浏览器端生效(SSR 时自动跳过)。
-import type { GameState } from '#shared/novel'
+import type { GameState, LocalGame } from '#shared/novel'
 import { db } from './localDb'
 
 const STORE = 'saves'
@@ -24,6 +24,8 @@ export interface GameSavePoint {
   /** 剧情当前推进到的细纲段下标(0-based;旧存档点为已废弃的 currentChapter 字符串) */
   currentBeat: number | null
   messages: SaveMsg[]
+  /** 存盘点时刻的整局剧情摘要(回滚时随点恢复;旧存档点无此字段,读回 undefined → 按无摘要处理) */
+  summary?: LocalGame['summary'] | null
   savedAt: string
 }
 

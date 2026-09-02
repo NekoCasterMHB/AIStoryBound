@@ -3,7 +3,7 @@ import { NOVEL_STATUS_LABELS, fmtNovelChars } from '#shared/store-novel'
 import { NOVEL_ENCODING_LABELS, normalizeNovelToUtf8 } from '#shared/novel-encoding'
 import type { NovelStatus } from '#shared/store-novel'
 
-// /admin/novels — 小说审核(管理后台):商品列表 + 试读/下载审核 + 通过/拒绝 + 推荐标记。
+// /admin/novels — 小说审核(管理后台):商品列表 + 在线阅读(可拉全文)/下载审核 + 通过/拒绝 + 推荐标记。
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
 useHead({ title: 'AI Word2World · 小说审核' })
@@ -147,7 +147,7 @@ async function toggleFeatured(row: NovelRow) {
   }
 }
 
-// ---- 在线试读(审核):最新提交版本元信息 + 正文前 MAX_NOVEL_REVIEW_BYTES 字节 ----
+// ---- 在线阅读(审核):最新提交版本元信息 + 正文(默认开头 50KB,可「加载全文」拉整本) ----
 interface NovelPreviewData {
   version: number
   title: string
@@ -168,7 +168,7 @@ interface NovelPreviewData {
     garbledRatio: number
     confidence: 'high' | 'low'
   }
-  /** 正文前 50KB 解码后的文本(超长截断) */
+  /** 正文文本:默认开头 50KB;加载全文后为整本解码文本 */
   content: string
   truncated: boolean
 }
@@ -186,12 +186,32 @@ async function openPreview(row: NovelRow | null) {
   previewLoading.value = true
   previewError.value = ''
   previewData.value = null
+  fullLoaded.value = false
   try {
     previewData.value = await $fetch<NovelPreviewData>(`/api/admin/novels/${row.id}/preview`)
   } catch (e) {
     previewError.value = e instanceof Error ? e.message : String(e)
   } finally {
     previewLoading.value = false
+  }
+}
+
+/** 是否已加载全文(与 truncated 无关:短文初始加载即全文,但只有拉过 ?full=1 才算主动拉全文) */
+const fullLoaded = ref(false)
+const loadingFull = ref(false)
+
+/** 拉取全文:?full=1 让服务端解码整本返回,替换预览内容(在线阅读审核) */
+async function loadFullContent() {
+  const row = previewRow.value
+  if (!row || loadingFull.value || fullLoaded.value) return
+  loadingFull.value = true
+  try {
+    previewData.value = await $fetch<NovelPreviewData>(`/api/admin/novels/${row.id}/preview?full=1`)
+    fullLoaded.value = true
+  } catch (e) {
+    toast.add({ title: '加载全文失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    loadingFull.value = false
   }
 }
 
@@ -242,7 +262,7 @@ async function convertUtf8() {
         小说审核
       </h1>
       <p class="text-sm text-neutral-500">
-        审核通过后小说在创意工坊「书架」上架;可在线试读正文开头或下载整本核对,对优质小说可打「平台推荐」标
+        审核通过后小说在创意工坊「书架」上架;可在线阅读全文(正文较长先显示开头,可一键加载全文)或下载整本核对,对优质小说可打「平台推荐」标
       </p>
     </div>
 
@@ -399,10 +419,10 @@ async function convertUtf8() {
                     size="xs"
                     color="neutral"
                     variant="outline"
-                    icon="i-lucide-book-open"
+                    icon="i-lucide-book-open-text"
                     @click="openPreview(r)"
                   >
-                    试读
+                    在线阅读
                   </UButton>
                   <UButton
                     size="xs"
@@ -488,10 +508,10 @@ async function convertUtf8() {
       </template>
     </UModal>
 
-    <!-- 在线试读弹窗 -->
+    <!-- 在线阅读弹窗 -->
     <UModal
       v-model:open="previewOpen"
-      title="在线试读"
+      title="在线阅读"
       :ui="{
         content: 'max-w-3xl'
       }"
@@ -569,11 +589,26 @@ async function convertUtf8() {
               {{ previewData.content }}
             </p>
           </div>
-          <p
-            v-if="previewData.truncated"
-            class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
+          <div
+            v-if="previewData.truncated && !fullLoaded"
+            class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
           >
-            正文较长,仅展示开头部分;请点击「下载审核」下载整本核对
+            <span>正文较长,当前显示开头部分;可加载全文在线阅读核对</span>
+            <UButton
+              size="xs"
+              color="warning"
+              icon="i-lucide-file-text"
+              :loading="loadingFull"
+              @click="loadFullContent"
+            >
+              加载全文
+            </UButton>
+          </div>
+          <p
+            v-else-if="fullLoaded"
+            class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+          >
+            已加载全文(共 {{ previewData.totalChars.toLocaleString() }} 字),可在线阅读核对
           </p>
         </template>
       </template>

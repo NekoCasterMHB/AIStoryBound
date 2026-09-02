@@ -151,9 +151,6 @@ export interface RelayStreamResult {
   usage: Promise<TokenUsage>
 }
 
-const encoder = new TextEncoder()
-const decoder = new TextDecoder()
-
 function emitData(content: string): string {
   return `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
 }
@@ -201,6 +198,10 @@ export async function relaySse(
   messages: { role: string, content: string }[] = []
 ): Promise<RelayStreamResult> {
   const reader = upstream.body?.getReader()
+  // 编码器/解码器按请求新建:TextDecoder({stream:true}) 有跨块缓冲,模块级单例会被并发流
+  // (多用户/多标签、世界生成并发单元)互相串扰——A 流末尾的半个字符被 B 流的字节补全 → 正文乱码
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
 
   // Chat Completions:原样透传字节,同时按行解析 usage(跨分片合并,不锁第一帧)
   if (cfg.format === 'chat' && reader) {

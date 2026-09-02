@@ -192,6 +192,26 @@ onMounted(async () => {
     loadError.value = '该存档基于已下线的「从章节开始」开局,已失效。请返回选角页,改用「按细纲段开始」或其它开场方式重新开局。'
     return
   }
+  // 旧存档自愈(针对「结算落盘早于旁白入列」缺陷遗留的错位档):
+  // 末条为玩家行动、但 summary 已推进到该行动之后 → 该行动其实已被回应,旁白丢在磁盘外。
+  // 续玩若走「重试本回合」会把它二次结算(state_delta 重复叠加)导致剧情失控;
+  // 这里丢弃尾部悬空行动,以 summary 描述的情节为基线直接继续(幂等:丢完后末条为旁白即不再触发)。
+  let healed = false
+  const summaryIdx = typeof g.summary?.idx === 'number' ? g.summary.idx : null
+  const healTail = g.messages.at(-1)
+  if (healTail?.role === 'user' && summaryIdx !== null && summaryIdx > healTail.idx) {
+    let cut = g.messages.length
+    for (let i = g.messages.length - 1; i >= 0; i--) {
+      const m = g.messages[i]!
+      if (m.role !== 'user' || summaryIdx <= m.idx) break
+      cut = i
+    }
+    if (cut < g.messages.length) {
+      g.messages = g.messages.slice(0, cut)
+      healed = true
+      void saveLocalGame(g)
+    }
+  }
   game.value = g
   work.value = g.workId ? await getWork(g.workId) : null
   if (g.workId) void touchWork(g.workId)
@@ -203,6 +223,11 @@ onMounted(async () => {
     : resolveInitialBeat()
   const last = g.messages.at(-1)
   options.value = last ? (g.optionsByMessage?.[last.id] ?? []) : []
+  if (healed) {
+    // 悬空行动已丢弃:不展示旧决策点选项(可能已被消费过),提示直接自由输入新行动继续
+    options.value = []
+    toast.add({ title: '上次回合进度保存不完整,剧情摘要已保留,请直接输入行动继续', color: 'neutral' })
+  }
   // 初始存档点:保证第一轮行动也有回滚目标
   await savePointNow()
 })
@@ -708,6 +733,7 @@ async function savePointNow() {
     state: JSON.parse(JSON.stringify(state.value)),
     currentBeat: plotBeat.value,
     messages: JSON.parse(JSON.stringify(messages.value)),
+    summary: game.value?.summary ?? null,
     savedAt: new Date().toISOString()
   }).catch(() => {})
   await capGamePoints(gameId)
@@ -802,8 +828,10 @@ async function runOptionsPhase(
     completion: optRes.usage?.completionTokens ?? 0,
     total: optTotal
   }]
-  persist()
-  await savePointNow()
+  // 注意:不在收尾器内落盘。此时旁白尚未 push 进 messages(要等打字机播完,sendTurn 才会 push),
+  // 在这里 persist 会把「结算已写入、旁白缺失」的错位快照固化——续玩恢复时末条行动看似未获回应,
+  // 「重试本回合」会对已结算回合二次应用 state_delta,导致后续剧情失控。落盘统一由调用方在
+  // 旁白入列后的回合闭环处执行(sendTurn / retryOptionsPhase)。
 }
 
 /** 收尾失败/选项为空后的重试:旁白已上屏,只补跑选项阶段 */
@@ -821,6 +849,9 @@ async function retryOptionsPhase() {
   liveSpeed.value = 0
   try {
     await runOptionsPhase(narratorMsg, narratorMsg.content, 0)
+    // 收尾补跑成功:旁白已在消息尾部,与 sendTurn 同语义闭环落盘(重进/回滚点完整)
+    persist()
+    await savePointNow()
   } catch (e) {
     if (e instanceof CancelledError) {
       turnAbort = null
@@ -1084,7 +1115,11 @@ async function sendTurn(choice?: string) {
     messages.value.push(narratorMsg)
     if (!optionsOk) awaitingOptions.value = true
     await optionsTask
+    // 回合闭环落盘:旁白已入列、收尾(状态/摘要/选项/段位)已结算,此刻写盘才是
+    // 「叙事 + 结算」对齐的完整快照。收尾器内部落盘已移除(见 runOptionsPhase),统一在这里落。
+    persist()
     if (optionsErr) throw optionsErr
+    await savePointNow()
   } catch (e) {
     if (e instanceof CancelledError) {
       // 玩家停止/页面卸载:不当作失败。未获回应的行动弹出撤销,恢复上一决策点选项
@@ -1167,6 +1202,9 @@ async function rollbackAction() {
     && (target as { currentBeat?: number | null }).currentBeat! >= 0)
     ? (target as { currentBeat: number }).currentBeat
     : (beatFromLegacyLabel((target as { currentChapter?: string | null }).currentChapter) ?? 0)
+  // 剧情摘要随存档点一并回滚(旧存档点无 summary 字段 → 置空):不回滚的话摘要仍指向回滚点之后的剧情,
+  // 【剧情回顾】超前于已回退的历史,会污染回滚后继续玩的叙事上下文
+  if (game.value) game.value.summary = target.summary ?? null
   streamDisplay.value = ''
   typewriter?.dispose()
   typewriter = null

@@ -1,6 +1,6 @@
 // server/api/admin/novels/[id]/preview.get.ts
-// 管理端在线预览:读取该小说最新提交版本的正文(前 MAX_NOVEL_REVIEW_BYTES 字节解码),
-// 连同版本元信息返回,供审核时查阅;全文核对走「下载审核」。
+// 管理端在线预览:读取该小说最新提交版本的正文,连同版本元信息返回,供审核时查阅。
+// 默认只返回正文开头 MAX_NOVEL_REVIEW_BYTES 字节(快速预览);?full=1 时解码整本返回全文(在线阅读审核)。
 import { useD1 } from '../../../../utils/d1'
 import { getSkillBucket } from '../../../../utils/r2'
 import { requireAdmin } from '../../../../utils/authz'
@@ -43,12 +43,14 @@ export default defineEventHandler(async (event) => {
   }
 
   const bytes = new Uint8Array(await object.arrayBuffer())
-  const head = bytes.slice(0, MAX_NOVEL_REVIEW_BYTES)
-  // 自适应格式检测:对预览字节按乱码特征评分择优解码(Workers 支持 utf-8/gb18030/gbk;
+  // 默认只取开头 MAX_NOVEL_REVIEW_BYTES 字节(快速预览);?full=1 时解码整本返回全文(在线阅读审核)
+  const full = getQuery(event).full === '1' || getQuery(event).full === 'true'
+  const slice = full ? bytes : bytes.slice(0, MAX_NOVEL_REVIEW_BYTES)
+  // 自适应格式检测:对预览/全文字节按乱码特征评分择优解码(Workers 支持 utf-8/gb18030/gbk;
   // Big5 等不支持标签会落到低置信,管理员可在浏览器端「一键转 UTF-8」修复)
-  const detected = detectNovelEncoding(head)
+  const detected = detectNovelEncoding(slice)
   const text = detected.text
-  const truncated = bytes.length > MAX_NOVEL_REVIEW_BYTES
+  const truncated = !full && bytes.length > MAX_NOVEL_REVIEW_BYTES
 
   return {
     version: novel.version,
@@ -68,10 +70,10 @@ export default defineEventHandler(async (event) => {
       garbledRatio: Number(detected.garbledRatio.toFixed(4)),
       confidence: detected.confidence
     },
-    /** 正文前 MAX_NOVEL_REVIEW_BYTES 字节解码后的文本(超长截断) */
+    /** 正文解码文本:默认前 MAX_NOVEL_REVIEW_BYTES 字节;?full=1 时为全文 */
     content: text,
     truncated,
-    /** 是否超长:true 时建议「下载审核」核对全文 */
+    /** 非截断时返回实际字数(全文或短文均为精确值) */
     actualChars: truncated ? null : countNovelChars(text)
   }
 })
