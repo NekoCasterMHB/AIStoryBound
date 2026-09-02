@@ -4,6 +4,7 @@
 // 流程:服务端自动识别编码 → 转为 UTF-8 文本 → 按转换后内容重算 sha-256 → 查共享缓存
 // (命中且未带 forceRegenerate 时直接返回 cacheHit,不建任务,由客户端选择拉取/重新生成)→
 // R2 按 hash 去重存转换后 UTF-8 → 平台模式余额预检 → 建任务行 → 启动 Workflow。
+// 计费:创建仅预检不预扣;运行中只记账,任务成功完成时一次性从余额扣除实际消耗(余额不足转 paused 待补扣)。
 // 自建 key:格式校验 + 指纹准入(与 /api/ai/chat 同门槛)→ AES-GCM 加密暂存到任务行,
 // 任务终态即清空(clearTaskKey / 孤儿清扫兜底);用户 key 模式不扣平台额度、只记账。
 // 本地 dev(env.WORLD_GEN 缺失)回退 waitUntil 内联执行同一套管线,保证可调试。
@@ -136,7 +137,7 @@ export default defineEventHandler(async (event) => {
     await bucket.put(sourceKey, utf8Bytes)
   }
 
-  // ---- 平台模式:余额充足性预检(不预扣;真实消耗在管线中逐笔原子扣费,余额不足任务中止) ----
+  // ---- 平台模式:余额充足性预检(不预扣;运行中只记账,任务完成时一次性结算,余额不足转 paused) ----
   const db = useD1(event)
   const chars = Number.isFinite(charCountRaw) && charCountRaw > 0
     ? Math.min(Math.round(charCountRaw), sourceChars) // 转换后字符数不可能超过原文长度,防客户端虚报

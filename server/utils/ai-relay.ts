@@ -33,6 +33,12 @@ export interface RelayInput {
   stream?: boolean
 }
 
+/**
+ * 上游请求的统一客户端标识:通过 User-Agent header 传递,供应商后台据此识别调用方
+ * (与 Zed/Claude 等 Agent 的 UA 标识同一惯例)。所有格式(chat/anthropic/responses)统一带上。
+ */
+export const UPSTREAM_CLIENT_UA = 'Word2World'
+
 interface UpstreamRequest {
   url: string
   headers: Record<string, string>
@@ -71,7 +77,8 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': cfg.apiKey,
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        'User-Agent': UPSTREAM_CLIENT_UA
       },
       body
     }
@@ -97,7 +104,8 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
       url: `${base}/responses`,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${cfg.apiKey}`
+        'Authorization': `Bearer ${cfg.apiKey}`,
+        'User-Agent': UPSTREAM_CLIENT_UA
       },
       body
     }
@@ -124,7 +132,8 @@ export function buildUpstreamRequest(cfg: RelayTarget, input: RelayInput): Upstr
     url: `${base}/chat/completions`,
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${cfg.apiKey}`
+      'Authorization': `Bearer ${cfg.apiKey}`,
+      'User-Agent': UPSTREAM_CLIENT_UA
     },
     body
   }

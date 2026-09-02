@@ -84,7 +84,7 @@ export async function ensureWorldGenTaskStarted(
     console.error('[world-gen] 任务长时间未启动,判定执行环境异常', { taskId: task.id, staleFor })
     await markTaskFailed(
       { db, taskId: task.id },
-      '任务长时间未能启动(执行环境异常,可能为部署回滚或工作流不可用),已按实际消耗结算;请稍后重新上传重试'
+      '任务长时间未能启动(执行环境异常,可能为部署回滚或工作流不可用),未产生扣费;请稍后重新上传重试'
     )
     return
   }

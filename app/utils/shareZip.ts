@@ -230,6 +230,7 @@ function normalizeWork(raw: unknown): LocalWork {
   const conflicts = Array.isArray(r.conflicts) ? r.conflicts as LocalWork['conflicts'] : undefined
   const warnings = Array.isArray(r.warnings) ? r.warnings.filter(w => typeof w === 'string') as string[] : undefined
   const storyline = Array.isArray(r.storyline) ? r.storyline as LocalWork['storyline'] : undefined
+  const characterArcs = Array.isArray(r.characterArcs) ? r.characterArcs as LocalWork['characterArcs'] : undefined
 
   const now = new Date().toISOString()
   return {
@@ -247,7 +248,8 @@ function normalizeWork(raw: unknown): LocalWork {
     conflicts,
     warnings,
     overlay,
-    storyline
+    storyline,
+    characterArcs
   }
 }
 

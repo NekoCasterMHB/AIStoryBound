@@ -606,7 +606,7 @@ function onOverwriteConfirm(overwrite: boolean) {
   overwriteResolve = null
 }
 
-/** 继续暂停中的任务(充值后手动恢复;已完成单元自动复用,不重复扣费) */
+/** 继续暂停中的任务(充值后手动恢复;已完成单元自动复用,成功时才一次性结算) */
 const resumingTaskId = ref<string | null>(null)
 
 async function resumeCloudTask(t: WorldGenTaskDTO) {
@@ -614,7 +614,7 @@ async function resumeCloudTask(t: WorldGenTaskDTO) {
   resumingTaskId.value = t.id
   try {
     await resumeWorldGenTask(t.id)
-    toast.add({ title: '任务已继续', description: '充值已到账,任务从暂停处继续执行', color: 'success' })
+    toast.add({ title: '任务已继续', description: '已从暂停处继续,成功完成后一次性结算', color: 'success' })
     await loadCloudTasks()
   } catch (e) {
     toast.add({ title: '继续失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
@@ -648,7 +648,7 @@ watch(cloudTasks, (tasks) => {
     toast.add({ title: '配角故事线生成失败', description: t.error ?? undefined, color: 'error' })
     pendingArcsTaskId.value = null
   } else if (t.status === 'paused') {
-    toast.add({ title: '余额不足,任务已暂停', description: '充值后在云端任务区点「继续任务」即可续跑,已完成的故事线不重复扣费', color: 'warning' })
+    toast.add({ title: '任务待结算', description: '余额不足,充值后在云端任务区点「继续任务」完成结算,已生成的故事线保留', color: 'warning' })
     pendingArcsTaskId.value = null
   }
 })
@@ -674,15 +674,13 @@ function fmtBytes(n?: number | null) {
   return `${Math.round(n / 1024)} KB`
 }
 
-// ---- 继续游戏:作品卡片 → 模态框(按角色分组列出存档,每档可继续/删除)+ 重新开局 ----
+// ---- 继续游戏:作品卡片 → 模态框(按角色分组列出存档,每档可继续/删除)+ 新开游戏 ----
 const continueOpen = ref(false)
 const continueWorkTitle = ref('')
 const continueWorkId = ref<string | null>(null)
 const continueGames = ref<LocalGame[]>([])
 /** 逐档删除确认的目标存档 id(confirmDeleteId 范式,null=未在确认) */
 const deleteSaveId = ref<string | null>(null)
-/** 重新开局确认弹窗 */
-const restartOpen = ref(false)
 
 /** 该作品是否有本地游戏会话(有则作品卡片显示「继续游戏」按钮) */
 function hasGamesFor(workId: string): boolean {
@@ -798,30 +796,11 @@ async function doDeleteSave() {
   }
 }
 
-const restartSaveCount = computed(() => continueGames.value.length)
-
-async function confirmRestartContinue() {
+/** 新开游戏:不动现有存档,直接回选角页另开一局(选角新建会话即新档,与旧档并存) */
+function startNewGame() {
   const workId = continueWorkId.value
-  if (!workId) return
-  const list = continueGames.value
-  restartOpen.value = false
-  try {
-    for (const g of list) {
-      await deleteGamePoints(g.id).catch(() => {})
-      await deleteLocalGame(g.id).catch(() => {})
-    }
-    continueGames.value = []
-    await refreshLocal()
-    toast.add({
-      title: '已重新开始',
-      description: `《${continueWorkTitle.value}》${list.length ? `的 ${list.length} 局存档已删除,` : ''}请重新选角开局`,
-      color: 'success'
-    })
-    continueOpen.value = false
-    navigateTo(`/play/${workId}`)
-  } catch (e) {
-    toast.add({ title: '重新开始失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
-  }
+  continueOpen.value = false
+  if (workId) navigateTo(`/play/${workId}`)
 }
 
 const shelfTabs = ref<TabsItem[]>([
@@ -1193,10 +1172,16 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                   {{ worldGenStageLabel(t) }} · {{ worldGenTaskPercent(t) }}% · 生成期间可离开页面
                 </p>
                 <p
+                  v-else-if="t.status === 'paused' && t.stage === 'done'"
+                  class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+                >
+                  任务已完成但余额不足,结算前不可下载、不进入共享缓存;充值后点击「继续任务」完成结算
+                </p>
+                <p
                   v-else-if="t.status === 'paused'"
                   class="mt-1 text-xs text-amber-600 dark:text-amber-400"
                 >
-                  已在 {{ worldGenTaskPercent(t) }}% 处暂停(余额不足);充值后点击「继续任务」从断点恢复,已完成部分不重复扣费
+                  已在 {{ worldGenTaskPercent(t) }}% 处暂停;充值后点击「继续任务」从断点恢复,成功完成后一次性结算
                 </p>
                 <!-- R3 操作行(右对齐,与徽章分离不再乱换行) -->
                 <div class="mt-2 flex justify-end gap-1.5">
@@ -1866,7 +1851,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       </template>
     </UModal>
 
-    <!-- 继续游戏:按角色分组列出存档(每档可继续/删除),顶部可重新开局 -->
+    <!-- 继续游戏:按角色分组列出存档(每档可继续/删除),顶部可新开游戏 -->
     <UModal
       :open="continueOpen"
       @update:open="continueOpen = $event"
@@ -1884,23 +1869,23 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
         <p class="text-xs text-neutral-500">
           《{{ continueWorkTitle }}》 · 选择要续玩的存档
         </p>
-        <!-- 重新开局:删全部存档回选角页 -->
-        <div class="mt-3 flex items-center justify-between gap-2 rounded-xl border border-dashed border-error-300 bg-error-500/5 px-3 py-2.5 dark:border-error-700">
+        <!-- 新开游戏:不动现有存档,回选角页另开一局 -->
+        <div class="mt-3 flex items-center justify-between gap-2 rounded-xl border border-dashed border-primary-300 bg-primary-500/5 px-3 py-2.5 dark:border-primary-700">
           <div class="min-w-0">
             <p class="text-sm font-semibold">
-              重新开始本作品
+              新开游戏
             </p>
             <p class="text-xs text-neutral-500">
-              删除全部存档并回到选角页重新开局
+              另开一局新游戏,现有存档全部保留
             </p>
           </div>
           <UButton
-            label="重新开局"
-            icon="i-lucide-rotate-ccw"
-            color="error"
+            label="新开游戏"
+            icon="i-lucide-plus"
+            color="primary"
             variant="soft"
             size="sm"
-            @click="restartOpen = true"
+            @click="startNewGame"
           />
         </div>
         <div
@@ -1952,7 +1937,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
           v-else
           class="mt-3 text-center text-sm text-neutral-400"
         >
-          该作品暂无存档,可重新开局
+          该作品暂无存档,可新开游戏
         </p>
       </template>
     </UModal>
@@ -1984,39 +1969,6 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
             icon="i-lucide-trash-2"
             color="error"
             @click="doDeleteSave"
-          />
-        </div>
-      </template>
-    </UModal>
-
-    <!-- 重新开局确认 -->
-    <UModal
-      v-model:open="restartOpen"
-      title="重新开始本作品"
-      description="此操作不可撤销"
-    >
-      <template #body>
-        <p class="text-sm text-neutral-600 dark:text-neutral-300">
-          确定重新开始《{{ continueWorkTitle }}》?
-          <template v-if="restartSaveCount">
-            将删除全部 {{ restartSaveCount }} 局存档并回到选角页重新开局。
-          </template>
-          存档只保存在本机,删除后无法恢复。
-        </p>
-      </template>
-      <template #footer>
-        <div class="flex justify-end gap-2">
-          <UButton
-            label="取消"
-            color="neutral"
-            variant="outline"
-            @click="restartOpen = false"
-          />
-          <UButton
-            label="重新开始"
-            icon="i-lucide-rotate-ccw"
-            color="error"
-            @click="confirmRestartContinue"
           />
         </div>
       </template>

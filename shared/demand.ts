@@ -26,6 +26,8 @@ export interface DemandItem {
   /** 当前登录用户是否已点赞(未登录为 false) */
   liked: boolean
   authorName: string
+  /** 发起人邮箱:仅管理端列表返回(公开接口出于隐私不含),公开端恒为 undefined */
+  authorEmail?: string | null
   createdAt: number
 }
 

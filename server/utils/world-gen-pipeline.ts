@@ -6,8 +6,8 @@
 //  - 每个步骤函数幂等(重跑不产生副作用错误),进度与状态实时写 world_gen_tasks 行;
 //  - 中间态(合并结果/成书 overlay)写 R2 scratch 前缀,避免塞进 Workflow step 状态或 D1;
 //  - 提取单元结果落 world_gen_units 表:断点续跑与 Workflow step 重放时直接跳过已完成单元;
-//  - 计费:平台模式创建时预授权(estimated_tokens),管线只累计实耗(tokens_used + ai_usage),
-//    终态(完成/失败/取消)按 estimated - used 多退少补(settleTaskBilling,幂等);
+//  - 计费:平台模式创建时仅预检余额(estimated_tokens,不预扣),管线只记账(tokens_used + ai_usage),
+//    任务成功完成时一次性从余额扣除实际消耗 tokensUsed(settleTaskOnSuccess,幂等);失败/取消不扣费;
 //    用户自建 key 模式解密暂存 key 转发,零扣费仅记账。
 //  - 任务终态一律清空 key 暂存列(clearTaskKey),防静态泄露。
 import { drizzle } from 'drizzle-orm/d1'
@@ -136,7 +136,7 @@ export class WorldGenCancelledError extends Error {
   }
 }
 
-/** 平台模式逐笔扣费余额不足:任务转入 paused(充值后可续跑),消息直接展示给用户 */
+/** 历史防御:旧逐笔扣费模型下余额不足抛此错误转 paused;当前成功才结算,结算失败在 settleTaskOnSuccess 内直接转 paused,不再抛出 */
 export class InsufficientTokensError extends Error {
   constructor() {
     super('token 余额不足,任务已暂停;充值后可在书架「云端生成任务」中继续')
@@ -167,22 +167,12 @@ export function parseStageDetail(raw: string | null): ExtendedStageDetail {
 // ---- 计费与账目 ----
 
 /**
- * 累计实耗:平台新计费(reserveTaken=0)先逐笔原子扣余额(不足抛 InsufficientTokensError),
- * 再落 ai_usage 账 + tokens_used 增量;旧任务(reserveTaken=1,创建时已预扣)仅记账。
- * 扣费必须先于调用方的结果落库:余额不足时该次调用结果不计入,续跑会重跑该单元并重新扣费。
+ * 累计实耗:只记账(ai_usage 明细 + tokens_used 增量),不扣余额。
+ * 平台模式的扣费延迟到任务成功完成时一次性结算(settleTaskOnSuccess),失败/取消不扣费。
  */
 export async function recordTaskUsage(ctx: TaskRef, task: WorldGenTaskRow, usage: TokenUsage): Promise<void> {
   const tokens = billedTokens(usage)
   if (tokens <= 0) return
-  if (task.keySource === 'platform' && task.reserveTaken === 0) {
-    const claimed = await ctx.db.update(usersTable)
-      .set({ aiTokenBalance: sql`${usersTable.aiTokenBalance} - ${tokens}` })
-      .where(and(eq(usersTable.id, task.userId), sql`${usersTable.aiTokenBalance} >= ${tokens}`))
-      .run()
-    if (claimed.meta.changes === 0) {
-      throw new InsufficientTokensError()
-    }
-  }
   try {
     await ctx.db.insert(aiUsage).values({
       id: uuid(),
@@ -203,29 +193,26 @@ export async function recordTaskUsage(ctx: TaskRef, task: WorldGenTaskRow, usage
 }
 
 /**
- * 平台旧计费(创建时预扣估算额)终态结算:按 estimated - used 多退少补(封底 0,不追缴)。
- * 幂等:退款后把 estimated_tokens 清零作为标记,重复调用不再退。新计费任务(逐笔实扣)无预扣、直接跳过。
+ * 任务成功完成时的结算:一次性从平台余额扣除实际消耗 tokensUsed(用户自建 key 不扣、只记账)。
+ * 返回 false 表示余额不足,任务已转 paused(已完成待结算;结果与共享缓存均暂不可用,充值后可继续)。
+ * 幂等:结算成功把 estimatedTokens 清零作为标记,重跑/续跑再进来直接通过,不重复扣费。
  */
-export async function settleTaskBilling(ctx: TaskRef): Promise<void> {
+export async function settleTaskOnSuccess(ctx: TaskRef): Promise<boolean> {
   const task = await requireTask(ctx)
-  if (task.keySource !== 'platform') return
-  if (task.reserveTaken !== 1) return
-  if (task.estimatedTokens <= 0) return
-  const refund = Math.max(0, task.estimatedTokens - Math.max(0, task.tokensUsed))
-  try {
-    if (refund > 0) {
-      await ctx.db.update(usersTable)
-        .set({ aiTokenBalance: sql`${usersTable.aiTokenBalance} + ${refund}` })
-        .where(eq(usersTable.id, task.userId))
-        .run()
-    }
-    await ctx.db.update(worldGenTasks)
-      .set({ estimatedTokens: 0, updatedAt: new Date() })
-      .where(eq(worldGenTasks.id, ctx.taskId))
-      .run()
-  } catch (e) {
-    console.error('[world-gen] 结算失败', { taskId: ctx.taskId, refund }, e)
+  if (task.keySource !== 'platform') return true
+  const tokens = Math.max(0, task.tokensUsed)
+  if (tokens <= 0) return true
+  if (task.estimatedTokens <= 0) return true // 已结算(幂等标记)
+  const claimed = await ctx.db.update(usersTable)
+    .set({ aiTokenBalance: sql`${usersTable.aiTokenBalance} - ${tokens}` })
+    .where(and(eq(usersTable.id, task.userId), sql`${usersTable.aiTokenBalance} >= ${tokens}`))
+    .run()
+  if (claimed.meta.changes === 0) {
+    await markTaskPaused(ctx, '任务已完成但 token 余额不足,充值后点击「继续任务」完成结算')
+    return false
   }
+  await markTask(ctx, { estimatedTokens: 0 }) // 已结算标记:重跑/续跑不再重复扣费
+  return true
 }
 
 /** 清空自建 key 暂存(任务终态必须调用;防库文件/备份静态泄露) */
@@ -236,14 +223,14 @@ export async function clearTaskKey(ctx: TaskRef): Promise<void> {
     .run()
 }
 
-/** 失败终态:置状态 + 结算 + 清 key(Workflow run 顶层 catch 与孤儿清扫共用;仅需 db + taskId) */
+/** 失败终态:置状态 + 清 key(Workflow run 顶层 catch 与孤儿清扫共用;仅需 db + taskId)。
+ *  运行中不扣费(成功才一次性结算),失败/取消一律不产生扣费。 */
 export async function markTaskFailed(ctx: TaskRef, message: string): Promise<void> {
   await markTask(ctx, { status: 'failed', error: message.slice(0, 800) })
-  await settleTaskBilling(ctx)
   await clearTaskKey(ctx)
 }
 
-/** 余额不足终态:任务转 paused(进度/单元明细保留,充值后可续跑);已消耗部分照常扣费,无预扣可退 */
+/** 余额不足终态:任务转 paused(已完成待结算,结果暂不可用;充值后 resume 补扣完成)。运行中不扣费,无预扣可退 */
 export async function markTaskPaused(ctx: TaskRef, message: string): Promise<void> {
   await markTask(ctx, { status: 'paused', error: message.slice(0, 800) })
   await clearTaskKey(ctx)
@@ -251,22 +238,21 @@ export async function markTaskPaused(ctx: TaskRef, message: string): Promise<voi
 
 /**
  * 孤儿任务兜底(状态查询接口周期调用):
- *  - running 超时(STALE_RUNNING_MS)→ 判失败并结算(Workflow 被强杀时的退款兜底);
+ *  - running 超时(STALE_RUNNING_MS)→ 判失败(运行中不扣费,失败即免费;旧预扣退款已移除);
  *  - 终态仍带 key 暂存 → 清空(强杀残留)。
  */
 export async function sweepStaleWorldGenTasks(db: WorldGenDb): Promise<void> {
   const staleBefore = new Date(Date.now() - STALE_RUNNING_MS)
   const now = new Date()
   try {
-    // running 超时 → failed(逐行结算;数量极少,不值得批量优化)
+    // running 超时 → failed(数量极少,不值得批量优化)
     const staleRunning = await db.select({ id: worldGenTasks.id })
       .from(worldGenTasks)
       .where(and(eq(worldGenTasks.status, 'running'), lt(worldGenTasks.updatedAt, staleBefore)))
       .all()
     for (const t of staleRunning) {
       const ref: TaskRef = { db, taskId: t.id }
-      await markTask(ref, { status: 'failed', error: '任务超时未完成(执行环境中断),已按实际消耗结算' })
-      await settleTaskBilling(ref)
+      await markTask(ref, { status: 'failed', error: '任务超时未完成(执行环境中断),运行中未产生扣费' })
       await clearTaskKey(ref)
     }
     // 终态残留 key → 清空
@@ -819,7 +805,7 @@ function parseArcsPayload(raw: string | null): ArcsTaskPayload | null {
  * 配角故事线步骤(arcs 补充任务与 world 成书共用):按候选角色逐单元生成独立故事线。
  *  - 数据来源:arcs 任务读 payload(entities/storyline/text);world 成书读 merged 实体 + R2 原文;
  *  - 进度 = doneUnits/totalUnits(stage 'arcs' 期间客户端按故事线条数展示);
- *  - 每单元一次 AI 调用,成功即原子扣费(余额不足抛 InsufficientTokensError → paused);
+ *  - 每单元一次 AI 调用,运行中只记账不扣费;arcs 任务完成后一次性结算(settleTaskOnSuccess),余额不足转 paused 待补扣;
  *  - 单单元失败(非余额)降级跳过并记 warning;全部失败 → 抛错判 failed;至少 1 条成功 → 完成;
  *  - 结果写 scratch arcs.json(world 任务由 finalize 落盘成书,arcs 任务由 /tasks/[id]/arcs 读取);
  *  - 单元级检查点:每候选结果落 scratch arc-unit-<i>.json,重跑/续跑已完成单元直接跳过,不重复扣费;
@@ -863,9 +849,10 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
   const candidates = characterArcCandidates(entities, storyline)
   const totalUnits = candidates.length
   if (totalUnits === 0) {
-    // 无候选角色:arcs 任务直接完成(空结果);world 成书静默跳过(由 finalize 落盘)
+    // 无候选角色:arcs 任务直接完成(空结果,0 消耗结算恒通过);world 成书静默跳过(由 finalize 落盘)
     if (task.kind === 'arcs') {
       await putScratch(ctx, 'arcs', [])
+      await settleTaskOnSuccess(ctx)
       await markTask(ctx, { status: 'completed', stage: 'done', warnings: '[]' })
     }
     return { count: 0 }
@@ -930,12 +917,17 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
     return { count: 0 }
   }
   await putScratch(ctx, 'arcs', arcs)
+  // arcs 任务在此完成:先结算(余额不足转 paused,结果保留在 scratch,充值补扣后重跑至此再完成);
+  // world 任务保持 running,由 finalize 统一结算并落盘
+  if (task.kind === 'arcs') {
+    const settled = await settleTaskOnSuccess(ctx)
+    if (!settled) return { count: arcs.length }
+  }
   const done: Partial<typeof worldGenTasks.$inferInsert> = {
     stage: 'done',
     stageDetail: JSON.stringify({ doneUnits: totalUnits, totalUnits }),
     warnings: JSON.stringify(warnings.slice(0, 20))
   }
-  // arcs 任务在此完成;world 任务保持 running,由 finalize 落盘并置完成
   if (task.kind === 'arcs') done.status = 'completed'
   await markTask(ctx, done)
   return { count: arcs.length }
@@ -960,10 +952,13 @@ export interface WorldJsonPayload {
   version: 2
 }
 
-/** 步骤 7:world json 写 R2 公共缓存 + world_cache 入库(保留首条)+ 任务完成 + 结算 + 清 key + 清 scratch */
+/** 步骤 7:结算成功后写 R2 公共缓存 + world_cache 入库(保留首条)+ 任务完成 + 清 key + 清 scratch。
+ *  结算(settleTaskOnSuccess)必须先于写缓存:余额不足转 paused 时,结果与共享缓存均不落,充值补扣后才生效。 */
 export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: string, cacheId: string | null }> {
   const task = await requireTask(ctx)
   await assertNotCancelled(task)
+  // 幂等:已完成直接返回(结算成功后才置 completed;重跑/续跑不重复落盘)
+  if (task.status === 'completed') return { resultKey: task.resultKey ?? '', cacheId: null }
   const merged = await getScratch<MergedState>(ctx, 'merged')
   const overlay = await getScratch<WorldOverlay>(ctx, 'overlay')
   if (!merged || !overlay) throw new Error('成书中间产物缺失,无法落盘')
@@ -990,6 +985,11 @@ export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: strin
     generatedAt: new Date().toISOString(),
     version: 2
   }
+
+  // 先结算:余额不足转 paused(已完成待结算),不写 R2/缓存/不置 completed,由 resume 补扣后重跑至此
+  const settled = await settleTaskOnSuccess(ctx)
+  if (!settled) return { resultKey: '', cacheId: null }
+
   await ctx.bucket.put(resultKey, JSON.stringify(payload))
 
   // 缓存入库:同一 (hash, mode) 更新为最新成书(用户选择重新生成时按预期刷新缓存与消耗记录)。
@@ -1028,7 +1028,6 @@ export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: strin
     resultKey,
     warnings: JSON.stringify(merged.warnings.slice(0, 20))
   })
-  await settleTaskBilling(ctx)
   await clearTaskKey(ctx)
   await cleanupScratch(ctx)
   // 自定义模式不参与共享缓存,直接返回 null

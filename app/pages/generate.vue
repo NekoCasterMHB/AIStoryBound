@@ -386,10 +386,10 @@ async function startCloudGeneration(opts: { charCount?: number, forceRegenerate?
     }, ctrl.signal)
     if (seq !== runSeq) return
     if (final.status === 'paused') {
-      // 余额不足自动暂停:提示充值后到书架继续(已完成部分不重复扣费),回到上传态
+      // 任务已完成但余额不足:提示充值后到书架补扣结算(结果与共享缓存暂不可用),回到上传态
       toast.add({
-        title: '任务已暂停(余额不足)',
-        description: '充值后可在书架「云端生成任务」中继续;已完成部分不会重复扣费',
+        title: '任务已完成,待结算',
+        description: '余额不足,充值后到书架「云端生成任务」点「继续任务」完成结算',
         color: 'warning',
         icon: 'i-lucide-pause-circle'
       })
@@ -778,7 +778,7 @@ async function cancelGeneration() {
   runSeq++
   abortCtrl.value?.abort()
   abortCtrl.value = null
-  // 云端任务:通知服务端取消(Workflow 终止 + 按实耗结算)
+  // 云端任务:通知服务端取消(Workflow 终止;运行中不扣费,取消即免费)
   const taskId = cloudTask.value?.id
   if (taskId) {
     void cancelWorldGenTask(taskId).catch(() => { /* 取消失败不影响界面复位 */ })
@@ -793,7 +793,7 @@ async function cancelGeneration() {
   genState.value = { phase: 'idle', title: '', progress: null, error: null, resultId: null, tokensUsed: 0 }
   toast.add({
     title: '已停止生成',
-    description: '在途请求可能已产生少量扣费,可重新上传开始。',
+    description: '任务已取消,未产生扣费,可重新上传开始。',
     color: 'neutral',
     icon: 'i-lucide-circle-stop'
   })
@@ -1354,7 +1354,7 @@ const features = [
                 · {{ genState.progress?.doneUnits ?? 0 }}/{{ genState.progress?.totalUnits ?? 0 }} 单元
                 · 进行中 {{ genState.progress?.inflight ?? 0 }}
                 · 分段 {{ (genState.progress?.unitMaxChars ?? 0).toLocaleString() }} 字
-                <template v-if="!usingUserKey">· 已入账 {{ (genState.progress?.tokensUsed ?? 0).toLocaleString() }} / 估算 {{ liveShown.toLocaleString() }} tokens</template>
+                <template v-if="!usingUserKey">· 已消耗 {{ (genState.progress?.tokensUsed ?? 0).toLocaleString() }} / 估算 {{ liveShown.toLocaleString() }} tokens</template>
               </span>
             </p>
             <p
@@ -1562,7 +1562,7 @@ const features = [
             v-if="genState.tokensUsed && !usingUserKey"
             class="mx-auto mt-3 max-w-md text-xs text-neutral-500"
           >
-            本次已消耗约 {{ genState.tokensUsed.toLocaleString() }} tokens(按实际用量结算)。
+            任务失败不产生扣费,已记录的消耗约 {{ genState.tokensUsed.toLocaleString() }} tokens 仅作参考。
           </p>
           <div class="mt-7 flex justify-center gap-3">
             <UButton

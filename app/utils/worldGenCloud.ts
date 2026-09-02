@@ -124,7 +124,7 @@ export interface SupplementArcsArgs {
   config?: { format: string, baseUrl: string, apiKey: string, model: string } | null
 }
 
-/** 创建「补充生成配角故事线」云端任务(服务端逐单元生成并原子扣费) */
+/** 创建「补充生成配角故事线」云端任务(服务端逐单元生成,运行中只记账、完成时一次性结算) */
 export async function startSupplementArcsTask(args: SupplementArcsArgs): Promise<WorldGenTaskDTO> {
   const res = await $fetch<{ task: WorldGenTaskDTO | null }>('/api/world-gen/arcs', {
     method: 'POST',
@@ -140,7 +140,7 @@ export async function fetchArcsResult(id: string): Promise<CharacterArc[]> {
   return res.arcs ?? []
 }
 
-/** 恢复暂停中的任务(充值后继续;已完成单元自动复用) */
+/** 恢复暂停中的任务(充值后继续;已完成单元自动复用,成功完成后一次性结算) */
 export async function resumeWorldGenTask(id: string): Promise<WorldGenTaskDTO> {
   const res = await $fetch<{ task: WorldGenTaskDTO | null }>(`${WORLD_GEN_TASKS_URL}/${id}/resume`, { method: 'POST' })
   if (!res.task) throw new Error('继续失败:服务端未返回任务')
@@ -241,7 +241,7 @@ export function worldGenStageLabel(task: WorldGenTaskDTO): string {
   if (task.status === 'uploaded') return '排队中'
   if (task.status === 'failed') return '失败'
   if (task.status === 'cancelled') return '已取消'
-  if (task.status === 'paused') return '已暂停(余额不足)'
+  if (task.status === 'paused') return task.stage === 'done' ? '待结算(余额不足)' : '已暂停'
   if (task.status === 'completed') return '已完成'
   switch (task.stage) {
     case 'parse': return '解析原文'

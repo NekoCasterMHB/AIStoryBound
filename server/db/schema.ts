@@ -587,9 +587,9 @@ export const worldGenTasks = sqliteTable('world_gen_tasks', {
   keySource: text('key_source').notNull().default('platform'),
   keyCiphertext: text('key_ciphertext'),
   keyIv: text('key_iv'),
-  /** 平台模式预估额(展示/预检参考;新计费为真实消耗逐笔扣费,创建时不预扣) */
+  /** 平台模式预估额(创建时余额预检参考;成功结算后清零作为已结算幂等标记) */
   estimatedTokens: integer('estimated_tokens').notNull().default(0),
-  /** 创建时是否预扣了估算额(旧任务=1,结束退差额;逐笔实扣模式=0,无退款) */
+  /** 历史遗留:旧预扣任务标记(=1);新任务恒 0,不再参与计费(结算已改为成功时一次性扣实耗) */
   reserveTaken: integer('reserve_taken').notNull().default(1),
   /** 实耗累计(两种模式都记,展示用) */
   tokensUsed: integer('tokens_used').notNull().default(0),

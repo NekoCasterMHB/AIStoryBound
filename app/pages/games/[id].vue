@@ -275,8 +275,12 @@ let turnAbort: AbortController | null = null
 /** 失败回合快照(重试用):记录失败时玩家提交的行动,选项阶段失败重试只需补选项 */
 const failedTurn = ref<{ choice?: string } | null>(null)
 
-/** 停止本回合:中止在途 AI 调用,未获回应的行动将被撤销 */
+/** 停止本回合:正文未就绪时中止在途 AI 调用,未获回应的行动将被撤销;正文已完整(打字机播放中)则快进到全文 */
 function stopTurn() {
+  if (narrReady.value) {
+    typewriter?.flush()
+    return
+  }
   turnAbort?.abort()
 }
 
@@ -290,6 +294,8 @@ const pendingAction = computed(() => !streaming.value && lastMessage.value?.role
 // ---- 流式打字机(每回合一个 parser + typewriter;点击流式文本立即显示全文) ----
 let narrParser: NarrParser | null = null
 let typewriter: Typewriter | null = null
+/** 正文是否已完整(叙事流结束、打字机播放中):此阶段「停止」按钮转「快进」 */
+const narrReady = ref(false)
 
 /** 点击流式文本 → 立即显示全文(剩余设备指令顺序执行,停顿跳过,自动会话收尾) */
 function flushStream() {
@@ -712,6 +718,7 @@ async function savePointNow() {
  * 收尾失败/选项为空时的重试只需补跑本阶段,不重发叙事(旁白已上屏,不重复扣费)。
  * 收尾输出偶尔不是合法 JSON(模型在字符串里夹带未转义引号等):此时该次调用已消耗 token,
  * 静默重试一次(玩家只看到骨架屏多等几秒);失败尝试与重试的用量都入账,避免少扣。
+ * 选项为空时自动补生成(最多再补 2 次),不打扰玩家;补生成的用量同样如实入账。
  * 402 余额不足/400 参数错误重试必然复现,直接放行报错;取消(CancelledError)向上抛,不重试。
  */
 async function runOptionsPhase(
@@ -753,6 +760,22 @@ async function runOptionsPhase(
     if (!optRes.ok) retryTokens += optRes.usage?.totalTokens ?? 0
   }
   if (!optRes.ok) throw new Error(optRes.message)
+
+  // 选项为空:自动补生成选项(最多再补 2 次),避免玩家面对空选项;每次尝试的用量都计入 retryTokens
+  const MAX_EMPTY_OPTION_RETRIES = 2
+  for (let n = 0; n < MAX_EMPTY_OPTION_RETRIES && (optRes.data?.options ?? []).length === 0; n++) {
+    console.warn(`[game] 回合选项为空,自动重试选项生成(${n + 1}/${MAX_EMPTY_OPTION_RETRIES})`)
+    const again = await optionsCall()
+    if (again.ok) {
+      retryTokens += optRes.usage?.totalTokens ?? 0 // 空结果那次也计入
+      optRes = again
+    } else {
+      retryTokens += again.usage?.totalTokens ?? 0
+      if (again.status === 402 || again.status === 400) throw new Error(again.message)
+      break // 重试也失败:用最后一次结果(可能仍为空),交给兜底提示与手动入口
+    }
+  }
+
   void addWorkTokens(game.value.workId, retryTokens + (optRes.usage?.totalTokens ?? 0))
   const turn = optRes.data
 
@@ -999,6 +1022,8 @@ async function sendTurn(choice?: string) {
       }
     }
     const narrResult = await runNarrative()
+    // 正文已完整(叙事流结束):打字机播放中,停止按钮转「快进」
+    narrReady.value = true
     // 游玩消耗累计到作品计量(含失败重试已消耗的部分)
     void addWorkTokens(game.value.workId, narrResult.retryTokens + (narrResult.usage?.totalTokens ?? 0))
     // 消耗统计:叙事大项(真实 usage,含重试)+ 输入细项(按字符估算);保留首回合欲望大项
@@ -1052,6 +1077,7 @@ async function sendTurn(choice?: string) {
     })
 
     // 播放结束:旁白上屏;收尾未就绪时显示选项骨架屏(等待时长已与播放重叠,通常即刻可用)
+    narrReady.value = false
     messages.value.push(narratorMsg)
     if (!optionsOk) awaitingOptions.value = true
     await optionsTask
@@ -1078,6 +1104,7 @@ async function sendTurn(choice?: string) {
   } finally {
     // 回合结束:清理打字机,自动会话兜底收尾(解锁手动面板)
     turnAbort = null
+    narrReady.value = false
     typewriter?.dispose()
     typewriter = null
     narrParser = null
@@ -2131,9 +2158,9 @@ watch([messages, streamDisplay], async () => {
           />
           <UButton
             v-if="streaming"
-            label="停止"
-            icon="i-lucide-square"
-            color="error"
+            :label="narrReady ? '快进' : '停止'"
+            :icon="narrReady ? 'i-lucide-chevrons-right' : 'i-lucide-square'"
+            :color="narrReady ? 'primary' : 'error'"
             variant="outline"
             @click="stopTurn"
           />

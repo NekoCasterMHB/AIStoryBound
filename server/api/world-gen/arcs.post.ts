@@ -2,7 +2,7 @@
 // 创建「补充生成配角故事线」云端任务(JSON 体):
 //   { workId, title, entities, storyline, config? }
 // 流程:候选角色预检 → 服务端估算 token → 平台模式余额预检(不预扣)→ 插任务行(kind=arcs,
-// sourceWorkId + payload 暂存输入)→ 启动 Workflow 逐单元生成(每单元原子扣费,余额不足暂停)。
+// sourceWorkId + payload 暂存输入)→ 启动 Workflow 逐单元生成(运行中只记账,完成时一次性结算)。
 // 用户自建 key:格式校验 + 指纹准入(与 /api/ai/chat 同门槛)→ AES-GCM 加密暂存到任务行,
 // 任务终态即清空;用户 key 模式不扣平台额度、只记账。
 import { and, eq } from 'drizzle-orm'
@@ -83,7 +83,7 @@ export default defineEventHandler(async (event) => {
     escrow = await encryptJson(event, { baseUrl: normalized.baseUrl, apiKey: normalized.apiKey, model: normalized.model })
   }
 
-  // ---- 平台模式:余额充足性预检(不预扣;真实消耗在管线中逐单元原子扣费,余额不足任务暂停) ----
+  // ---- 平台模式:余额充足性预检(不预扣;运行中只记账,任务完成时一次性结算,余额不足转 paused) ----
   const inputTokens = estimateMessagesTokens(buildCharacterArcMessages(title || '小说', candidates[0]!, storyline))
   const estimatedTokens = Math.max(1, (inputTokens + ARCS_UNIT_OUTPUT_RESERVE) * totalUnits)
   if (!escrow) {

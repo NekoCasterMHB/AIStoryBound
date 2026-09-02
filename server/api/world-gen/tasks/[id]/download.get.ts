@@ -27,7 +27,7 @@ export default defineEventHandler(async (event) => {
   const bucket = getSkillBucket(event)
   const worldObj = await bucket.get(row.resultKey)
   if (!worldObj) throw createError({ statusCode: 410, statusMessage: '成书缓存缺失,请重新生成' })
-  let world: { title?: string, author?: string | null, overlay?: { title?: string, summary?: string }, entities?: unknown, conflicts?: unknown, storyline?: unknown, warnings?: string[], tokensUsed?: number, mode?: string }
+  let world: { title?: string, author?: string | null, overlay?: { title?: string, summary?: string }, entities?: unknown, conflicts?: unknown, storyline?: unknown, characterArcs?: unknown, warnings?: string[], tokensUsed?: number, mode?: string }
   try {
     world = JSON.parse(await worldObj.text()) as typeof world
   } catch {
@@ -56,7 +56,8 @@ export default defineEventHandler(async (event) => {
     conflicts: world.conflicts,
     warnings: world.warnings ?? [],
     overlay: world.overlay,
-    storyline: world.storyline
+    storyline: world.storyline,
+    characterArcs: world.characterArcs
   }
   const manifest = {
     format: SHARE_FORMAT,

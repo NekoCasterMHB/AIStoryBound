@@ -18,6 +18,7 @@ export interface PrebuiltWorld {
   /** 新预生成 JSON 带完整 overlay;旧文件缺省时从扁平字段拼 */
   overlay?: WorldOverlay
   storyline?: StoryBeat[]
+  characterArcs?: LocalWork['characterArcs']
   entities: WorldEntities
   conflicts: EntityConflict[]
   warnings: string[]
@@ -67,7 +68,8 @@ export async function installPrebuiltWork(preset: Pick<PresetNovelRow, 'id' | 't
       tropes: world.overlay?.tropes,
       kinkProfile: world.overlay?.kinkProfile
     },
-    storyline: world.storyline
+    storyline: world.storyline,
+    characterArcs: world.characterArcs
   }
   await saveWork(work)
   return work.id

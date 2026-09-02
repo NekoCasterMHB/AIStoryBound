@@ -1,12 +1,12 @@
 // server/api/world-gen/tasks/[id].delete.ts
 // 取消或删除云端生成任务:
-//  - uploaded/running/paused:置 cancelled + 结算(旧预扣任务退差额)+ 清 key 暂存 + terminate Workflow 实例;
+//  - uploaded/running/paused:置 cancelled + 清 key 暂存 + terminate Workflow 实例(运行中不扣费,取消即免费);
 //  - completed/failed/cancelled:删除任务行(提取单元明细级联删除;R2 缓存为共享资源不删)。
 import { and, eq } from 'drizzle-orm'
 import { useD1 } from '../../../utils/d1'
 import { requireUser } from '../../../utils/authz'
 import { worldGenTasks } from '../../../db/schema'
-import { clearTaskKey, settleTaskBilling } from '../../../utils/world-gen-pipeline'
+import { clearTaskKey } from '../../../utils/world-gen-pipeline'
 
 export default defineEventHandler(async (event) => {
   const sessUser = await requireUser(event)
@@ -24,7 +24,6 @@ export default defineEventHandler(async (event) => {
       .set({ status: 'cancelled', error: null, updatedAt: new Date() })
       .where(eq(worldGenTasks.id, id))
       .run()
-    await settleTaskBilling({ db, taskId: id })
     await clearTaskKey({ db, taskId: id })
     // 终止执行中的 Workflow 实例(本地 dev 内联执行靠 assertNotCancelled 自行退出)
     const env = (event.context as unknown as { cloudflare?: { env?: Env } }).cloudflare?.env

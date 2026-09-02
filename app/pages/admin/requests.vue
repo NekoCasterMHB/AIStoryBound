@@ -22,7 +22,7 @@ const loading = ref(true)
 async function loadRequests() {
   loading.value = true
   try {
-    rows.value = await $fetch<DemandItem[]>('/api/demand')
+    rows.value = await $fetch<DemandItem[]>('/api/admin/requests')
   } catch (e) {
     toast.add({ title: '加载需求列表失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
   } finally {
@@ -152,7 +152,16 @@ async function confirmDelete() {
                 </p>
               </td>
               <td class="max-w-36 truncate py-2.5 pr-3">
-                {{ r.authorName }}
+                <p class="truncate">
+                  {{ r.authorName }}
+                </p>
+                <p
+                  v-if="r.authorEmail"
+                  class="truncate text-xs text-neutral-400"
+                  :title="r.authorEmail"
+                >
+                  {{ r.authorEmail }}
+                </p>
               </td>
               <td class="py-2.5 pr-3 tabular-nums">
                 {{ r.likeCount }}
