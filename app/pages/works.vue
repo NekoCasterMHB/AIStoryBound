@@ -462,6 +462,26 @@ let cloudPollTimer: ReturnType<typeof setInterval> | null = null
 const hasActiveCloudTasks = computed(() =>
   cloudTasks.value.some(t => t.status === 'uploaded' || t.status === 'running'))
 
+/** 云端任务模态框开关(个人书架入口按钮;任务详情全部收进模态框) */
+const cloudTasksOpen = ref(false)
+/** 有进行中的任务(含暂停待结算):入口按钮显示 loading 动画 */
+const cloudTaskBusy = computed(() =>
+  cloudTasks.value.some(t => t.status === 'uploaded' || t.status === 'running' || t.status === 'paused'))
+/** 已完成且仍需处理的任务数(入口按钮角标):整书任务已安装/arcs 已写回的剔除 */
+const completedCloudTaskCount = computed(() =>
+  cloudTasks.value.filter((t) => {
+    if (t.status !== 'completed') return false
+    return t.kind === 'arcs' ? !appliedArcsTaskIds.value[t.id] : !taskInstalled(t)
+  }).length)
+
+function openCloudTasks() {
+  // 任务模态框渲染在「个人书架」tab 内:从其它 tab 点开时先切过去,模态框才能弹出
+  activeTab.value = 'personal'
+  cloudTasksOpen.value = true
+  // 打开即刷新任务状态(已完成/进度)
+  void loadCloudTasks()
+}
+
 async function loadCloudTasks() {
   try {
     cloudTasks.value = await fetchWorldGenTasks()
@@ -974,7 +994,31 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
           我的书架
         </h1>
       </div>
-      <div class="flex gap-2">
+      <div class="flex items-center gap-2">
+        <div
+          v-if="cloudTasks.length > 0"
+          class="relative me-2"
+        >
+          <UButton
+            color="neutral"
+            variant="outline"
+            size="sm"
+            icon="i-lucide-cloud-cog"
+            :loading="cloudTaskBusy"
+            @click="openCloudTasks"
+          >
+            云端生成任务
+          </UButton>
+          <UBadge
+            v-if="completedCloudTaskCount > 0"
+            color="error"
+            variant="solid"
+            size="sm"
+            class="pointer-events-none absolute -right-2 -top-2"
+          >
+            {{ completedCloudTaskCount > 99 ? '99+' : completedCloudTaskCount }}
+          </UBadge>
+        </div>
         <UButton
           label="生成新世界"
           icon="i-lucide-sparkles"
@@ -1086,15 +1130,19 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       <!-- 个人书架:云端生成任务 + 本地作品 + 云端作品(换设备恢复) -->
       <template #personal>
         <div class="mt-4">
-          <!-- 云端生成任务(进行中显示进度条;完成可下载安装) -->
-          <div
-            v-if="cloudTasks.length"
-            class="mb-6"
+          <!-- 云端生成任务详情(模态框:进行中进度条 / 完成可下载安装 / 暂停可继续) -->
+          <UModal
+            v-model:open="cloudTasksOpen"
+            title="云端生成任务"
           >
-            <h2 class="mb-3 font-semibold">
-              云端生成任务
-            </h2>
-            <div class="space-y-2">
+            <template #body>
+              <div class="space-y-2">
+                <p
+                  v-if="cloudTasks.length === 0"
+                  class="py-4 text-center text-sm text-neutral-500"
+                >
+                  暂无云端生成任务
+                </p>
               <UCard
                 v-for="t in cloudTasks"
                 :key="t.id"
@@ -1239,8 +1287,9 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                   />
                 </div>
               </UCard>
-            </div>
-          </div>
+              </div>
+            </template>
+          </UModal>
 
           <!-- 本地作品 -->
           <div class="mb-6">

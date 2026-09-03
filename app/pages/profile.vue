@@ -53,6 +53,9 @@ interface MeInfo {
   name: string
   email: string
   aiTokenBalance: number
+  /** 待领取收益(「收益」按钮角标):笔数与合计 token */
+  pendingEarningsCount: number
+  pendingEarningsTotal: number
 }
 interface PurchaseRecord {
   id: string
@@ -444,6 +447,71 @@ async function submitRedeem() {
     redeemMsg.value = { kind: 'error', text: errText(e) }
   } finally {
     redeemBusy.value = false
+  }
+}
+
+// ---- 收益(小说/技能售出分成 + 管理员发放:先挂账,点「获取」才入余额) ----
+interface EarningsItem {
+  id: string
+  amount: number
+  sourceType: 'novel_sale' | 'skill_sale' | 'admin'
+  sourceId: string | null
+  itemTitle: string
+  reason: string | null
+  status: 'pending' | 'claimed'
+  createdAt: number
+  claimedAt: number | null
+}
+const earningsOpen = ref(false)
+const earningsLoading = ref(false)
+const earnings = ref<EarningsItem[]>([])
+const earningsTotal = ref(0)
+const earningsPage = ref(1)
+const earningsBusy = ref(false)
+
+const pendingEarningsCount = computed(() => me.value?.pendingEarningsCount ?? 0)
+const pendingEarningsTotal = computed(() => me.value?.pendingEarningsTotal ?? 0)
+
+async function loadEarnings(reset = true) {
+  if (reset) earningsPage.value = 1
+  earningsLoading.value = true
+  try {
+    const res = await $fetch<{ rows: EarningsItem[], total: number }>('/api/earnings', {
+      query: { page: earningsPage.value, pageSize: 20 }
+    })
+    earnings.value = reset ? res.rows : [...earnings.value, ...res.rows]
+    earningsTotal.value = res.total
+  } catch {
+    // 拉取失败保持现状,空态文案已兜底
+  } finally {
+    earningsLoading.value = false
+  }
+}
+
+function openEarnings() {
+  earningsOpen.value = true
+  void loadEarnings(true)
+}
+
+/** 领取收益:ids 缺省 = 一键领取全部;传 [id] = 单笔 */
+async function claimEarnings(ids?: string[]) {
+  if (earningsBusy.value) return
+  earningsBusy.value = true
+  try {
+    const res = await $fetch<{ ok: true, credited: number, claimedCount: number }>('/api/earnings/claim', {
+      method: 'POST',
+      body: ids ? { ids } : {}
+    })
+    toast.add({
+      title: res.claimedCount > 0 ? `已领取 ${res.credited.toLocaleString()} tokens` : '暂无可领取的收益',
+      color: res.claimedCount > 0 ? 'success' : 'neutral'
+    })
+    void loadEarnings(true)
+    void loadMe()
+  } catch (e) {
+    toast.add({ title: errText(e), color: 'error' })
+  } finally {
+    earningsBusy.value = false
   }
 }
 
@@ -973,6 +1041,25 @@ watch(narrLength, v => saveNarrLength(v))
           </p>
         </div>
         <div class="flex shrink-0 gap-2">
+          <div class="relative">
+            <UButton
+              color="neutral"
+              variant="outline"
+              icon="i-lucide-wallet"
+              @click="openEarnings"
+            >
+              收益
+            </UButton>
+            <UBadge
+              v-if="pendingEarningsCount > 0"
+              color="error"
+              variant="solid"
+              size="sm"
+              class="pointer-events-none absolute -right-2 -top-2"
+            >
+              {{ pendingEarningsCount > 99 ? '99+' : pendingEarningsCount }}
+            </UBadge>
+          </div>
           <UButton
             color="neutral"
             variant="outline"
@@ -2340,6 +2427,98 @@ watch(narrLength, v => saveNarrLength(v))
             class="text-xs text-red-500"
           >
             {{ continueError }}
+          </p>
+        </div>
+      </template>
+    </UModal>
+
+    <!-- 收益弹窗:待领取收益一键/单笔领取,记录永久保留 -->
+    <UModal
+      v-model:open="earningsOpen"
+      title="收益"
+    >
+      <template #body>
+        <div class="space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5 dark:border-neutral-700 dark:bg-neutral-900">
+            <div>
+              <p class="text-xs text-neutral-500">
+                待领取收益
+              </p>
+              <p class="text-lg font-bold tabular-nums text-highlighted">
+                {{ pendingEarningsTotal.toLocaleString() }}
+                <span class="text-xs font-normal text-neutral-400">tokens</span>
+              </p>
+            </div>
+            <UButton
+              color="primary"
+              icon="i-lucide-hand-coins"
+              :loading="earningsBusy"
+              :disabled="pendingEarningsCount === 0"
+              @click="claimEarnings()"
+            >
+              一键领取全部
+            </UButton>
+          </div>
+
+          <p
+            v-if="earningsLoading"
+            class="py-4 text-center text-sm text-neutral-500"
+          >
+            加载中…
+          </p>
+          <p
+            v-else-if="earnings.length === 0"
+            class="py-4 text-center text-sm text-neutral-500"
+          >
+            暂无收益记录(小说/技能售出与管理员发放会显示在这里)
+          </p>
+          <div
+            v-for="r in earnings"
+            :key="r.id"
+            class="flex items-center justify-between gap-2 rounded-lg border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-700"
+          >
+            <div class="min-w-0">
+              <p class="truncate font-medium">
+                {{ r.itemTitle }}
+              </p>
+              <p class="truncate text-xs text-neutral-500">
+                {{ fmtTs(r.createdAt) }}{{ r.reason ? ` · ${r.reason}` : '' }}{{ r.claimedAt != null ? ` · 领取于 ${fmtTs(r.claimedAt)}` : '' }}
+              </p>
+            </div>
+            <div class="flex shrink-0 items-center gap-2">
+              <UButton
+                v-if="r.status === 'pending'"
+                size="xs"
+                color="primary"
+                variant="soft"
+                :loading="earningsBusy"
+                @click="claimEarnings([r.id])"
+              >
+                获取
+              </UButton>
+              <UBadge
+                :color="r.status === 'claimed' ? 'success' : 'neutral'"
+                variant="soft"
+                size="sm"
+              >
+                {{ r.status === 'claimed' ? '已领取' : '待领取' }}
+              </UBadge>
+              <span class="tabular-nums font-semibold text-highlighted">+{{ r.amount.toLocaleString() }}</span>
+            </div>
+          </div>
+          <p
+            v-if="earningsTotal > earnings.length"
+            class="text-center"
+          >
+            <UButton
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              :loading="earningsLoading"
+              @click="loadEarnings(false)"
+            >
+              加载更多(还剩 {{ earningsTotal - earnings.length }} 条)
+            </UButton>
           </p>
         </div>
       </template>

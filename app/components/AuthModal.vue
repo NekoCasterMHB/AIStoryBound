@@ -272,8 +272,8 @@ function onOpenChange(v: boolean) {
 }
 
 const tabs = ref<TabsItem[]>([
-  { label: '邮箱+密码', slot: 'password' },
-  { label: '邮箱+验证码', slot: 'otp' }
+  { label: '邮箱+密码', value: 'password', slot: 'password' },
+  { label: '邮箱+验证码', value: 'otp', slot: 'otp' }
 ])
 /** 登录视图当前 tab(password/otp;注册预检到已存在邮箱时自动切到验证码登录) */
 const loginTab = ref('password')

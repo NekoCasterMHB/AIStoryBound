@@ -11,7 +11,7 @@ import type { SkillFileEntry } from '#shared/store-skill'
 import { TOKEN_CNY_PER_M } from '#shared/quota-packages'
 
 // /store/publish — 发布 / 更新 Skill(需登录;zip 压缩包,标准 agent skill 格式,须含 SKILL.md)。
-// 售出后发布者得售价 80%,平台收 20% 手续费,收益直接进入余额;提交后进入管理员审核。
+// 售出后发布者得售价 80%,平台收 20% 手续费,收益先挂账、在个人中心「收益」领取后到账;提交后进入管理员审核。
 // ?skill=<id> 为更新模式:提交新版本(版本号自动递增),审核通过前商店继续售卖现有版本。
 const route = useRoute()
 const skillId = typeof route.query.skill === 'string' ? route.query.skill : ''
@@ -172,7 +172,7 @@ async function submit() {
       variant="subtle"
       icon="i-lucide-circle-dollar-sign"
       title="收益说明"
-      description="您的 Skill 每售出一份,您将获得售价的 80% token 奖励,20% 作为平台手续费;收益在成交时直接进入您的余额。"
+      description="您的 Skill 每售出一份,您将获得售价的 80% token 奖励,20% 作为平台手续费;收益在成交后进入个人中心「收益」,一键领取到账。"
     />
 
     <UCard>

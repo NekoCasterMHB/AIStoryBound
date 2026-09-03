@@ -19,6 +19,7 @@ const items = computed<NavigationMenuItem[]>(() => [
   { label: 'AI 配置', icon: 'i-lucide-bot', to: '/admin/ai-config', active: route.path === '/admin/ai-config' },
   { label: '兑换码管理', icon: 'i-lucide-ticket', to: '/admin/redeem', active: route.path === '/admin/redeem' },
   { label: '充值记录', icon: 'i-lucide-credit-card', to: '/admin/recharge', active: route.path === '/admin/recharge' },
+  { label: '收益发放', icon: 'i-lucide-hand-coins', to: '/admin/earnings', active: route.path === '/admin/earnings' },
   { label: 'Skill 审核', icon: 'i-lucide-shield-check', to: '/admin/skills', active: route.path === '/admin/skills' },
   { label: '小说审核', icon: 'i-lucide-book-open', to: '/admin/novels', active: route.path === '/admin/novels' },
   { label: '需求管理', icon: 'i-lucide-list-checks', to: '/admin/requests', active: route.path === '/admin/requests' },

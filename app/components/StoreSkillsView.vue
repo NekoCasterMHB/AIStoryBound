@@ -157,7 +157,7 @@ async function confirmBuy() {
     const res = await $fetch<{ ok: true, price: number }>(`/api/store/skills/${target.id}/purchase`, { method: 'POST' })
     toast.add({
       title: res.price > 0 ? `购买成功,已扣除 ${fmtTokens(res.price)} tokens` : '已免费获取,永久可下载',
-      description: res.price > 0 ? '购买后永久可下载;发布者将获得其中的 80%' : '免费 Skill 在商城拥有更高展示优先级',
+      description: res.price > 0 ? '购买后永久可下载;发布者将获得其中的 80%,收益在个人中心领取后到账' : '免费 Skill 在商城拥有更高展示优先级',
       color: 'success'
     })
     // 购买完成 → 切换为"获取技能"阶段,引导立即安装到本地
@@ -1046,7 +1046,7 @@ async function onPreviewFile(i: number) {
             <p class="text-sm text-neutral-600 dark:text-neutral-400">
               将支付
               <span class="font-semibold text-highlighted">{{ fmtTokens(buyTarget.price) }} tokens</span>
-              获取该 Skill,购买后永久可下载。发布者将获得售价的 80%,20% 为平台手续费。
+              获取该 Skill,购买后永久可下载。发布者将获得售价的 80%,20% 为平台手续费;收益进入发布者个人中心「收益」,领取后到账。
             </p>
             <div class="mt-3 space-y-1.5 rounded-lg border border-neutral-200 px-3 py-2.5 text-sm dark:border-neutral-800">
               <p class="flex items-center justify-between gap-4">

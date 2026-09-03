@@ -703,3 +703,27 @@ export const mailSent = sqliteTable('mail_sent', {
   index('idx_mail_created').on(t.createdAt),
   index('idx_mail_recipient').on(t.recipientId)
 ])
+
+// ---- 收益账本(销售分成 / 管理员发放先挂账为 pending,用户在个人中心领取才入 user.ai_token_balance) ----
+export const earnings = sqliteTable('earnings', {
+  id: text('id').primaryKey(),
+  /** 收款人 user.id(卖家或管理员发放对象) */
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  /** token 数(正整数,领取时整笔入账) */
+  amount: integer('amount').notNull(),
+  /** novel_sale=小说销售分成 | skill_sale=技能销售分成 | admin=管理员发放 */
+  sourceType: text('source_type').notNull(),
+  /** 关联的购买记录 id(skill/novel 销售填充,admin 发放为空;溯源对账用) */
+  sourceId: text('source_id'),
+  /** 来源名称快照(如「《xx》销售分成」/「管理员发放」),收益列表免联表 */
+  itemTitle: text('item_title').notNull(),
+  /** 自定义原因(仅 admin 发放填写;销售分成为空) */
+  reason: text('reason'),
+  /** pending=待领取 | claimed=已领取 */
+  status: text('status').notNull().default('pending'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  claimedAt: integer('claimed_at', { mode: 'timestamp_ms' })
+}, t => [
+  index('idx_earnings_user_status').on(t.userId, t.status),
+  index('idx_earnings_user_time').on(t.userId, t.createdAt)
+])

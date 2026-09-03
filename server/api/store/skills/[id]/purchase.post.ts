@@ -1,10 +1,11 @@
 // server/api/store/skills/[id]/purchase.post.ts
 // 购买 Skill:校验商品已上架且非自购 → 条件扣买家 token(余额不足整批回滚)→
-// 卖家余额 + 售价*80%(直接入账)、20% 平台手续费记入购买快照 → 写入购买记录(永久可下载)。
+// 写入购买记录(永久可下载)并在同一事务插入 earnings(pending):卖家 80% 分成不再直接入账,
+// 由卖家在个人中心「收益」领取后才进入 ai_token_balance;20% 平台手续费记入购买快照。
 // 唯一索引(skill_id, buyer_id)兜底:重复购买幂等返回 alreadyOwned。
 import { useD1 } from '../../../../utils/d1'
 import { requireUser } from '../../../../utils/authz'
-import { skillProducts, skillProductVersions, skillPurchases, user as usersTable } from '../../../../db/schema'
+import { skillProducts, skillProductVersions, skillPurchases, user as usersTable, earnings } from '../../../../db/schema'
 import { and, eq, desc, sql } from 'drizzle-orm'
 import { uuid } from '../../../../../shared/novel'
 import { splitSkillPrice } from '../../../../../shared/store-skill'
@@ -51,8 +52,18 @@ export default defineEventHandler(async (event) => {
 
   const { sellerShare, platformFee } = splitSkillPrice(skill.price)
   const now = new Date()
+  // 余额预检(常见路径提前拦下,避免 batch 已提交后才判定不足的旧缺陷;并发兜底由下方条件扣款 + changes 校验承担)
+  const buyerRows = await db.select({ balance: usersTable.aiTokenBalance })
+    .from(usersTable)
+    .where(eq(usersTable.id, buyer.id))
+    .all()
+  if ((buyerRows[0]?.balance ?? 0) < skill.price) {
+    throw createError({ statusCode: 402, statusMessage: 'token 余额不足,请到个人中心充值或兑换' })
+  }
 
-  // 原子结算:买家条件扣款(0 行 = 余额不足,整批回滚,不会出现"扣了款没记录")
+  // 原子结算:买家条件扣款(0 行 = 并发下余额不足,整批回滚)。
+  // 卖家分成不再直接入账:同一事务插入 earnings(pending),卖家在个人中心领取后才入 ai_token_balance。
+  const purchaseId = uuid()
   const results = await db.batch([
     db.update(usersTable)
       .set({ aiTokenBalance: sql`${usersTable.aiTokenBalance} - ${skill.price}` })
@@ -60,14 +71,11 @@ export default defineEventHandler(async (event) => {
         eq(usersTable.id, buyer.id),
         sql`${usersTable.aiTokenBalance} >= ${skill.price}`
       )),
-    db.update(usersTable)
-      .set({ aiTokenBalance: sql`${usersTable.aiTokenBalance} + ${sellerShare}` })
-      .where(eq(usersTable.id, skill.sellerId)),
     db.update(skillProducts)
       .set({ purchaseCount: sql`${skillProducts.purchaseCount} + 1`, updatedAt: now })
       .where(eq(skillProducts.id, id)),
     db.insert(skillPurchases).values({
-      id: uuid(),
+      id: purchaseId,
       skillId: id,
       buyerId: buyer.id,
       price: skill.price,
@@ -75,6 +83,18 @@ export default defineEventHandler(async (event) => {
       platformFee,
       skillVersionId: saleVersion.id,
       createdAt: now
+    }),
+    db.insert(earnings).values({
+      id: uuid(),
+      userId: skill.sellerId,
+      amount: sellerShare,
+      sourceType: 'skill_sale',
+      sourceId: purchaseId,
+      itemTitle: `《${skill.name}》销售分成`,
+      reason: null,
+      status: 'pending',
+      createdAt: now,
+      claimedAt: null
     })
   ])
   const deductChanges = (results[0] as { meta: { changes: number } }).meta.changes
