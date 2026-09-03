@@ -1045,6 +1045,7 @@ watch(narrLength, v => saveNarrLength(v))
             <UButton
               color="neutral"
               variant="outline"
+              size="sm"
               icon="i-lucide-wallet"
               @click="openEarnings"
             >
@@ -1063,6 +1064,7 @@ watch(narrLength, v => saveNarrLength(v))
           <UButton
             color="neutral"
             variant="outline"
+            size="sm"
             icon="i-lucide-receipt-text"
             @click="openHistory"
           >
@@ -1071,6 +1073,7 @@ watch(narrLength, v => saveNarrLength(v))
           <UButton
             color="neutral"
             variant="outline"
+            size="sm"
             icon="i-lucide-ticket"
             @click="openRedeem"
           >
@@ -2479,10 +2482,10 @@ watch(narrLength, v => saveNarrLength(v))
           >
             <div class="min-w-0">
               <p class="truncate font-medium">
-                {{ r.itemTitle }}
+                {{ r.sourceType === 'admin' && r.reason ? r.reason : r.itemTitle }}
               </p>
               <p class="truncate text-xs text-neutral-500">
-                {{ fmtTs(r.createdAt) }}{{ r.reason ? ` · ${r.reason}` : '' }}{{ r.claimedAt != null ? ` · 领取于 ${fmtTs(r.claimedAt)}` : '' }}
+                {{ fmtTs(r.createdAt) }}{{ r.sourceType === 'admin' ? ' · 管理员发放' : '' }}{{ r.claimedAt != null ? ` · 领取于 ${fmtTs(r.claimedAt)}` : '' }}
               </p>
             </div>
             <div class="flex shrink-0 items-center gap-2">
