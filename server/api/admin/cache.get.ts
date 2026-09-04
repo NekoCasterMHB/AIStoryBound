@@ -3,7 +3,7 @@
 // 拉取命中同一 (sourceHash, mode) 共享一份成书,此页用于排查缓存命中问题与清理过期条目。
 import { useD1 } from '../../utils/d1'
 import { requireAdmin } from '../../utils/authz'
-import { worldCache } from '../../db/schema'
+import { worldCache, user as usersTable } from '../../db/schema'
 import { desc, asc, count, eq, like, or, and, sql } from 'drizzle-orm'
 
 const SORT_FIELDS = ['createdAt', 'updatedAt', 'downloads', 'tokensUsed'] as const
@@ -43,8 +43,24 @@ export default defineEventHandler(async (event) => {
     ? await db.select({ n: count() }).from(worldCache).where(and(...conds)).all()
     : await db.select({ n: count() }).from(worldCache).all()
 
-  const rows = await db.select()
+  const rows = await db.select({
+    id: worldCache.id,
+    sourceHash: worldCache.sourceHash,
+    mode: worldCache.mode,
+    fileSize: worldCache.fileSize,
+    title: worldCache.title,
+    author: worldCache.author,
+    worldKey: worldCache.worldKey,
+    tokensUsed: worldCache.tokensUsed,
+    downloads: worldCache.downloads,
+    createdBy: worldCache.createdBy,
+    createdByName: usersTable.name,
+    createdByEmail: usersTable.email,
+    createdAt: worldCache.createdAt,
+    updatedAt: worldCache.updatedAt
+  })
     .from(worldCache)
+    .leftJoin(usersTable, eq(usersTable.id, worldCache.createdBy))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(orderBy)
     .limit(pageSize)
@@ -70,6 +86,8 @@ export default defineEventHandler(async (event) => {
       tokensUsed: r.tokensUsed,
       downloads: r.downloads,
       createdBy: r.createdBy,
+      createdByName: r.createdByName ?? null,
+      createdByEmail: r.createdByEmail ?? null,
       createdAt: Number(r.createdAt),
       updatedAt: Number(r.updatedAt)
     })),

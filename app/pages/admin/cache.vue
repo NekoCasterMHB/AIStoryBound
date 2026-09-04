@@ -18,6 +18,9 @@ interface CacheRow {
   tokensUsed: number
   downloads: number
   createdBy: string | null
+  /** 创建人解析结果:创建用户删除后为 null(created_by 外键 ON DELETE SET NULL) */
+  createdByName: string | null
+  createdByEmail: string | null
   createdAt: number
   updatedAt: number
 }
@@ -313,8 +316,11 @@ async function promote(row: CacheRow) {
               <td class="py-2.5 pr-3 tabular-nums">
                 {{ r.downloads.toLocaleString() }}
               </td>
-              <td class="max-w-32 truncate py-2.5 pr-3 text-xs text-neutral-500">
-                {{ r.author || '—' }}
+              <td
+                class="max-w-32 truncate py-2.5 pr-3 text-xs text-neutral-500"
+                :title="r.createdByName && r.createdByEmail ? `${r.createdByName} · ${r.createdByEmail}` : (r.createdByEmail || '')"
+              >
+                {{ r.createdByName || r.createdByEmail || '—' }}
               </td>
               <td class="py-2.5 pr-3 text-xs text-neutral-500">
                 {{ fmtTs(r.updatedAt) }}
