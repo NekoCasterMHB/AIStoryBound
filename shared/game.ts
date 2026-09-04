@@ -546,13 +546,17 @@ export interface TurnPromptPart {
 /** 组装叙事 prompt 分段:system 各块在前、user 各块在后,顺序即最终拼接顺序 */
 export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening, deviceSpec, narrLength, reinjectPlot, entities, conflicts, storyline, characterArcs, playerArcCharacter, overlayMeta, stageIndex } = args
-  // 有效卡:基础卡 + 阶段变体(≤当前段)+ 运行时动态状态,prompt 全程使用有效卡防 OOC
+  // 动态有效卡 = 基础卡 + 阶段变体(≤当前段)+ 运行时动态状态:仅供 user 尾部的人设锚点(近指令处带最新动态)
   const dyn = state.characterStates ?? {}
   const effCards = cards.map(c => effectiveCard(c, stageIndex, dyn[c.name]))
   const effPlayer = playerCard ? effectiveCard(playerCard, stageIndex, dyn[playerCard.name]) : undefined
+  // system 头部卡行走静态有效卡(基础卡 + 阶段变体,不含运行时动态):动态状态集中在 system 尾部「游戏状态」块,
+  // 头部保持段内字节稳定——回合间变化的字段不再嵌在靠前位置打断供应商前缀缓存
+  const headPlayer = playerCard ? effectiveCard(playerCard, stageIndex) : undefined
   // 只注入当回合登场角色(未登场卡不进 prompt,省 token;旧作品无 cast 时回退全部)
-  const scene = sceneCards(effCards, storyline, stageIndex)
-  const others = scene.filter(c => c.name !== playerName)
+  const sceneNames = new Set(sceneCards(effCards, storyline, stageIndex).map(c => c.name))
+  const headCards = cards.map(c => effectiveCard(c, stageIndex))
+  const others = headCards.filter(c => sceneNames.has(c.name) && c.name !== playerName)
   // 运行时动态状态(处境/位置/情绪/字段变化)有任一角色存在时,提示 AI 以其为准并继续回报变化
   const hasDynStates = Object.keys(dyn).length > 0
 
@@ -603,26 +607,28 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   const sceneRuleLines = numberedRules.filter((_, i) => ruleEntries[i]!.kind === 'scene')
 
   const track = plotTrackBlock({ entities, conflicts, storyline, characterArcs, playerName: playerArcCharacter || playerName, currentBeat: stageIndex })
-  const playerLine = `你是《${title}》的互动叙事引擎。玩家扮演「${playerName}」(${effPlayer ? cardBrief(effPlayer, dyn[playerName]) : '原著角色'})。`
-  const othersLine = `可能出场的其他角色:\n${others.map(c => cardBrief(c, dyn[c.name])).join('\n')}`
+  const playerLine = `你是《${title}》的互动叙事引擎。玩家扮演「${playerName}」(${headPlayer ? cardBrief(headPlayer) : '原著角色'})。`
+  const othersLine = `可能出场的其他角色:\n${others.map(c => cardBrief(c)).join('\n')}`
   const stateLine = `当前游戏状态:${JSON.stringify(state, null, 0)}`
   const dynLine = '角色动态状态:state.characterStates 记录各角色随互动演进后的当前处境/位置/情绪及已变化的字段(卡上「当前状态/当前情绪/当前位置」同源),演绎时以此为准;人物卡其余字段被互动永久改变时(如身份、目标、秘密曝光),也一并写入收尾的 state_delta.character_states 回报。'
   const deviceLines = deviceSpec?.trim() ? ['设备联动(指令对玩家不可见):', deviceSpec.trim()] : []
 
-  // system 各块:保持原拼接物理顺序(ADULT 政策→玩家行→题材行→其他角色→状态→动态→设备→规则→轨道),
-  // 仅按统计标签分组;同标签可重复出现,估算时按 label 聚合
+  // system 各块物理顺序:固定内容(政策→玩家行→题材行→其他角色→设备→规则→轨道)在前,动态内容收尾——
+  // 「当前游戏状态」JSON 与动态状态说明每回合都变(性欲值/情绪/处境/位置),放最末使回合间前缀保持逐字节一致,
+  // 供应商前缀缓存(按 token 前缀命中)才能覆盖规则/角色卡/轨道这些大块固定内容;同一 label 可重复出现,估算时聚合
   const sysGroups: { label: string, lines: string[] }[] = [
     { label: '系统规则与内容政策', lines: [ADULT_CONTENT_POLICY] },
     { label: '角色卡与人设', lines: [playerLine] },
     { label: '世界设定与剧情轨道', lines: [overlayToneLine(genre, summary, overlayMeta)] },
     { label: '角色卡与人设', lines: [othersLine] },
-    { label: '游戏状态', lines: [stateLine] },
-    ...(hasDynStates ? [{ label: '游戏状态', lines: [dynLine] }] : []),
     ...(deviceLines.length ? [{ label: '系统规则与内容政策', lines: deviceLines }] : []),
     { label: '系统规则与内容政策', lines: ['规则:', ...baseRuleLines] },
     ...(skillRuleLines.length ? [{ label: 'AI 技能规则', lines: skillRuleLines }] : []),
     ...(sceneRuleLines.length ? [{ label: '用户偏好与回避场景', lines: sceneRuleLines }] : []),
-    ...(track ? [{ label: '世界设定与剧情轨道', lines: [track] }] : [])
+    ...(track ? [{ label: '世界设定与剧情轨道', lines: [track] }] : []),
+    // —— 以下为每回合变化的动态块,system 内断点统一收在尾部 ——
+    { label: '游戏状态', lines: [stateLine] },
+    ...(hasDynStates ? [{ label: '游戏状态', lines: [dynLine] }] : [])
   ]
   const systemParts = sysGroups.map(g => ({ role: 'system' as const, label: g.label, content: g.lines.join('\n') }))
 
@@ -631,9 +637,6 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   // 开场判定基于剧情上下文(摘要/历史),与人设提醒是否注入无关——
   // 人设提醒只要有角色卡就总会注入,若用它挡在开场前面,首回合开场指令会被吞掉
   const hasStoryContext = !!summaryText || history.length > 0
-  if (summaryText) {
-    userParts.push({ label: '剧情回顾与历史消息', content: `【剧情回顾】${summaryText}` })
-  }
   const recent = history.slice(-12)
   // 本轮行动已在尾部「玩家本轮行动」单独强调,历史里去重,避免同一行动重复出现稀释指令
   if (choice && recent.at(-1)?.role === 'user' && recent.at(-1)!.content === choice) recent.pop()
@@ -643,6 +646,11 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
       if (m.role === 'user') return `【${m.speaker || playerName}】${m.content}`
       return `【剧情】${m.content}`
     }).join('\n') })
+  }
+  // 剧情回顾(收尾器每回合整段重写,属易变数据)放已成文的历史之后:历史消息回合间逐字节不变,
+  // 是 user 段前缀缓存的主体;摘要若置前,每次重写都会让整段 user 从头断开缓存
+  if (summaryText) {
+    userParts.push({ label: '剧情回顾与历史消息', content: `【剧情回顾】${summaryText}` })
   }
   // 首回合(无摘要/无历史)的开场:按开局设定注入对应背景,缺省维持原有自由开场
   if (!hasStoryContext) {
