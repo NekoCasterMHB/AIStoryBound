@@ -2,6 +2,7 @@
 // /works — 我的书架(登录后):推荐书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
 import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments, isLegacyChapteredWork } from '../utils/worldGen'
+import { listBook2, loadBook2AsWork, deleteBook2 } from '../utils/bookStoreV2'
 import { NOVEL_ENCODING_LABELS } from '#shared/novel-encoding'
 import { characterArcCandidates } from '#shared/world-build'
 import { listLocalGames, deleteLocalGame } from '../utils/gameStore'
@@ -103,7 +104,23 @@ async function startPrebuilt(p: PresetNovelRow) {
 }
 
 async function refreshLocal() {
-  works.value = await listWorks()
+  const [localWorks, v2Rows] = await Promise.all([listWorks(), listBook2()])
+  const v2Ids = new Set(v2Rows.map(r => r.id))
+  // 自愈:旧「桥接」曾把 book2 源作品落过 works 副本(带 book2SourceId)。book2 zip 才是真源,
+  // 副本只是读取视图且会随真源失步 → 这里清理;作品删除时也联动删 book2(见 confirmDeleteWork)
+  for (const w of localWorks) {
+    if (w.book2SourceId && v2Ids.has(w.id)) await deleteWork(w.id).catch(() => {})
+  }
+  const keptWorks = localWorks.filter(w => !(w.book2SourceId && v2Ids.has(w.id)))
+  const localIds = new Set(keptWorks.map(w => w.id))
+  // 合并 v2 作品:loadBook2AsWork 自带 book2SourceId 标记;同 id 已被 works 占用的不重复列出
+  const v2Works: LocalWork[] = []
+  for (const row of v2Rows) {
+    if (localIds.has(row.id)) continue
+    const w = await loadBook2AsWork(row.id)
+    if (w) v2Works.push(w)
+  }
+  works.value = [...keptWorks, ...v2Works]
   games.value = await listLocalGames()
 }
 
@@ -120,6 +137,7 @@ function selectRole(w: LocalWork) {
     legacyStartWork.value = w
     return
   }
+  // play 页经 loadWorkSmart 直读 book2(v2 真源)/ works(v1),这里不再落 works 副本
   void navigateTo(`/play/${w.id}`)
 }
 
@@ -262,6 +280,8 @@ async function confirmDeleteWork() {
     await deleteGamePoints(g.id).catch(() => {})
     await deleteLocalGame(g.id).catch(() => {})
   }
+  // v2(book2)作品:zip 才是真源,works 里可能残留旧桥接副本 → 一并清掉
+  if (w.book2SourceId) await deleteBook2(w.id).catch(() => {})
   await deleteWork(w.id)
   deleteOpen.value = false
   deleteTarget.value = null
@@ -298,14 +318,17 @@ function workCardTags(w: LocalWork): string[] {
   return tags
 }
 
-/** 每部本地作品的「更多操作」菜单:世界详情 / 编辑正文 / 编辑角色卡 / 重新生成世界 / 同步云端 / 删除 */
+/** 每部本地作品的「更多操作」菜单:世界详情 / 编辑正文 / 编辑角色卡 / 重新生成世界 / 同步云端 / 删除
+ *  v2(book2 真源)作品的正文编辑/重新生成/云端同步依赖 works 行与 v1 产物,属后续阶段(P3/P4/P5),
+ *  此处禁用;世界详情/编辑角色卡已支持 book2 直读直写 */
 function workMenuItems(w: LocalWork): DropdownMenuItem[][] {
+  const isBook2 = !!w.book2SourceId
   const firstGroup: DropdownMenuItem[] = [
     { label: '世界详情', icon: 'i-lucide-globe', onSelect: () => openWorldDetail(w.id) },
-    { label: w.chapters.length === 0 ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
+    { label: w.chapters.length === 0 ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', disabled: isBook2, onSelect: () => navigateTo(`/edit/${w.id}`) },
     { label: '编辑角色卡', icon: 'i-lucide-users', onSelect: () => openCharEditor(w.id) },
-    { label: '重新生成世界', icon: 'i-lucide-refresh-cw', onSelect: () => navigateTo(`/generate?from=work&id=${w.id}`) },
-    { label: '同步云端', icon: 'i-lucide-cloud-upload', disabled: syncingWorkId.value === w.id, onSelect: () => syncWorkToCloudZip(w) }
+    { label: '重新生成世界', icon: 'i-lucide-refresh-cw', disabled: isBook2, onSelect: () => navigateTo(`/generate?from=work&id=${w.id}`) },
+    { label: '同步云端', icon: 'i-lucide-cloud-upload', disabled: syncingWorkId.value === w.id || isBook2, onSelect: () => syncWorkToCloudZip(w) }
   ]
   // 仅当真正缺少配角故事线且有候选角色(登场≥2次)时才展示增量补生成入口;
   // 缺 arcs 但无候选角色时点击只会提示"无需生成",不再浪费菜单位置
@@ -1143,150 +1166,150 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                 >
                   暂无云端生成任务
                 </p>
-              <UCard
-                v-for="t in cloudTasks"
-                :key="t.id"
-                class="!py-3"
-              >
-                <!-- R1 状态行:图标 + 标题 + 阶段/消耗徽章(不再与按钮混排) -->
-                <div class="flex min-w-0 items-center gap-2">
-                  <UIcon
-                    :name="t.status === 'completed'
-                      ? 'i-lucide-circle-check'
-                      : t.status === 'failed'
-                        ? 'i-lucide-circle-x'
-                        : t.status === 'cancelled'
-                          ? 'i-lucide-circle-slash'
-                          : t.status === 'paused'
-                            ? 'i-lucide-pause-circle'
-                            : 'i-lucide-loader-circle'"
-                    class="size-4 shrink-0"
-                    :class="t.status === 'completed'
-                      ? 'text-green-500'
-                      : t.status === 'failed'
-                        ? 'text-red-500'
-                        : t.status === 'cancelled'
-                          ? 'text-neutral-400'
-                          : t.status === 'paused'
-                            ? 'text-amber-500'
-                            : 'animate-spin text-primary-500'"
-                  />
-                  <p class="min-w-0 flex-1 truncate text-sm font-semibold">
-                    {{ t.title || '未命名' }}
+                <UCard
+                  v-for="t in cloudTasks"
+                  :key="t.id"
+                  class="!py-3"
+                >
+                  <!-- R1 状态行:图标 + 标题 + 阶段/消耗徽章(不再与按钮混排) -->
+                  <div class="flex min-w-0 items-center gap-2">
+                    <UIcon
+                      :name="t.status === 'completed'
+                        ? 'i-lucide-circle-check'
+                        : t.status === 'failed'
+                          ? 'i-lucide-circle-x'
+                          : t.status === 'cancelled'
+                            ? 'i-lucide-circle-slash'
+                            : t.status === 'paused'
+                              ? 'i-lucide-pause-circle'
+                              : 'i-lucide-loader-circle'"
+                      class="size-4 shrink-0"
+                      :class="t.status === 'completed'
+                        ? 'text-green-500'
+                        : t.status === 'failed'
+                          ? 'text-red-500'
+                          : t.status === 'cancelled'
+                            ? 'text-neutral-400'
+                            : t.status === 'paused'
+                              ? 'text-amber-500'
+                              : 'animate-spin text-primary-500'"
+                    />
+                    <p class="min-w-0 flex-1 truncate text-sm font-semibold">
+                      {{ t.title || '未命名' }}
+                    </p>
+                    <UBadge
+                      :color="t.status === 'completed' ? 'success' : t.status === 'failed' ? 'error' : t.status === 'cancelled' ? 'neutral' : t.status === 'paused' ? 'warning' : 'info'"
+                      variant="soft"
+                      size="sm"
+                      class="shrink-0"
+                    >
+                      {{ worldGenStageLabel(t) }}
+                    </UBadge>
+                    <UBadge
+                      v-if="t.tokensUsed && t.keySource !== 'user'"
+                      color="neutral"
+                      variant="subtle"
+                      size="sm"
+                      icon="i-lucide-coins"
+                      class="shrink-0"
+                    >
+                      {{ t.tokensUsed.toLocaleString() }} tokens
+                    </UBadge>
+                    <UBadge
+                      v-if="t.keySource === 'user'"
+                      color="neutral"
+                      variant="subtle"
+                      size="sm"
+                      label="自建 Key"
+                      class="shrink-0"
+                    />
+                  </div>
+                  <p
+                    v-if="t.status === 'failed' && t.error"
+                    class="mt-1.5 break-all text-xs text-red-500"
+                  >
+                    {{ t.error }}
                   </p>
-                  <UBadge
-                    :color="t.status === 'completed' ? 'success' : t.status === 'failed' ? 'error' : t.status === 'cancelled' ? 'neutral' : t.status === 'paused' ? 'warning' : 'info'"
-                    variant="soft"
-                    size="sm"
-                    class="shrink-0"
+                  <UProgress
+                    v-if="t.status === 'running' || t.status === 'uploaded' || t.status === 'paused'"
+                    :model-value="worldGenTaskPercent(t)"
+                    size="xs"
+                    class="mt-2"
+                  />
+                  <p
+                    v-if="t.status === 'running' || t.status === 'uploaded'"
+                    class="mt-1 text-xs text-neutral-500"
                   >
-                    {{ worldGenStageLabel(t) }}
-                  </UBadge>
-                  <UBadge
-                    v-if="t.tokensUsed && t.keySource !== 'user'"
-                    color="neutral"
-                    variant="subtle"
-                    size="sm"
-                    icon="i-lucide-coins"
-                    class="shrink-0"
+                    {{ worldGenStageLabel(t) }} · {{ worldGenTaskPercent(t) }}% · 生成期间可离开页面
+                  </p>
+                  <p
+                    v-else-if="t.status === 'paused' && t.stage === 'done'"
+                    class="mt-1 text-xs text-amber-600 dark:text-amber-400"
                   >
-                    {{ t.tokensUsed.toLocaleString() }} tokens
-                  </UBadge>
-                  <UBadge
-                    v-if="t.keySource === 'user'"
-                    color="neutral"
-                    variant="subtle"
-                    size="sm"
-                    label="自建 Key"
-                    class="shrink-0"
-                  />
-                </div>
-                <p
-                  v-if="t.status === 'failed' && t.error"
-                  class="mt-1.5 break-all text-xs text-red-500"
-                >
-                  {{ t.error }}
-                </p>
-                <UProgress
-                  v-if="t.status === 'running' || t.status === 'uploaded' || t.status === 'paused'"
-                  :model-value="worldGenTaskPercent(t)"
-                  size="xs"
-                  class="mt-2"
-                />
-                <p
-                  v-if="t.status === 'running' || t.status === 'uploaded'"
-                  class="mt-1 text-xs text-neutral-500"
-                >
-                  {{ worldGenStageLabel(t) }} · {{ worldGenTaskPercent(t) }}% · 生成期间可离开页面
-                </p>
-                <p
-                  v-else-if="t.status === 'paused' && t.stage === 'done'"
-                  class="mt-1 text-xs text-amber-600 dark:text-amber-400"
-                >
-                  任务已完成但余额不足,结算前不可下载、不进入共享缓存;充值后点击「继续任务」完成结算
-                </p>
-                <p
-                  v-else-if="t.status === 'paused'"
-                  class="mt-1 text-xs text-amber-600 dark:text-amber-400"
-                >
-                  已在 {{ worldGenTaskPercent(t) }}% 处暂停;充值后点击「继续任务」从断点恢复,成功完成后一次性结算
-                </p>
-                <!-- R3 操作行(右对齐,与徽章分离不再乱换行) -->
-                <div class="mt-2 flex justify-end gap-1.5">
-                  <!-- arcs 任务完成:手动「更新世界情报」写回本地作品(已写回则显示已更新禁用) -->
-                  <UButton
-                    v-if="t.kind === 'arcs' && t.status === 'completed'"
-                    :label="appliedArcsTaskIds[t.id] ? '已更新' : '更新世界情报'"
-                    :icon="appliedArcsTaskIds[t.id] ? 'i-lucide-check' : 'i-lucide-refresh-cw'"
-                    color="primary"
-                    :variant="appliedArcsTaskIds[t.id] ? 'ghost' : 'soft'"
-                    size="sm"
-                    :loading="applyingArcsTaskId === t.id"
-                    :disabled="!!appliedArcsTaskIds[t.id]"
-                    @click="applyArcsResult(t)"
-                  />
-                  <!-- 整书任务完成:下载安装(已安装则显示已安装禁用) -->
-                  <UButton
-                    v-if="t.kind !== 'arcs' && t.status === 'completed'"
-                    :label="taskInstalled(t) ? '已安装' : '下载安装'"
-                    :icon="taskInstalled(t) ? 'i-lucide-check' : 'i-lucide-download'"
-                    color="primary"
-                    :variant="taskInstalled(t) ? 'ghost' : 'soft'"
-                    size="sm"
-                    :loading="installingTaskId === t.id"
-                    :disabled="taskInstalled(t)"
-                    @click="installCloudTask(t)"
-                  />
-                  <UButton
-                    v-if="t.status === 'paused'"
-                    label="继续任务"
-                    icon="i-lucide-play"
-                    color="primary"
-                    variant="soft"
-                    size="sm"
-                    :loading="resumingTaskId === t.id"
-                    @click="resumeCloudTask(t)"
-                  />
-                  <UButton
-                    v-if="t.status === 'uploaded' || t.status === 'running' || t.status === 'paused'"
-                    label="取消"
-                    icon="i-lucide-circle-stop"
-                    color="error"
-                    variant="ghost"
-                    size="sm"
-                    @click="cancelCloudTask(t)"
-                  />
-                  <UButton
-                    v-if="t.status !== 'running' && t.status !== 'uploaded'"
-                    label="删除记录"
-                    icon="i-lucide-trash-2"
-                    color="neutral"
-                    variant="ghost"
-                    size="sm"
-                    @click="cancelCloudTask(t)"
-                  />
-                </div>
-              </UCard>
+                    任务已完成但余额不足,结算前不可下载、不进入共享缓存;充值后点击「继续任务」完成结算
+                  </p>
+                  <p
+                    v-else-if="t.status === 'paused'"
+                    class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+                  >
+                    已在 {{ worldGenTaskPercent(t) }}% 处暂停;充值后点击「继续任务」从断点恢复,成功完成后一次性结算
+                  </p>
+                  <!-- R3 操作行(右对齐,与徽章分离不再乱换行) -->
+                  <div class="mt-2 flex justify-end gap-1.5">
+                    <!-- arcs 任务完成:手动「更新世界情报」写回本地作品(已写回则显示已更新禁用) -->
+                    <UButton
+                      v-if="t.kind === 'arcs' && t.status === 'completed'"
+                      :label="appliedArcsTaskIds[t.id] ? '已更新' : '更新世界情报'"
+                      :icon="appliedArcsTaskIds[t.id] ? 'i-lucide-check' : 'i-lucide-refresh-cw'"
+                      color="primary"
+                      :variant="appliedArcsTaskIds[t.id] ? 'ghost' : 'soft'"
+                      size="sm"
+                      :loading="applyingArcsTaskId === t.id"
+                      :disabled="!!appliedArcsTaskIds[t.id]"
+                      @click="applyArcsResult(t)"
+                    />
+                    <!-- 整书任务完成:下载安装(已安装则显示已安装禁用) -->
+                    <UButton
+                      v-if="t.kind !== 'arcs' && t.status === 'completed'"
+                      :label="taskInstalled(t) ? '已安装' : '下载安装'"
+                      :icon="taskInstalled(t) ? 'i-lucide-check' : 'i-lucide-download'"
+                      color="primary"
+                      :variant="taskInstalled(t) ? 'ghost' : 'soft'"
+                      size="sm"
+                      :loading="installingTaskId === t.id"
+                      :disabled="taskInstalled(t)"
+                      @click="installCloudTask(t)"
+                    />
+                    <UButton
+                      v-if="t.status === 'paused'"
+                      label="继续任务"
+                      icon="i-lucide-play"
+                      color="primary"
+                      variant="soft"
+                      size="sm"
+                      :loading="resumingTaskId === t.id"
+                      @click="resumeCloudTask(t)"
+                    />
+                    <UButton
+                      v-if="t.status === 'uploaded' || t.status === 'running' || t.status === 'paused'"
+                      label="取消"
+                      icon="i-lucide-circle-stop"
+                      color="error"
+                      variant="ghost"
+                      size="sm"
+                      @click="cancelCloudTask(t)"
+                    />
+                    <UButton
+                      v-if="t.status !== 'running' && t.status !== 'uploaded'"
+                      label="删除记录"
+                      icon="i-lucide-trash-2"
+                      color="neutral"
+                      variant="ghost"
+                      size="sm"
+                      @click="cancelCloudTask(t)"
+                    />
+                  </div>
+                </UCard>
               </div>
             </template>
           </UModal>

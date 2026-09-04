@@ -335,6 +335,13 @@ export function cardBrief(c: CharacterCard, dyn?: CharacterDynamicState): string
     sex?.condom != null ? (sex.condom ? '戴套' : '不戴套') : ''
   ].filter(Boolean)
   if (sexBits.length) bits.push(`床笫:${sexBits.join('/')}`)
+  // v2 自由区:未识别/扩展字段汇总为「补充设定」给 AI,保证新字段不丢(见 docs/format-v2.md §8)
+  const profile = c.profile
+  if (profile && Object.keys(profile).length) {
+    try {
+      bits.push(`补充设定:${JSON.stringify(profile)}`)
+    } catch { /* 非序列化忽略 */ }
+  }
   return bits.join(' ')
 }
 

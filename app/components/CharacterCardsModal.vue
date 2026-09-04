@@ -1,7 +1,9 @@
 <script setup lang="ts">
-// 编辑角色卡弹窗:修改/新增/删除本地作品 overlay.characters,保存回 IndexedDB works
+// 编辑角色卡弹窗:修改/新增/删除本地作品 overlay.characters;
+// v1 作品保存回 IndexedDB works,v2(book2)作品写回 book2 zip 的 characters/ 层
 // 入口:书架「本地作品」卡片上的「角色卡」按钮;保存后由父组件刷新列表
-import { getWork, saveWork } from '../utils/worldGen'
+import { saveWork } from '../utils/worldGen'
+import { loadWorkSmart, saveBook2Characters } from '../utils/bookStoreV2'
 import { listLocalGames, saveLocalGame } from '../utils/gameStore'
 import { desireTierName, DESIRE_TIERS, SEX_TEXT_KEYS } from '#shared/novel'
 import type { CharacterArc, CharacterCard, SexAttrs, SexTextField } from '#shared/novel'
@@ -44,7 +46,8 @@ watch(open, async (v) => {
   loaded.value = false
   loadErr.value = ''
   selIdx.value = 0
-  const work = await getWork(props.workId)
+  // book2 源(v2)经 loadWorkSmart 读 zip;v1 源读 works
+  const work = await loadWorkSmart(props.workId)
   if (!work) {
     loadErr.value = '本地未找到该作品'
     loaded.value = true
@@ -53,8 +56,12 @@ watch(open, async (v) => {
   workTitle.value = work.title
   draft.value = JSON.parse(JSON.stringify(work.overlay?.characters ?? []))
   characterArcs.value = work.characterArcs ?? []
+  rebuildProfileEntries()
   loaded.value = true
 })
+
+// 切换角色时重建自由区编辑副本
+watch(selIdx, () => rebuildProfileEntries())
 
 /** 名字归一化(去空白;弧线按角色名对齐用) */
 function arcKey(s: string | null | undefined): string {
@@ -177,6 +184,93 @@ const appearanceModel = strField('appearance')
 const backgroundModel = strField('background')
 const firstAppearanceModel = strField('first_appearance')
 
+// ---- 自由区(profile):v2 自由键名 + 显式类型 + 增删改 ----
+type ProfileType = 'text' | 'text-multi' | 'list' | 'number' | 'boolean' | 'object'
+const PROFILE_TYPES: { value: ProfileType, label: string }[] = [
+  { value: 'text', label: '文本' },
+  { value: 'text-multi', label: '多行' },
+  { value: 'list', label: '列表' },
+  { value: 'number', label: '数字' },
+  { value: 'boolean', label: '开关' },
+  { value: 'object', label: '对象' }
+]
+
+/** profile 键值(编辑视图;值转可编辑文本/结构化) */
+interface ProfileEntry { key: string, type: ProfileType, text: string, object: unknown }
+
+/** 当前卡的 profile 编辑副本(响应式,保证输入光标;随 sel 切换重建) */
+const profileEntries = ref<ProfileEntry[]>([])
+
+/** 用 sel 的 profile 重建 entries(切换角色/打开时调用) */
+function rebuildProfileEntries() {
+  const p = sel.value?.profile ?? {}
+  profileEntries.value = Object.entries(p).map(([key, v]) => {
+    let type: ProfileType = 'text'
+    let text = ''
+    const object = v
+    if (Array.isArray(v)) {
+      type = 'list'
+      text = (v as unknown[]).map(x => String(x)).join('\n')
+    } else if (typeof v === 'number') {
+      type = 'number'
+      text = String(v)
+    } else if (typeof v === 'boolean') {
+      type = 'boolean'
+      text = v ? '是' : '否'
+    } else if (v && typeof v === 'object') {
+      type = 'object'
+      text = JSON.stringify(v)
+    } else {
+      type = 'text'
+      text = v == null ? '' : String(v)
+    }
+    return { key, type, text, object }
+  })
+}
+
+/** 条目 → 值(按类型转换) */
+function profileValueOf(entry: ProfileEntry): unknown {
+  const s = entry.text.trim()
+  switch (entry.type) {
+    case 'text': return s || undefined
+    case 'text-multi': return s || undefined
+    case 'list': return s ? s.split('\n').map(x => x.trim()).filter(Boolean) : undefined
+    case 'number': return s === '' ? undefined : (Number.isNaN(Number(s)) ? s : Number(s))
+    case 'boolean': return s === '是'
+    case 'object': {
+      try {
+        return entry.text.trim() ? JSON.parse(entry.text) : undefined
+      } catch {
+        return undefined
+      }
+    }
+  }
+}
+
+/** 提交 entries 到 sel.profile */
+function applyProfile() {
+  if (!sel.value) return
+  const p: Record<string, unknown> = {}
+  for (const e of profileEntries.value) {
+    const k = e.key.trim()
+    const v = profileValueOf(e)
+    if (k && v !== undefined) p[k] = v
+  }
+  if (Object.keys(p).length) sel.value.profile = p
+  else delete sel.value.profile
+}
+
+/** 新增一条空自由区字段(默认文本类型) */
+function addProfileField() {
+  profileEntries.value.push({ key: `自由字段${profileEntries.value.length + 1}`, type: 'text', text: '', object: undefined })
+}
+
+/** 删除一条自由区字段 */
+function removeProfileField(i: number) {
+  profileEntries.value.splice(i, 1)
+  applyProfile()
+}
+
 const patienceModel = computed({
   get: () => sel.value?.patience == null ? '' : String(sel.value.patience),
   set: (v: string) => { if (sel.value) sel.value.patience = numOrNull(v) }
@@ -239,6 +333,8 @@ function normalizeCards(): CharacterCard[] {
     if (Object.keys(sex).length) patch.sex = sex
     // 章节变体不进编辑表单(生成流水线产物),保存时原样保留,避免被丢弃
     if ((c.chapterVariants ?? []).length) patch.chapterVariants = c.chapterVariants
+    // v2 自由区(profile):不进表单的可编辑已知字段,保存时透传,避免被丢弃
+    if (c.profile && Object.keys(c.profile).length) patch.profile = c.profile
     return patch
   })
 }
@@ -257,15 +353,20 @@ async function onSave() {
   saving.value = true
   try {
     // 重新读取最新数据,避免覆盖弹窗打开期间的其它改动(如游玩累计 tokens)
-    const work = await getWork(props.workId)
+    const work = await loadWorkSmart(props.workId)
     if (!work) throw new Error('本地未找到该作品')
-    await saveWork({
-      ...work,
-      overlay: { ...work.overlay, characters: cards },
-      // 云端已有对应作品时标记待同步,书架卡片会显示「待同步」徽章
-      syncStatus: work.syncStatus === 'synced' ? 'dirty' : work.syncStatus,
-      updatedAt: new Date().toISOString()
-    })
+    if (work.book2SourceId) {
+      // v2 真源在 book2 zip:人物卡写回 characters/ 基础层
+      await saveBook2Characters(props.workId, cards)
+    } else {
+      await saveWork({
+        ...work,
+        overlay: { ...work.overlay, characters: cards },
+        // 云端已有对应作品时标记待同步,书架卡片会显示「待同步」徽章
+        syncStatus: work.syncStatus === 'synced' ? 'dirty' : work.syncStatus,
+        updatedAt: new Date().toISOString()
+      })
+    }
     await clearOverlappingPatches(work.overlay?.characters ?? [], cards)
     emit('saved')
     open.value = false
@@ -561,6 +662,96 @@ function confirmRemoveCard() {
                   placeholder="回车添加"
                 />
               </UFormField>
+            </section>
+
+            <!-- 自由区:任意键值(动态渲染,见 docs/format-v2.md §6) -->
+            <section class="space-y-2">
+              <div class="flex items-center justify-between">
+                <h4 class="text-xs font-semibold text-neutral-500">
+                  自由区(任意属性)
+                </h4>
+                <UButton
+                  size="xs"
+                  color="primary"
+                  variant="soft"
+                  icon="i-lucide-plus"
+                  @click="addProfileField"
+                >
+                  添加字段
+                </UButton>
+              </div>
+              <p class="text-xs text-neutral-400">
+                自由键名与值,AI 会作为「补充设定」参与演绎;类型自动识别
+              </p>
+              <div
+                v-for="(entry, i) in profileEntries"
+                :key="i"
+                class="flex items-start gap-2 rounded-lg border border-neutral-200 p-2 dark:border-neutral-700"
+              >
+                <div class="min-w-0 flex-1 space-y-1">
+                  <div class="flex items-center gap-2">
+                    <UInput
+                      v-model="entry.key"
+                      size="xs"
+                      placeholder="键名(如 家庭背景)"
+                      class="w-32"
+                      @update:model-value="applyProfile"
+                    />
+                    <USelect
+                      v-model="entry.type"
+                      :items="PROFILE_TYPES"
+                      value-key="value"
+                      label-key="label"
+                      size="xs"
+                      class="w-24"
+                      @update:model-value="applyProfile"
+                    />
+                  </div>
+                  <UTextarea
+                    v-if="entry.type === 'text' || entry.type === 'text-multi' || entry.type === 'object'"
+                    v-model="entry.text"
+                    :rows="entry.type === 'object' ? 3 : 1"
+                    size="xs"
+                    :placeholder="entry.type === 'object' ? 'JSON 对象' : '值'"
+                    class="w-full"
+                    @update:model-value="applyProfile"
+                  />
+                  <UInput
+                    v-else-if="entry.type === 'list'"
+                    v-model="entry.text"
+                    size="xs"
+                    placeholder="每行一项"
+                    class="w-full"
+                    @update:model-value="applyProfile"
+                  />
+                  <UInput
+                    v-else-if="entry.type === 'number'"
+                    v-model="entry.text"
+                    size="xs"
+                    type="number"
+                    class="w-full"
+                    @update:model-value="applyProfile"
+                  />
+                  <USelect
+                    v-else-if="entry.type === 'boolean'"
+                    v-model="entry.text"
+                    :items="[{ value: '是', label: '是' }, { value: '否', label: '否' }]"
+                    value-key="value"
+                    label-key="label"
+                    size="xs"
+                    class="w-24"
+                    @update:model-value="applyProfile"
+                  />
+                </div>
+                <UButton
+                  size="xs"
+                  color="error"
+                  variant="soft"
+                  icon="i-lucide-trash-2"
+                  aria-label="删除字段"
+                  @click="removeProfileField(i)"
+                />
+              </div>
             </section>
 
             <!-- 独立故事线(生成产物只读;扮演该角色时作为主叙事线) -->

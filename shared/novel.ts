@@ -131,6 +131,8 @@ export interface CharacterCard {
   /** 阶段变体:按细纲段与基础卡的差异(生成流水线从原著提取;游玩时按当前段叠加,stage 为 0-based 段下标)。
    *  字段名保留 chapterVariants 旧名是为兼容 IndexedDB 旧数据,语义已从"章节"改为"段" */
   chapterVariants?: CharacterChapterVariant[]
+  /** v2 自由区:未识别/扩展字段(中文载多后注入 AI「补充设定」;旧卡无此字段) */
+  profile?: Record<string, unknown>
 }
 
 // ---- 角色卡兼容归一(外部/旧版本导出的 zip 可能把 appearance 存成结构化对象、personality 存成字符串等) ----
@@ -633,6 +635,9 @@ export interface LocalWork {
   storyline?: StoryBeat[]
   /** 配角独立故事线(角色弧线;成书/增量补生成时写入;旧作品缺失,可增量补齐) */
   characterArcs?: CharacterArc[]
+  /** 作品格式 v2(aisb-book)来源:指向 book2 行 id。存在=该作品由 v2 生成/导入,book2 zip 才是真源;
+   *  旧 works 作品无此字段(=传统 v1 作品)。 */
+  book2SourceId?: string
 }
 
 /** 本地游戏会话(浏览器驱动回合,本地落盘;登录用户可手动同步云端) */

@@ -12,7 +12,7 @@ import type { ToySettings } from '#shared/toy'
 import type { PluginDescriptor } from '#shared/plugin'
 
 export const DB_NAME = 'aiSpankWorld-local'
-export const DB_VERSION = 9
+export const DB_VERSION = 10
 export const STORE_WORLDS = 'worlds'
 export const STORE_SAVES = 'saves'
 export const STORE_PRESETS = 'presets'
@@ -28,6 +28,8 @@ export const STORE_TOY_ADAPTERS = 'toy-adapters'
 export const STORE_PREFS = 'prefs'
 /** 断点续跑:extract 单元提取结果缓存(本地生成管线已移除,表保留兼容旧库数据) */
 export const STORE_EXTRACT_CACHE = 'extract-cache'
+/** 作品格式 v2(aisb-book):以 BookDoc zip 字节存储,与旧 works 并存(方案 B,存量不迁移) */
+export const STORE_BOOK2 = 'book2'
 
 /** 兼容旧 worlds store 的行结构(旧版按 novelId 存 CharacterCard 数组) */
 interface LegacyWorldRow {
@@ -67,6 +69,7 @@ export class AIStoryBoundDB extends Dexie {
   'toy-adapters'!: Table<ImportedPluginRow, string>
   prefs!: Table<PrefsRow, string>
   'extract-cache'!: Table<{ key: string } & Record<string, unknown>, string>
+  book2!: Table<Book2Row, string>
 
   constructor() {
     super(DB_NAME)
@@ -83,7 +86,23 @@ export class AIStoryBoundDB extends Dexie {
       [STORE_PREFS]: 'key',
       [STORE_EXTRACT_CACHE]: 'key'
     })
+    this.version(10).stores({
+      ...this.version(9).stores,
+      [STORE_BOOK2]: 'id'
+    })
   }
+}
+
+/** book2 行:v2 作品以 zip 字节存储,可列目录(不解析全文) */
+export interface Book2Row {
+  id: string
+  title: string
+  /** 段数(目录展示用,避免解包) */
+  segmentCount: number
+  charCount: number
+  updatedAt: string
+  /** v2 目录 zip 字节 */
+  zip: Uint8Array
 }
 
 /** 共享 Dexie 实例(单例;versionchange 自动关连接由 Dexie 内置处理) */

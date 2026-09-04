@@ -2,7 +2,8 @@
 // 世界详情弹窗:展示本地作品的完整生成产物(概览元数据/故事线/实体库/冲突/生成告警),
 // 并提供概览元数据(summary/性向/尺度/设定/tags 等)的编辑——此前这些字段生成后全应用不可见、不可改。
 // 入口:书架卡片「世界详情」/ 生成完成页 / 选角页;保存后由父组件刷新列表。
-import { getWork, saveWork } from '../utils/worldGen'
+import { saveWork } from '../utils/worldGen'
+import { loadWorkSmart } from '../utils/bookStoreV2'
 import type { LocalWork, WorldEntities, EntityConflict, StoryBeat, CharacterArc } from '#shared/novel'
 
 const props = defineProps<{ workId: string }>()
@@ -59,7 +60,7 @@ watch(open, async (v) => {
   saving.value = false
   loaded.value = false
   loadErr.value = ''
-  const w = await getWork(props.workId)
+  const w = await loadWorkSmart(props.workId)
   if (!w) {
     loadErr.value = '本地未找到该作品'
     loaded.value = true
@@ -234,7 +235,7 @@ const VERDICT_LABEL: Record<string, string> = {
               世界概览
             </h3>
             <UButton
-              v-if="!editing"
+              v-if="!editing && !work.book2SourceId"
               label="编辑概览"
               icon="i-lucide-pencil"
               size="xs"

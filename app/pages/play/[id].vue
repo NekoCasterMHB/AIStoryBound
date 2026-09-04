@@ -1,11 +1,12 @@
 <script setup lang="ts">
 // /play/[id] — 选角页(本地作品):展示人物卡 → 选择身份 → 创建本地游戏会话 → 进入游戏
-import { getWork, touchWork } from '../../utils/worldGen'
+import { touchWork } from '../../utils/worldGen'
+import { loadWorkSmart } from '../../utils/bookStoreV2'
 import { createLocalGame } from '../../utils/gameStore'
 import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
 import { ensureDesires, isCharacterInCast } from '#shared/game'
 import { uuid } from '#shared/novel'
-import type { CharacterArc, GameState, LocalGame } from '#shared/novel'
+import type { CharacterArc, GameState, LocalGame, LocalWork } from '#shared/novel'
 
 useHead({ title: 'AI Word2World · 选择身份' })
 
@@ -14,7 +15,7 @@ const router = useRouter()
 const workId = route.params.id as string
 const toast = useToast()
 
-const work = ref<Awaited<ReturnType<typeof getWork>>>(null)
+const work = ref<LocalWork | null>(null)
 const loadError = ref<string | null>(null)
 const creating = ref(false)
 
@@ -25,9 +26,10 @@ onMounted(async () => {
   } catch {
     legacyHintDismissed.value = false
   }
-  work.value = await getWork(workId)
+  work.value = await loadWorkSmart(workId)
   if (!work.value) loadError.value = '本地未找到该作品'
-  else void touchWork(workId)
+  // book2(v2)作品为真源,无 works 行可 touch;v1 作品沿用 touchWork 刷新书架排序
+  else if (!work.value.book2SourceId) void touchWork(workId)
 })
 
 const cards = computed(() => work.value?.overlay?.characters ?? [])
@@ -179,10 +181,12 @@ const worldDetailOpen = ref(false)
 // ---- 旧版世界兼容提示:缺细纲/实体库/元数据时告知降级影响与补齐入口(每作品只提醒一次) ----
 const legacyHintDismissed = ref(true)
 
-/** 旧版世界缺失的能力清单(空数组 = 新版完整世界,不提示) */
+/** 旧版世界缺失的能力清单(空数组 = 新版完整世界,不提示)。
+ *  v2(book2)作品视图层天然无 entities(实体库已拆进 characters/ + segments,由引擎读取层现拼),
+ *  不是"旧版"残缺,跳过提示;旧版世界才有补齐入口 */
 const missingParts = computed(() => {
   const w = work.value
-  if (!w) return []
+  if (!w || w.book2SourceId) return []
   const parts: string[] = []
   if (!w.storyline?.length) parts.push('细纲故事线(按细纲段开局与防剧情漂移依赖它)')
   if (!w.entities) parts.push('实体库(世界规则/势力/伏笔的剧情联动依赖它)')
