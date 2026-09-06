@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // /games/continue — 作品+角色的存档列表(从书架「继续游戏」进入):
 // 列出该角色在本地作品下的全部游戏会话,可继续游玩或删除(删除时一并清理该会话的存档点)
-import { getWork } from '../../utils/worldGen'
+import { loadWorkView } from '../../utils/bookStoreV2'
 import { listLocalGames, deleteLocalGame } from '../../utils/gameStore'
 import { deleteGamePoints } from '../../utils/gameSaveStore'
-import type { LocalGame, LocalWork } from '#shared/novel'
+import type { LocalGame } from '#shared/novel'
+import type { BookView } from '#shared/book-view'
 
 useHead({ title: 'AI Word2World · 继续游戏' })
 
@@ -13,14 +14,14 @@ const toast = useToast()
 const workId = String(route.query.workId ?? '')
 const character = String(route.query.character ?? '')
 
-const work = ref<LocalWork | null>(null)
+const work = ref<BookView | null>(null)
 const games = ref<LocalGame[]>([])
 const loadError = ref<string | null>(null)
 const deleting = ref<string | null>(null)
 const confirmDeleteId = ref<string | null>(null)
 
 async function load() {
-  const [w, all] = await Promise.all([getWork(workId), listLocalGames()])
+  const [w, all] = await Promise.all([loadWorkView(workId), listLocalGames()])
   work.value = w
   if (!w) loadError.value = '本地未找到该作品'
   games.value = all

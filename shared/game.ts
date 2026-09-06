@@ -3,9 +3,11 @@
 //   状态白名单合并(LLM 只产建议,引擎应用)、人物卡摘要、回合提示词组装、选项 schema。
 import { skillPromptBlocks } from './ai-skills'
 import { desireTierName } from './novel'
+import { toBool, toList, toNumber, toText } from './character-interpreter'
 import { estimateTextTokens } from './token-estimate'
 import type { PluginBrief } from './plugin'
 import type { AiSkill } from './ai-skills'
+import type { SegmentCharacterFile, SegmentDir, SegmentNode } from './novel-v2'
 import type { CharacterArc, CharacterCard, CharacterDynamicState, GameState, LocalGame, StoryBeat, TurnStructured, WorldEntities, EntityConflict, WorldOverlay } from './novel'
 
 export type AiRole = 'system' | 'user' | 'assistant'
@@ -58,6 +60,7 @@ export function turnOptionsSchema(): string {
     "character_states": {"角色名": {"status": "该角色当前处境/状态一句话(如「被软禁在卧室」「身份暴露,仓皇出逃」)","location": "该角色当前位置(string)","mood": "该角色当前情绪(string)","dead": true|false,"人物卡字段名": "该角色发生永久变化的人物卡字段,如 identity/appearance/personality/goals/secrets/speech_style/abilities 等(string|string[]|number,数组整体替换)"}}
   },
   "current_beat": "剧情当前推进到的细纲段序号(1-based 整数,每回合报告;仍在同段保持同值;不确定可省略)",
+  "current_nodes": "本段已达的最大事件里程碑序号(0-based 整数,按剧情实际已发生的最后一个里程碑;本段没有里程碑清单或不确定省略)",
   "summary": "整局剧情摘要(基于旧摘要与上文剧情压缩至 500 字左右,保留关键人物关系/伏笔/进展;无重大变化可省略)"
 }`
 }
@@ -224,10 +227,82 @@ function applyCardPatch(card: CharacterCard, patch: Partial<CharacterCard>): Cha
   return next
 }
 
-/** 有效角色卡 = 基础卡(全书终态)→ 依序叠加阶段段号 ≤ stageIndex 的阶段变体 → 运行时动态补丁。
- *  stageIndex 缺省时不叠阶段变体;dyn 缺省表示该角色尚无互动变化。
- *  变体 stage 为 0-based 细纲段下标;旧数据只有 chapter(旧章节下标),缺失时兜底读取。 */
-export function effectiveCard(card: CharacterCard, stageIndex?: number | null, dyn?: CharacterDynamicState): CharacterCard {
+/** v2 段角色文件「状态」浅覆盖(值容忍经 character-interpreter 归一,见 docs/format-v2.md §6/§8):
+ *  命中保留键 → 覆盖对应语义字段;其余键 → 并入 profile(经 cardBrief 以「补充设定」进 prompt)。
+ *  值缺失/非法 → 继承基础卡,不覆盖。 */
+export function applySegmentCharacter(card: CharacterCard, file?: SegmentCharacterFile | null): CharacterCard {
+  if (!file) return card
+  const status = file['状态'] && typeof file['状态'] === 'object' && !Array.isArray(file['状态'])
+    ? file['状态'] as Record<string, unknown>
+    : undefined
+  let c = card
+  const extra: Record<string, unknown> = {}
+  if (status) {
+    for (const [k, v] of Object.entries(status)) {
+      switch (k) {
+        case '身份': {
+          const t = toText(v)
+          if (t) c = { ...c, identity: t }
+          break
+        }
+        case '外貌': {
+          const t = toText(v)
+          if (t) c = { ...c, appearance: t }
+          break
+        }
+        case '性格': {
+          const l = toList(v)
+          if (l.length) c = { ...c, personality: l }
+          break
+        }
+        case '背景': {
+          const t = toText(v)
+          if (t) c = { ...c, background: t }
+          break
+        }
+        case '目标': {
+          const l = toList(v)
+          if (l.length) c = { ...c, goals: l }
+          break
+        }
+        case '别名': {
+          const t = toText(v)
+          if (t) c = { ...c, alias: t }
+          break
+        }
+        case '性欲强度': {
+          const n = toNumber(v)
+          if (n != null) c = { ...c, desire: Math.max(0, Math.min(100, Math.round(n))) }
+          break
+        }
+        case '耐心': {
+          const n = toNumber(v)
+          if (n != null) c = { ...c, patience: Math.max(0, Math.min(100, Math.round(n))) }
+          break
+        }
+        case '心软': {
+          const n = toNumber(v)
+          if (n != null) c = { ...c, softness: Math.max(0, Math.min(100, Math.round(n))) }
+          break
+        }
+        case '已死亡': {
+          const b = toBool(v)
+          if (b != null) c = { ...c, dead: b }
+          break
+        }
+        default: extra[k] = v
+      }
+    }
+  }
+  if (Object.keys(extra).length) c = { ...c, profile: { ...(c.profile ?? {}), ...extra } }
+  return c
+}
+
+/** 有效角色卡 = 基础卡(全书终态)→ 依序叠加阶段段号 ≤ stageIndex 的阶段变体 → v2 段角色文件状态浅覆盖
+ *  → 运行时动态补丁。stageIndex 缺省时不叠阶段变体;dyn 缺省表示该角色尚无互动变化;
+ *  segFile 缺省表示无 v2 段数据(v1 作品),跳过叠加。变体 stage 为 0-based 细纲段下标;
+ *  旧数据只有 chapter(旧章节下标),缺失时兜底读取。 */
+export function effectiveCard(card: CharacterCard, stageIndex?: number | null, dyn?: CharacterDynamicState, segFile?: SegmentCharacterFile | null): CharacterCard {
   let c = card
   const variants = card.chapterVariants ?? []
   if (variants.length && stageIndex != null && stageIndex >= 0) {
@@ -237,6 +312,7 @@ export function effectiveCard(card: CharacterCard, stageIndex?: number | null, d
       c = applyCardPatch(c, v.patch)
     }
   }
+  c = applySegmentCharacter(c, segFile)
   if (dyn) {
     if (dyn.patch && Object.keys(dyn.patch).length) c = applyCardPatch(c, dyn.patch)
     if (dyn.dead != null) c = { ...c, dead: dyn.dead }
@@ -244,10 +320,49 @@ export function effectiveCard(card: CharacterCard, stageIndex?: number | null, d
   return c
 }
 
-/** 批量有效卡:按 GameState.characterStates 为每张卡叠加运行时状态 */
-export function effectiveCards(cards: CharacterCard[], stageIndex?: number | null, state?: GameState): CharacterCard[] {
+/** 批量有效卡:按 GameState.characterStates 为每张卡叠加运行时状态;segFiles 为当前段 v2 角色文件(key=姓名) */
+export function effectiveCards(cards: CharacterCard[], stageIndex?: number | null, state?: GameState, segFiles?: Record<string, SegmentCharacterFile> | null): CharacterCard[] {
   const dyn = state?.characterStates ?? {}
-  return cards.map(c => effectiveCard(c, stageIndex, dyn[c.name]))
+  return cards.map(c => effectiveCard(c, stageIndex, dyn[c.name], segFiles?.[c.name]))
+}
+
+// ---- 节点进度(docs/format-v2.md §7.4;仅 v2 段带 节点[] 时启用,无节点数据自动降级) ----
+
+/** 卡住引导阈值:连续 N 回合无节点推进且段内进度 <40% 时,当轮选项混入「【推进剧情】」引导项 */
+export const NODE_STALL_TURNS = 5
+/** 卡住引导的进度上限(已触发节点数/总节点数) */
+export const NODE_STALL_PROGRESS = 0.4
+
+/** 回合收尾后更新节点进度(totalNodes=0 的段不启用,顺带清理遗留进度):
+ *  段切换重置;收尾器回报的 current_nodes 有效且 > 已达值视为推进(清停滞计数),否则累计停滞回合 */
+export function applyNodeProgress(state: GameState, beat: number, reportedNode: number | null | undefined, totalNodes: number): GameState {
+  if (totalNodes <= 0) return state.nodeProgress ? { ...state, nodeProgress: undefined } : state
+  const prev = state.nodeProgress?.beat === beat ? state.nodeProgress : { beat, lastNode: -1, stallTurns: 0 }
+  let lastNode = prev.lastNode
+  let stallTurns = prev.stallTurns ?? 0
+  const reported = typeof reportedNode === 'number' && Number.isInteger(reportedNode) && reportedNode >= 0 && reportedNode < totalNodes
+    ? reportedNode
+    : null
+  if (reported != null && reported > lastNode) {
+    lastNode = reported
+    stallTurns = 0
+  } else {
+    stallTurns += 1
+  }
+  return { ...state, nodeProgress: { beat, lastNode, stallTurns } }
+}
+
+/** 卡住引导选项文本(未达条件返回 null):连续 NODE_STALL_TURNS 回合无节点推进且段内进度 <NODE_STALL_PROGRESS。
+ *  引导指向下一未触发节点,前缀「【推进剧情】」混入当轮选项;仍只是建议,玩家自由输入优先级最高。 */
+export function nodeStallGuidance(state: GameState, nodes: SegmentNode[] | undefined | null): string | null {
+  if (!nodes?.length) return null
+  const p = state.nodeProgress
+  if (!p || (p.stallTurns ?? 0) < NODE_STALL_TURNS) return null
+  const progress = (p.lastNode + 1) / nodes.length
+  if (progress >= NODE_STALL_PROGRESS) return null
+  const next = nodes[p.lastNode + 1]
+  if (!next?.事件?.trim()) return null
+  return `【推进剧情】${clampText(next.事件.trim(), 80)}`
 }
 
 /** 支配/服从定位提取:关系类型与背景中的主/贝、攻/受、主奴等措辞单独前置成「定位:」,
@@ -380,6 +495,9 @@ export interface TurnPromptArgs {
   conflicts?: EntityConflict[]
   /** 按字数切段的完整故事线(回合只注入当前附近窗口) */
   storyline?: StoryBeat[]
+  /** 当前段 v2 目录(正典+段角色文件;仅 book2 作品传,下标对齐 storyline,见 docs/format-v2.md §8):
+   *  段角色文件状态浅覆盖、段级主角锚、节点推进锚、各角色分线;缺省=无 v2 数据,相关能力降级 */
+  v2Segment?: SegmentDir | null
   /** 配角独立故事线(角色弧线):玩家扮演的角色有弧线时,以其为主叙事线 */
   characterArcs?: CharacterArc[]
   /** 玩家扮演的角色名(用于从 characterArcs 中选取该角色的弧线) */
@@ -476,7 +594,8 @@ function overlayToneLine(
   return bits.join('。')
 }
 
-/** 剧情轨道:细纲/弧线窗口化(玩家角色有弧线时用其弧线,按当前段近窗全量、远段压缩)+ 世界压缩 + 伏笔/冲突 */
+/** 剧情轨道:细纲/弧线窗口化(玩家角色有弧线时用其弧线,按当前段近窗全量、远段压缩)+ 世界压缩 + 伏笔/冲突
+ *  + v2 段节点锚(只注入已达摘要 + 下一未触发节点,§7.4)与各角色本段分线(§3.2) */
 function plotTrackBlock(args: {
   entities?: WorldEntities
   conflicts?: EntityConflict[]
@@ -485,6 +604,12 @@ function plotTrackBlock(args: {
   playerName?: string
   /** 剧情当前推进到的细纲段(0-based;缺省=未知,细纲/弧线全部全量注入,行为不变) */
   currentBeat?: number | null
+  /** 当前段 v2 目录(正典+段角色文件;缺省=无 v2 数据) */
+  v2Segment?: SegmentDir | null
+  /** 当前段已达最大节点序号(0-based,-1=未触发;仅 v2 节点逻辑用) */
+  lastNode?: number
+  /** 各角色本段分线(玩家在前;来自段角色文件「剧情」,仅建有文件的角色) */
+  segmentStorylines?: { name: string, plot: string }[]
 }): string {
   const lines: string[] = []
   const topBy = <T extends { mentionCount: number }>(arr: T[] | undefined, n: number) =>
@@ -506,6 +631,23 @@ function plotTrackBlock(args: {
         args.currentBeat
       ).join('\n')}`)
     }
+  }
+
+  // v2 段:节点推进锚(回合 prompt 只注入已达节点摘要 + 下一未触发节点,省上下文又够用,§7.4)
+  const canon = args.v2Segment?.canon
+  const nodes = (canon?.节点 ?? []).filter(n => n && typeof n.n === 'number' && n.事件?.trim())
+  if (nodes.length) {
+    const lastNode = args.lastNode ?? -1
+    const reached = nodes.filter(n => n.n <= lastNode)
+    const next = nodes.find(n => n.n === lastNode + 1) ?? nodes.find(n => n.n > lastNode)
+    const nodeBits: string[] = []
+    if (reached.length) nodeBits.push(`已发生(已在本段剧情中出现过,不要重复叙述):\n${reached.map(n => `${n.n + 1}. ${clampText(n.事件, 100)}`).join('\n')}`)
+    if (next) nodeBits.push(`下一节点(引导锚:剧情自然推进到该事件时展开,不要跳步提前):\n${next.n + 1}. ${next.事件}`)
+    if (nodeBits.length) lines.push(`本段时间点「${canon?.title || '当前段'}」的剧情里程碑(共 ${nodes.length} 个):\n${nodeBits.join('\n\n')}`)
+  }
+  // v2 段:各角色本段分线(段角色文件「剧情」,玩家在前;仅建有文件的角色)
+  if (args.segmentStorylines?.length) {
+    lines.push(`本段各角色分线(各角色在这段时间点的剧情/行动线,演绎时保持一致):\n${args.segmentStorylines.map(s => `- ${s.name}:${clampText(s.plot, 240)}`).join('\n')}`)
   }
 
   const rules = topBy(args.entities?.world_rules, 5)
@@ -552,17 +694,23 @@ export interface TurnPromptPart {
 
 /** 组装叙事 prompt 分段:system 各块在前、user 各块在后,顺序即最终拼接顺序 */
 export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
-  const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening, deviceSpec, narrLength, reinjectPlot, entities, conflicts, storyline, characterArcs, playerArcCharacter, overlayMeta, stageIndex } = args
-  // 动态有效卡 = 基础卡 + 阶段变体(≤当前段)+ 运行时动态状态:仅供 user 尾部的人设锚点(近指令处带最新动态)
+  const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening, deviceSpec, narrLength, reinjectPlot, entities, conflicts, storyline, characterArcs, playerArcCharacter, overlayMeta, stageIndex, v2Segment } = args
+  // v2 段数据:当前段角色文件(key=姓名)+ 已达节点进度(换段后进度不匹配视为未触发)
+  const segFiles = v2Segment?.characters
+  const nodeProgress = state.nodeProgress?.beat === stageIndex ? state.nodeProgress : undefined
+  const lastNode = nodeProgress?.lastNode ?? -1
+  // 动态有效卡 = 基础卡 + 阶段变体(≤当前段)+ v2 段角色文件状态浅覆盖 + 运行时动态状态:
+  // 仅供 user 尾部的人设锚点(近指令处带最新动态)
   const dyn = state.characterStates ?? {}
-  const effCards = cards.map(c => effectiveCard(c, stageIndex, dyn[c.name]))
-  const effPlayer = playerCard ? effectiveCard(playerCard, stageIndex, dyn[playerCard.name]) : undefined
-  // system 头部卡行走静态有效卡(基础卡 + 阶段变体,不含运行时动态):动态状态集中在 system 尾部「游戏状态」块,
-  // 头部保持段内字节稳定——回合间变化的字段不再嵌在靠前位置打断供应商前缀缓存
-  const headPlayer = playerCard ? effectiveCard(playerCard, stageIndex) : undefined
+  const effCards = cards.map(c => effectiveCard(c, stageIndex, dyn[c.name], segFiles?.[c.name]))
+  const effPlayer = playerCard ? effectiveCard(playerCard, stageIndex, dyn[playerCard.name], segFiles?.[playerCard.name]) : undefined
+  // system 头部卡行走静态有效卡(基础卡 + 阶段变体 + 段状态,不含运行时动态):动态状态集中在 system 尾部
+  // 「游戏状态」块,头部保持段内字节稳定——回合间变化的字段不再嵌在靠前位置打断供应商前缀缓存
+  // (段状态随段切换才变,不影响段内稳定性)
+  const headPlayer = playerCard ? effectiveCard(playerCard, stageIndex, undefined, segFiles?.[playerCard.name]) : undefined
   // 只注入当回合登场角色(未登场卡不进 prompt,省 token;旧作品无 cast 时回退全部)
   const sceneNames = new Set(sceneCards(effCards, storyline, stageIndex).map(c => c.name))
-  const headCards = cards.map(c => effectiveCard(c, stageIndex))
+  const headCards = cards.map(c => effectiveCard(c, stageIndex, undefined, segFiles?.[c.name]))
   const others = headCards.filter(c => sceneNames.has(c.name) && c.name !== playerName)
   // 运行时动态状态(处境/位置/情绪/字段变化)有任一角色存在时,提示 AI 以其为准并继续回报变化
   const hasDynStates = Object.keys(dyn).length > 0
@@ -613,7 +761,18 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   const skillRuleLines = numberedRules.filter((_, i) => ruleEntries[i]!.kind === 'skill')
   const sceneRuleLines = numberedRules.filter((_, i) => ruleEntries[i]!.kind === 'scene')
 
-  const track = plotTrackBlock({ entities, conflicts, storyline, characterArcs, playerName: playerArcCharacter || playerName, currentBeat: stageIndex })
+  // v2 段角色分线:玩家角色在前,其余仅收当回合登场且有段文件「剧情」的角色(文件即真相,§3.2)
+  const segmentStorylines = segFiles
+    ? [playerName, ...others.map(c => c.name)]
+        .map((name) => {
+          const f = segFiles[name]
+          if (!f) return null
+          const plot = typeof f['剧情'] === 'string' ? f['剧情'].trim() : (toText(f['剧情']) ?? '')
+          return plot ? { name, plot } : null
+        })
+        .filter((x): x is { name: string, plot: string } => !!x)
+    : []
+  const track = plotTrackBlock({ entities, conflicts, storyline, characterArcs, playerName: playerArcCharacter || playerName, currentBeat: stageIndex, v2Segment, lastNode, segmentStorylines })
   const playerLine = `你是《${title}》的互动叙事引擎。玩家扮演「${playerName}」(${headPlayer ? cardBrief(headPlayer) : '原著角色'})。`
   const othersLine = `可能出场的其他角色:\n${others.map(c => cardBrief(c)).join('\n')}`
   const stateLine = `当前游戏状态:${JSON.stringify(state, null, 0)}`
@@ -725,9 +884,20 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   if (effPlayer) {
     anchors.push(`【唯一可扮演对象·玩家】${playerName}:${cardBrief(effPlayer, dyn[playerName])}`)
   }
-  // 只重贴主角(全局故事锚点,未登场也重贴):其余 NPC 的卡已在 system 注入一次,尾部不再重复;
-  // 玩家即主角时上面已覆盖,此处跳过
-  const mainChar = effCards.find(c => c.name !== playerName && c.role === '主角')
+  // 只重贴全局故事锚点(未登场也重贴):其余 NPC 的卡已在 system 注入一次,尾部不再重复;
+  // 玩家即锚点角色时上面已覆盖,此处跳过。
+  // 段级主角锚(§11.6):v2 段正典标了「主角」名单时取其中最适者(玩家扮演主角则降级为普通 NPC 不重贴),
+  // 段未标或匹配不到卡时回退旧逻辑(role==='主角')
+  const protagonistNames = (v2Segment?.canon.主角 ?? []).map(n => arcKey(n)).filter(Boolean)
+  let mainChar: CharacterCard | undefined
+  if (protagonistNames.length) {
+    mainChar = effCards.find((c) => {
+      if (c.name === playerName) return false
+      const k = arcKey(c.name)
+      return !!k && protagonistNames.some(n => n === k || n.includes(k) || k.includes(n))
+    })
+  }
+  if (!mainChar) mainChar = effCards.find(c => c.name !== playerName && c.role === '主角')
   if (mainChar) {
     anchors.push(`【NPC 对手戏角色,不可扮演,只能以玩家视角观察其言行】${mainChar.name}:${cardBrief(mainChar, dyn[mainChar.name])}`)
   }

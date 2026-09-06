@@ -36,6 +36,11 @@ import type { WorldGenMode, WorldGenStageDetail } from '../../shared/world-gen-t
 import { parseWorldGenSteps } from '../../shared/world-gen-task'
 import { billedTokens } from '../../shared/token-estimate'
 import { parseNovelBytes } from './novel-parser'
+import {
+  ANNOTATE_CHUNK_BEATS, buildAnnotateMessages, buildBookDoc, normalizeSegmentAnnotations
+} from '../../shared/book-build'
+import type { AnnotateBeat, ChapterExtractStatuses, SegmentAnnotation } from '../../shared/book-build'
+import { bookDocToZip } from '../../shared/novel-v2'
 
 /** 单本允许的最大提取失败率(超过则中止;与浏览器端 MAX_FAIL_RATIO 一致) */
 const MAX_FAIL_RATIO = 1 / 3
@@ -62,9 +67,19 @@ export function worldSourceKey(hash: string): string {
   return `world-gen/sources/${hash}.txt`
 }
 
-/** 成书 world json 的公开缓存 key */
+/** 成书 world json 的公开缓存 key(旧版 v1 产物遗留键约定;v2 单轨后仅旧任务存量使用) */
 export function worldCacheObjectKey(hash: string, mode: string): string {
   return `world-cache/${hash}-${mode}.json`
+}
+
+/** 成书 v2(aisb-book)zip 的缓存 key(确定性:由 hash+mode 即可反查,无需任务行新增列) */
+export function book2CacheObjectKey(hash: string, mode: string): string {
+  return `world-cache/${hash}-${mode}.book2.zip`
+}
+
+/** arcs 任务建任务时正文 spool 的 R2 键(正文不进 D1 payload;在任务 scratch 前缀下,终态删除) */
+export function arcsTextInputKey(taskId: string): string {
+  return scratchKey(taskId, 'arcs-text')
 }
 
 function scratchPrefix(taskId: string): string {
@@ -104,7 +119,10 @@ export function createWorldGenCtx(env: WorldGenEnv, taskId: string) {
     env,
     taskId,
     /** 平台/用户 relay 的惰性缓存(同一上下文内复用;Workflow 每个 step 新建 ctx,天然按步刷新) */
-    relayPromise: null as Promise<RelayTarget> | null
+    relayPromise: null as Promise<RelayTarget> | null,
+    /** 源文解析惰性缓存:同一 isolate 存活期内只做一次全文下载+解析(提取每单元、merge/arcs/finalize 都要取文)。
+     *  源文只读、结果确定,isolate 重放/续跑时重取一次无正确性风险;不缓存则每个单元一次全文往返。 */
+    sourcePromise: null as Promise<{ units: ExtractUnit[], text: string }> | null
   }
 }
 
@@ -156,12 +174,27 @@ export function parseStageDetail(raw: string | null): ExtendedStageDetail {
   try {
     const d = raw ? JSON.parse(raw) as ExtendedStageDetail : null
     if (d && typeof d === 'object') {
-      return { doneUnits: d.doneUnits ?? 0, totalUnits: d.totalUnits ?? 0, plan: d.plan }
+      return {
+        doneUnits: d.doneUnits ?? 0,
+        totalUnits: d.totalUnits ?? 0,
+        plan: d.plan,
+        synthDone: d.synthDone,
+        arcs: d.arcs,
+        annotate: d.annotate
+      }
     }
   } catch {
     // 损坏按空处理
   }
   return { doneUnits: 0, totalUnits: 0 }
+}
+
+/** stage_detail 合并写:保留既有字段(plan 与并行分支子进度),只覆盖指定分支槽位。
+ *  并行收尾分支(synthesize/arcs/annotate)各自写自己的槽位,不得整写 stage_detail 互相覆盖。 */
+async function mergeStageDetail(ctx: TaskRef, patch: Pick<ExtendedStageDetail, 'synthDone' | 'arcs' | 'annotate'>): Promise<void> {
+  const task = await requireTask(ctx)
+  const d = parseStageDetail(task.stageDetail)
+  await markTask(ctx, { stageDetail: JSON.stringify({ ...d, ...patch }) })
 }
 
 // ---- 计费与账目 ----
@@ -352,11 +385,12 @@ async function fetchSourceText(ctx: WorldGenCtx, task: WorldGenTaskRow): Promise
   return parseNovelBytes(bytes, `${task.title || 'novel'}.txt`).text
 }
 
-/** 从全文确定性重建提取单元(每步骤独立重算:内容不进 Workflow step 状态/D1) */
+/** 从全文确定性重建提取单元(内容不进 Workflow step 状态/D1;同一 isolate 存活期内复用一次下载+解析) */
 async function deriveUnits(ctx: WorldGenCtx, task: WorldGenTaskRow): Promise<{ units: ExtractUnit[], text: string }> {
-  const text = await fetchSourceText(ctx, task)
-  const units = splitUnits([{ title: '', content: text }])
-  return { units, text }
+  if (!ctx.sourcePromise) {
+    ctx.sourcePromise = fetchSourceText(ctx, task).then(text => ({ units: splitUnits([{ title: '', content: text }]), text }))
+  }
+  return ctx.sourcePromise
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -582,6 +616,16 @@ export async function cleanupScratch(ctx: WorldGenCtx): Promise<void> {
   }
 }
 
+/** arcs 任务完成时的正文 spool 清理(最大垃圾对象;结果 arcs.json 保留供结果端点读取)。
+ *  只在 completed 路径调用:paused(待结算续跑)时 spool 仍被续跑需要,不能删。 */
+async function deleteArcsTextInput(ctx: WorldGenCtx): Promise<void> {
+  try {
+    await ctx.bucket.delete(arcsTextInputKey(ctx.taskId))
+  } catch (e) {
+    console.error('[world-gen] arcs 正文 spool 清理失败', { taskId: ctx.taskId }, e)
+  }
+}
+
 /** 步骤 4:合并全部单元提取(代码 Reduce)+ 引用校验 + 故事线 + 本地聚合草稿 → scratch/merged.json */
 export async function stepMerge(ctx: WorldGenCtx, planOverride?: UnitPlan): Promise<{ okUnits: number, totalUnits: number, characters: number, storyline: number, warnings: string[] }> {
   const task = await requireTask(ctx)
@@ -638,6 +682,12 @@ export async function stepMerge(ctx: WorldGenCtx, planOverride?: UnitPlan): Prom
 
   const merged: MergedState = { entities, conflicts, warnings, storyline, localSummary }
   await putScratch(ctx, 'merged', merged)
+  // 并行收尾分支槽位初始化(各自后续自行推进;arcs 未启用置 null,不参与整体进度)
+  await mergeStageDetail(ctx, {
+    synthDone: 0,
+    arcs: stepEnabled(task, 'arcs') ? { doneUnits: 0, totalUnits: 0 } : null,
+    annotate: { doneUnits: 0, totalUnits: 0 }
+  })
   // 下一阶段:节约/自定义关 check 时直接进入成书,避免进度停在被跳过的检查阶段
   await markTask(ctx, { stage: stepEnabled(task, 'check') ? 'check' : 'synthesize' })
   return { okUnits, totalUnits: plan.length, characters: entities.characters.length, storyline: storyline.length, warnings }
@@ -720,7 +770,7 @@ export async function stepSynthesize(ctx: WorldGenCtx): Promise<{ cardCount: num
   // 持久化检查点:成书已完成直接跳过,重跑/续跑不重复扣费
   const existing = await getScratch<WorldOverlay>(ctx, 'overlay')
   if (existing) {
-    await markTask(ctx, { stage: 'done' })
+    await mergeStageDetail(ctx, { synthDone: 1 })
     return { cardCount: (existing.characters ?? []).length, title: existing.title || task.title || '小说' }
   }
   const merged = await getScratch<MergedState>(ctx, 'merged')
@@ -776,7 +826,7 @@ export async function stepSynthesize(ctx: WorldGenCtx): Promise<{ cardCount: num
   }
 
   await putScratch(ctx, 'overlay', overlay)
-  await markTask(ctx, { stage: 'done' })
+  await mergeStageDetail(ctx, { synthDone: 1 })
   return { cardCount: (overlay.characters ?? []).length, title: overlay.title || title }
 }
 
@@ -786,8 +836,12 @@ export async function stepSynthesize(ctx: WorldGenCtx): Promise<{ cardCount: num
 interface ArcsTaskPayload {
   entities: WorldEntities
   storyline: StoryBeat[]
-  /** 全书正文(chapters.join('\n');用于登场段原文窗口,缺失时跳过注入) */
+  /** 逐段事实底稿(段角色文件的 剧情/状态,客户端从 book2 段文件收集;arcs 精写的事实依据) */
+  plots?: { name: string, beatIndex: number, plot?: string | null, status?: string | null }[]
+  /** 全书正文的 R2 键(建任务时服务端把 body.text 落 R2:正文可达数 MB,不能塞 D1 payload 列,单值上限 2MB)。
+   *  text 为部署前旧任务遗留的 payload 内联正文,仍兼容读取。 */
   text?: string
+  textKey?: string
 }
 
 function parseArcsPayload(raw: string | null): ArcsTaskPayload | null {
@@ -812,18 +866,20 @@ function parseArcsPayload(raw: string | null): ArcsTaskPayload | null {
  *  - 每单元注入该角色前几个登场段的原文节选,模型据此还原细节(忠实度接近按原文提取)。
  */
 
-/** 配角故事线完成数刷新(按 scratch 单元检查点文件数,重跑时进度单调不减) */
+/** 配角故事线完成数刷新(按 scratch 单元检查点文件数,重跑时进度单调不减;一次 list 计数,避免逐单元 R2 读)。
+ *  arcs 独立任务整写 stage_detail;world 任务写并行分支槽位(不动 stage)。 */
 async function bumpArcsProgress(ctx: WorldGenCtx, totalUnits: number): Promise<void> {
   const task = await requireTask(ctx)
-  const detail = parseStageDetail(task.stageDetail)
-  let done = 0
-  for (let i = 0; i < totalUnits; i++) {
-    if (await getScratch<CharacterArc>(ctx, `arc-unit-${i}`)) done++
+  const list = await ctx.bucket.list({ prefix: `${scratchPrefix(ctx.taskId)}arc-unit-` })
+  if (task.kind === 'arcs') {
+    const detail = parseStageDetail(task.stageDetail)
+    await markTask(ctx, { stageDetail: JSON.stringify({ doneUnits: list.objects.length, totalUnits, plan: detail.plan }) })
+  } else {
+    await mergeStageDetail(ctx, { arcs: { doneUnits: list.objects.length, totalUnits } })
   }
-  await markTask(ctx, { stageDetail: JSON.stringify({ doneUnits: done, totalUnits, plan: detail.plan }) })
 }
 
-export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: number }> {
+export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: number, warnings: string[] }> {
   const task = await requireTask(ctx)
   await assertNotCancelled(task)
 
@@ -831,19 +887,27 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
   let entities: WorldEntities
   let storyline: StoryBeat[]
   let sourceText: string | null
+  let extracts: (ChapterExtractStatuses | null)[] = []
   if (task.kind === 'arcs') {
     const payload = parseArcsPayload(task.payload)
     if (!payload) throw new Error('任务载荷缺失,无法生成配角故事线')
     entities = payload.entities
     storyline = payload.storyline
     sourceText = payload.text ?? null
+    if (!sourceText && payload.textKey) {
+      const obj = await ctx.bucket.get(payload.textKey)
+      sourceText = obj ? await obj.text() : null
+    }
+    extracts = (payload.plots ?? []).map(p => ({ characters: [{ name: p.name, status: p.status, plot: p.plot }] }))
   } else {
     const merged = await getScratch<MergedState>(ctx, 'merged')
     if (!merged) throw new Error('合并结果缺失,无法生成配角故事线')
     entities = merged.entities
     storyline = merged.storyline
-    if (!storyline || storyline.length === 0) return { count: 0 }
-    sourceText = (await deriveUnits(ctx, task)).text
+    if (!storyline || storyline.length === 0) return { count: 0, warnings: [] }
+    const du = await deriveUnits(ctx, task)
+    sourceText = du.text
+    extracts = await loadUnitStatuses(ctx, du.units.length)
   }
 
   const candidates = characterArcCandidates(entities, storyline)
@@ -854,12 +918,18 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
       await putScratch(ctx, 'arcs', [])
       await settleTaskOnSuccess(ctx)
       await markTask(ctx, { status: 'completed', stage: 'done', warnings: '[]' })
+      await deleteArcsTextInput(ctx)
     }
-    return { count: 0 }
+    return { count: 0, warnings: [] }
   }
 
   const title = task.title || '未命名小说'
-  await markTask(ctx, { stage: 'arcs', stageDetail: JSON.stringify({ doneUnits: 0, totalUnits }) })
+  if (task.kind === 'arcs') {
+    await markTask(ctx, { stage: 'arcs', stageDetail: JSON.stringify({ doneUnits: 0, totalUnits }) })
+  } else {
+    // world 任务:并行收尾阶段,分支进度写独立槽位(stage 停留在 synthesize,由客户端聚合展示)
+    await mergeStageDetail(ctx, { arcs: { doneUnits: 0, totalUnits } })
+  }
 
   // 登场段原文窗口:每个候选取前 ARC_WINDOW_BEAT_LIMIT 个登场段、每段 ARC_WINDOW_CHARS 字(startChar 越界/缺失跳过)
   const beatByIndex = new Map(storyline.map(b => [b.index, b]))
@@ -891,8 +961,10 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
     }
     try {
       // 不设 maxTokens:输出上限交给上游模型自身,避免登场段多时被低上限截断丢段
+      // 事实底稿:该角色各段的 extract 剧情/状态(事实层);arcs 只做角色中心的叙事精化,事实不得与之冲突
+      const arcDrafts = candidate.beats.flatMap(bi => (extracts[bi]?.characters ?? []).map(c => ({ beatIndex: bi, plot: c.plot, status: c.status })))
       const { data, usage } = await callAiJson(relay, {
-        messages: buildCharacterArcMessages(title, candidate, storyline, textWindowOf(candidate)),
+        messages: buildCharacterArcMessages(title, candidate, storyline, textWindowOf(candidate), arcDrafts),
         temperature: 0.3
       })
       // 先扣费再落结果:余额不足抛出时该条结果不计入,续跑重跑并重新扣费,不漏账
@@ -911,50 +983,126 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
   })
 
   if (arcs.length === 0) {
-    // arcs 补充任务:全部失败 → 判失败;world 成书:降级跳过(不影响成书落盘)
+    // arcs 补充任务:全部失败 → 判失败;world 成书:降级跳过(不影响成书落盘,告警由 finalize 聚合)
     if (task.kind === 'arcs') throw new Error(warnings[0] ?? '所有角色的故事线均生成失败')
-    await markTask(ctx, { stage: 'done', warnings: JSON.stringify(warnings.slice(0, 20)) })
-    return { count: 0 }
+    await mergeStageDetail(ctx, { arcs: { doneUnits: 0, totalUnits } })
+    return { count: 0, warnings }
   }
   await putScratch(ctx, 'arcs', arcs)
   // arcs 任务在此完成:先结算(余额不足转 paused,结果保留在 scratch,充值补扣后重跑至此再完成);
   // world 任务保持 running,由 finalize 统一结算并落盘
   if (task.kind === 'arcs') {
     const settled = await settleTaskOnSuccess(ctx)
-    if (!settled) return { count: arcs.length }
+    if (!settled) return { count: arcs.length, warnings }
   }
-  const done: Partial<typeof worldGenTasks.$inferInsert> = {
-    stage: 'done',
-    stageDetail: JSON.stringify({ doneUnits: totalUnits, totalUnits }),
-    warnings: JSON.stringify(warnings.slice(0, 20))
+  // 完成数按实际检查点校准(失败单元无检查点,不计入)
+  const arcList = await ctx.bucket.list({ prefix: `${scratchPrefix(ctx.taskId)}arc-unit-` })
+  if (task.kind === 'arcs') {
+    await markTask(ctx, {
+      status: 'completed',
+      stage: 'done',
+      stageDetail: JSON.stringify({ doneUnits: arcList.objects.length, totalUnits }),
+      warnings: JSON.stringify(warnings.slice(0, 20))
+    })
+    await deleteArcsTextInput(ctx)
+  } else {
+    await mergeStageDetail(ctx, { arcs: { doneUnits: arcList.objects.length, totalUnits } })
   }
-  if (task.kind === 'arcs') done.status = 'completed'
-  await markTask(ctx, done)
-  return { count: arcs.length }
+  return { count: arcs.length, warnings }
 }
 
-export interface WorldJsonPayload {
-  id: string
-  title: string
-  author: string | null
-  genre: string | null
-  summary: string | null
-  characters: unknown[]
-  overlay: WorldOverlay
-  storyline: StoryBeat[]
-  characterArcs: CharacterArc[]
-  entities: WorldEntities
-  conflicts: EntityConflict[]
-  warnings: string[]
-  tokensUsed: number
-  mode: WorldGenMode
-  generatedAt: string
-  version: 2
+// ---- 标剧情转折(AI 标注:粗段合并为剧情段 + 转折标题/主角/节点[],产物进 v2 正典,§3.0) ----
+
+/** 标注分块完成数刷新(按 scratch 检查点文件数;写并行分支槽位,与 arcs 分支互不覆盖) */
+async function bumpAnnotateProgress(ctx: WorldGenCtx, totalChunks: number): Promise<void> {
+  const list = await ctx.bucket.list({ prefix: `${scratchPrefix(ctx.taskId)}annotate-unit-` })
+  await mergeStageDetail(ctx, { annotate: { doneUnits: list.objects.length, totalUnits: totalChunks } })
+}
+
+/**
+ * 步骤 7.6:AI 标剧情转折。输入只给粗段细纲(不重读全文),把相邻粗段合并为剧情段,
+ * 判转折标题/叙事主角/事件里程碑(节点[])。分块调用(ANNOTATE_CHUNK_BEATS 段/块,块内合并),
+ * 每块持久化检查点(重跑/续跑不重复扣费);单块失败降级跳过(该块粗段各自成段、无节点),
+ * 全部失败 = 一粗段一剧情段(v1 桥接行为),不中止任务。
+ * 与 synthesize/arcs 并行执行(只依赖 merged.storyline):进度写 stage_detail.annotate 槽位,
+ * 告警经返回值交给 finalize 聚合(不再整写 warnings 列)。
+ */
+export async function stepAnnotate(ctx: WorldGenCtx): Promise<{ groups: number, warnings: string[] }> {
+  const task = await requireTask(ctx)
+  await assertNotCancelled(task)
+  const merged = await getScratch<MergedState>(ctx, 'merged')
+  const storyline = merged?.storyline ?? []
+  if (storyline.length === 0) {
+    await putScratch(ctx, 'annotations', [])
+    await mergeStageDetail(ctx, { annotate: null })
+    return { groups: 0, warnings: [] }
+  }
+  const beats: AnnotateBeat[] = storyline.map(b => ({
+    index: b.index,
+    label: b.label ?? '',
+    summary: b.summary ?? '',
+    cast: b.cast ?? []
+  }))
+  const warnings: string[] = []
+  const annotations: SegmentAnnotation[] = []
+  const relay = await relayOf(ctx, task)
+  // 检查点命中先行聚合:已完成块直接读回,不重复调用
+  const chunkCount = Math.ceil(beats.length / ANNOTATE_CHUNK_BEATS)
+  await mergeStageDetail(ctx, { annotate: { doneUnits: 0, totalUnits: chunkCount } })
+  await pool(Array.from({ length: chunkCount }, (_, i) => i), 2, async (ci) => {
+    const key = `annotate-unit-${ci}`
+    const done = await getScratch<SegmentAnnotation[]>(ctx, key)
+    if (done) {
+      annotations.push(...done)
+      await bumpAnnotateProgress(ctx, chunkCount)
+      return
+    }
+    const slice = beats.slice(ci * ANNOTATE_CHUNK_BEATS, (ci + 1) * ANNOTATE_CHUNK_BEATS)
+    try {
+      const { system, user } = buildAnnotateMessages(task.title || '小说', slice)
+      const { data, usage } = await callAiJson(relay, { messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.2 })
+      // 先扣费再落结果:余额不足抛出时该块不落库,续跑重跑并重新扣费,不漏账
+      await recordTaskUsage(ctx, task, usage)
+      const groups = normalizeSegmentAnnotations(data, slice)
+      await putScratch(ctx, key, groups)
+      annotations.push(...groups)
+      await bumpAnnotateProgress(ctx, chunkCount)
+    } catch (e) {
+      if (e instanceof InsufficientTokensError) throw e
+      warnings.push(`剧情转折标注失败(第 ${ci + 1}/${chunkCount} 块,已降级为单粗段):${e instanceof Error ? e.message : String(e)}`)
+    }
+  })
+  annotations.sort((a, b) => a.beats[0]! - b.beats[0]!)
+  await putScratch(ctx, 'annotations', annotations)
+  // 终值校准(失败块无检查点不计入;并发期间与 arcs 分支的槽位写可能互相覆盖,此处收敛)
+  await bumpAnnotateProgress(ctx, chunkCount)
+  return { groups: annotations.length, warnings }
+}
+
+/** 汇总各提取单元的角色数据(name+status+plot),供 v2 段角色文件「状态/剧情」取用(§6.1:提取阶段直接产出) */
+async function loadUnitStatuses(ctx: WorldGenCtx, totalUnits: number): Promise<(ChapterExtractStatuses | null)[]> {
+  const out: (ChapterExtractStatuses | null)[] = new Array(totalUnits).fill(null)
+  const rows = await ctx.db.select({ unitIndex: worldGenUnits.unitIndex, result: worldGenUnits.result })
+    .from(worldGenUnits)
+    .where(eq(worldGenUnits.taskId, ctx.taskId))
+    .all()
+  for (const r of rows) {
+    if (r.unitIndex < 0 || r.unitIndex >= totalUnits) continue
+    try {
+      const ex = JSON.parse(r.result) as ChapterExtraction
+      out[r.unitIndex] = { characters: (ex.characters ?? []).map(c => ({ name: c.name ?? '', status: c.status ?? null, plot: c.plot ?? null })) }
+    } catch {
+      // 单元结果损坏:该段无状态可用(段角色文件空壳不落盘)
+    }
+  }
+  return out
 }
 
 /** 步骤 7:结算成功后写 R2 公共缓存 + world_cache 入库(保留首条)+ 任务完成 + 清 key + 清 scratch。
- *  结算(settleTaskOnSuccess)必须先于写缓存:余额不足转 paused 时,结果与共享缓存均不落,充值补扣后才生效。 */
-export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: string, cacheId: string | null }> {
+ *  结算(settleTaskOnSuccess)必须先于写缓存:余额不足转 paused 时,结果与共享缓存均不落,充值补扣后才生效。
+ *  postWarnings:并行收尾分支(arcs/annotate)的降级告警,由调用方经 step 返回值透传(Workflows 重放安全),
+ *  与 merge 告警聚合写入 warnings 列。 */
+export async function stepFinalize(ctx: WorldGenCtx, postWarnings: string[] = []): Promise<{ resultKey: string, cacheId: string | null }> {
   const task = await requireTask(ctx)
   await assertNotCancelled(task)
   // 幂等:已完成直接返回(结算成功后才置 completed;重跑/续跑不重复落盘)
@@ -965,32 +1113,39 @@ export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: strin
   const fresh = await requireTask(ctx)
 
   const mode: WorldGenMode = task.mode === 'eco' ? 'eco' : task.mode === 'custom' ? 'custom' : 'full'
-  const resultKey = worldCacheObjectKey(task.sourceHash, mode)
+  // v2 单轨:产物只有 aisb-book zip(剧情段正典/角色/引擎派生数据随包);resultKey 与 worldCache.worldKey 均指向它,
+  // 下载/分享/预置消费方现场转换(v2ToWork),旧任务遗留的 v1 json 由下载端点回退兼容。
+  const resultKey = book2CacheObjectKey(task.sourceHash, mode)
   const characterArcs = await getScratch<CharacterArc[]>(ctx, 'arcs') ?? []
-  const payload: WorldJsonPayload = {
-    id: task.sourceHash,
-    title: overlay.title || task.title || '未命名',
-    author: task.author ?? null,
-    genre: null,
-    summary: overlay.summary ?? null,
-    characters: overlay.characters ?? [],
-    overlay,
-    storyline: merged.storyline,
-    characterArcs,
-    entities: merged.entities,
-    conflicts: merged.conflicts,
-    warnings: merged.warnings,
-    tokensUsed: Math.max(0, fresh.tokensUsed),
-    mode,
-    generatedAt: new Date().toISOString(),
-    version: 2
-  }
+  const tokensUsed = Math.max(0, fresh.tokensUsed)
+  const title = overlay.title || task.title || '未命名'
 
   // 先结算:余额不足转 paused(已完成待结算),不写 R2/缓存/不置 completed,由 resume 补扣后重跑至此
   const settled = await settleTaskOnSuccess(ctx)
   if (!settled) return { resultKey: '', cacheId: null }
 
-  await ctx.bucket.put(resultKey, JSON.stringify(payload))
+  // v2 打包(§6.2):成书卡(代码翻译为中文保留键)+ 剧情段正典(标转折分组/节点/段角色文件状态)
+  //  + 引擎派生数据随包(world.json:entities/conflicts/characterArcs)→ BookDoc zip
+  try {
+    const annotations = await getScratch<SegmentAnnotation[]>(ctx, 'annotations') ?? []
+    const { units: extractUnits, text: fulltext } = await deriveUnits(ctx, task)
+    const extracts = await loadUnitStatuses(ctx, extractUnits.length)
+    const doc = buildBookDoc({
+      title,
+      author: task.author,
+      fulltext,
+      storyline: merged.storyline,
+      extracts,
+      overlay,
+      annotations,
+      world: { entities: merged.entities, conflicts: merged.conflicts, characterArcs }
+    })
+    await ctx.bucket.put(resultKey, bookDocToZip(doc))
+  } catch (e) {
+    // v2 打包失败 = 任务失败(单轨后没有 v1 兜底产物):保留 scratch,可续跑重试
+    console.error('[world-gen] v2 打包失败', { taskId: ctx.taskId }, e)
+    throw new Error(`作品格式 v2 打包失败:${e instanceof Error ? e.message : String(e)}`, { cause: e })
+  }
 
   // 缓存入库:同一 (hash, mode) 更新为最新成书(用户选择重新生成时按预期刷新缓存与消耗记录)。
   // 自定义模式不参与共享缓存(开关组合与 full/eco 缓存桶不等价),跳过入库,但成书 R2 文件仍保留供本任务下载。
@@ -1002,10 +1157,10 @@ export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: strin
       sourceHash: task.sourceHash,
       mode,
       fileSize: task.fileSize,
-      title: payload.title,
+      title,
       author: task.author ?? null,
       worldKey: resultKey,
-      tokensUsed: payload.tokensUsed,
+      tokensUsed,
       createdBy: task.userId,
       createdAt: new Date(),
       updatedAt: new Date()
@@ -1013,8 +1168,8 @@ export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: strin
       target: [worldCache.sourceHash, worldCache.mode],
       set: {
         worldKey: resultKey,
-        tokensUsed: payload.tokensUsed,
-        title: payload.title,
+        tokensUsed,
+        title,
         author: task.author ?? null,
         fileSize: task.fileSize,
         updatedAt: new Date()
@@ -1026,7 +1181,7 @@ export async function stepFinalize(ctx: WorldGenCtx): Promise<{ resultKey: strin
     status: 'completed',
     stage: 'done',
     resultKey,
-    warnings: JSON.stringify(merged.warnings.slice(0, 20))
+    warnings: JSON.stringify([...merged.warnings, ...postWarnings].slice(0, 20))
   })
   await clearTaskKey(ctx)
   await cleanupScratch(ctx)
@@ -1079,9 +1234,15 @@ export async function runWorldGenPipelineInline(ctx: WorldGenCtx): Promise<void>
     })
     await stepMerge(ctx, plan)
     if (stepEnabled(task, 'check')) await stepCheck(ctx)
-    await stepSynthesize(ctx)
-    if (stepEnabled(task, 'arcs')) await stepSupplementArcs(ctx)
-    await stepFinalize(ctx)
+    // 成书/弧线/标转折只依赖 merge 产物,并行执行(与 Workflow 编排一致);告警聚合交 finalize
+    const [, annRes, arcsRes] = await Promise.all([
+      stepSynthesize(ctx),
+      stepAnnotate(ctx),
+      stepEnabled(task, 'arcs')
+        ? stepSupplementArcs(ctx)
+        : Promise.resolve({ count: 0, warnings: [] as string[] })
+    ])
+    await stepFinalize(ctx, [...arcsRes.warnings, ...annRes.warnings])
   } catch (e) {
     if (e instanceof WorldGenCancelledError) return
     if (e instanceof InsufficientTokensError) {

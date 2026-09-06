@@ -3,7 +3,7 @@
 // 由 scripts/prebuild-presets.ts 生成),生产经 ASSETS binding 读取,本地 dev 直接读文件系统。
 // 管理员从缓存 promote 到推荐书架的书,世界文件存 R2(preset-worlds/<id>.json),静态缺失时回退读取。
 // 与预置正文 txt 同模式;文件缺失(该书未预生成)返回 null,由调用方决定回退原生成流程。
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { H3Event } from 'h3'
 import { getSkillBucket } from './r2'

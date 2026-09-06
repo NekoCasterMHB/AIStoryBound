@@ -2,7 +2,7 @@
 // /read/[src]/[id] — 沉浸式全屏阅读页(预置小说 preset / 本地作品 work)
 // 功能:护眼背景主题、字号/行距/字体设置、左右滑动切章、自动保存阅读位置(章节+滚动比例)、
 //      目录抽屉、读完检测(末章底部"全书完")、浏览器原生全屏。进度存 IndexedDB(reading store)。
-import { getWork, touchWork } from '../../../utils/worldGen'
+import { loadWorkView, touchWorkSmart } from '../../../utils/bookStoreV2'
 import { loadPresetChapters } from '../../../utils/chapters'
 import { getReadingProgress, saveReadingProgress } from '../../../utils/readingStore'
 import {
@@ -63,12 +63,12 @@ async function loadBook() {
   }
   try {
     if (src === 'work') {
-      const work = await getWork(id)
-      if (!work || work.chapters.length === 0) throw new Error('本地未找到该作品或无可读章节')
-      chapters.value = work.chapters
-      bookTitle.value = work.title
-      hasWorld.value = !!work.overlay?.characters?.length
-      void touchWork(id)
+      const view = await loadWorkView(id)
+      if (!view || !view.fulltext) throw new Error('本地未找到该作品或无可读章节')
+      chapters.value = [{ title: '', content: view.fulltext }]
+      bookTitle.value = view.title
+      hasWorld.value = view.characters.length > 0
+      void touchWorkSmart(id)
     } else {
       const loaded = await loadPresetChapters(id)
       chapters.value = loaded.chapters

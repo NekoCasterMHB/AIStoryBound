@@ -141,7 +141,10 @@ async function callAI(
       buf = buf.slice(nl + 1)
       if (!line.startsWith('data:')) continue
       const payload = line.slice(5).trim()
-      if (payload === '[DONE]') { done = true; break }
+      if (payload === '[DONE]') {
+        done = true
+        break
+      }
       try {
         const chunk = JSON.parse(payload) as {
           choices?: { delta?: { content?: string } }[]

@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { useAuthSession } from '~/utils/auth-client'
 import { useAuthModal } from '~/composables/useAuthModal'
-import { getWork } from '~/utils/worldGen'
+import { loadWorkView } from '~/utils/bookStoreV2'
 import { getInstalledNovels, installStoreNovel } from '~/utils/novelStore'
 import type { DropdownMenuItem, TableColumn } from '@nuxt/ui'
 import { NOVEL_STATUS_LABELS, fmtNovelChars } from '#shared/store-novel'
 import type { MyPublishedNovel, MyPurchasedNovel, NovelStatus, NovelVersionBrief, StoreNovelSummary } from '#shared/store-novel'
-import type { LocalWork } from '#shared/novel'
+import type { BookView } from '#shared/book-view'
 
 // 小说商城面板(创意工坊「书架」tab;游客可浏览;购买/我的需登录)。
 // 交易规则与 Skill 商城一致:支付 token,卖家得售价 80%,20% 平台手续费;发布者设定可免费试读字数。
@@ -53,14 +53,14 @@ async function loadMine() {
 }
 
 /** 本地已安装的书架作品(novelId → 本地 work;work=null 表示映射失效,需重新安装) */
-const installed = ref<Record<string, { workId: string, work: LocalWork | null }>>({})
+const installed = ref<Record<string, { workId: string, work: BookView | null }>>({})
 
 async function loadInstalled() {
   const map = getInstalledNovels()
-  const out: Record<string, { workId: string, work: LocalWork | null }> = {}
+  const out: Record<string, { workId: string, work: BookView | null }> = {}
   await Promise.all(Object.entries(map).map(async ([id, rec]) => {
     try {
-      const work = await getWork(rec.workId)
+      const work = await loadWorkView(rec.workId)
       out[id] = { workId: rec.workId, work }
     } catch {
       out[id] = { workId: rec.workId, work: null }

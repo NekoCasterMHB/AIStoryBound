@@ -622,3 +622,22 @@ CREATE TABLE IF NOT EXISTS `earnings` (
 );
 CREATE INDEX IF NOT EXISTS `idx_earnings_user_status` ON `earnings` (`user_id`, `status`);
 CREATE INDEX IF NOT EXISTS `idx_earnings_user_time` ON `earnings` (`user_id`, `created_at`);
+
+-- ---- 邀请码(码 → 主人;每用户至多一个码,首次查看懒生成) ----
+CREATE TABLE IF NOT EXISTS `invite_codes` (
+	`code` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_invite_code_user` ON `invite_codes` (`user_id`);
+
+-- ---- 邀请绑定关系(被邀请人为主键 = 每人只能被邀请一次;绑定即双方各得奖励,被邀请人后续充值返利给邀请人) ----
+CREATE TABLE IF NOT EXISTS `invite_relations` (
+	`invitee_id` text PRIMARY KEY NOT NULL,
+	`inviter_id` text NOT NULL,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`invitee_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`inviter_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+CREATE INDEX IF NOT EXISTS `idx_invite_rel_inviter` ON `invite_relations` (`inviter_id`);

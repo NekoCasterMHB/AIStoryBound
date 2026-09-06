@@ -140,11 +140,10 @@ export function interpretCharacter(raw: BookCharacter): InterpretedCard | undefi
   const sex = raw['成人属性']
   if (sex && typeof sex === 'object') card.sex = sex as CharacterCard['sex']
 
-  // 弧线总结(角色文件内如带 弧线)
-  // (弧线现拼/缓存视图,见 §11.1;此处不强行映射,由读取层现拼)
+  // 「弧线」字段已废除(world.characterArcs 为唯一权威,§11.1):旧文件遗留的 弧线 键在此静默忽略,不进 profile
 
-  // 未识别键 → profile(排除已消费保留键,保留弧线整体)
-  const consumed = new Set(['姓名', '角色', '身份', '外貌', '性格', '背景', '目标', '关系', '别名', '性别', '年龄', '说话风格', '能力', '恐惧', '弱点', '秘密', '首次出场', '已死亡', '耐心', '心软', '性欲强度', '玩法喜好', '成人属性'])
+  // 未识别键 → profile(排除已消费保留键)
+  const consumed = new Set(['姓名', '角色', '身份', '外貌', '性格', '背景', '目标', '关系', '别名', '性别', '年龄', '说话风格', '能力', '恐惧', '弱点', '秘密', '首次出场', '已死亡', '耐心', '心软', '性欲强度', '玩法喜好', '成人属性', '弧线'])
   const profile: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(raw)) {
     if (!consumed.has(k)) profile[k] = v

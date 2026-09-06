@@ -4,7 +4,7 @@
 // 加余额的子查询读到的仍是 claimed 前状态;重复请求时待领已空,子查询为 0,天然幂等不会双领。
 import { requireUser } from '../../utils/authz'
 import { useD1 } from '../../utils/d1'
-import { and, eq, sql, type SQL } from 'drizzle-orm'
+import { eq, sql, type SQL } from 'drizzle-orm'
 import { user as usersTable, earnings } from '../../db/schema'
 
 /** 目标范围:ids 缺省/null = 全部待领取;否则限指定 id(上限防滥用) */

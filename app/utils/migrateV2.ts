@@ -1,10 +1,10 @@
 // app/utils/migrateV2.ts
-// 一键迁移工具:存量旧 works(v1 LocalWork) → 作品格式 v2(book2)。
-// 语义(已定):迁移 = 每部旧 works → workToV2 → 存 book2(同 id)→ 删除旧 works 项(彻底切到 book2)。
-// 含  dry-run(列出将迁移/可能失败的项) 与  migrate(可选先生成迁移备份 zip 下载,再转换+删旧)。
+// 作品 v2 迁移:书架检测到旧格式作品时由 V2MigrateModal 提示转换(用户确认后执行)
+//  + 个人中心「数据管理」的手动入口(dry-run / 备份 / 一键迁移)。
+// 迁移语义:每部旧 works → workToV2 → 存 book2(同 id)→ 删除旧 works 项;失败保留旧数据可重试。
 import { listWorks, deleteWork } from './worldGen'
 import { saveBook2 } from './bookStoreV2'
-import { workToV2 } from './v2-convert'
+import { workToV2 } from '#shared/v2-convert'
 import { zipSync, strToU8 } from 'fflate'
 import type { LocalWork } from '#shared/novel'
 

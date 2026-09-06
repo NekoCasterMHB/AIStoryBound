@@ -15,12 +15,15 @@ export interface BackupManifest {
   workId: string
   exportedAt: string
   gameCount: number
+  /** v2(book2)作品备份:作品层以 book2.zip 条目整包存放(aisb-book 目录 zip),无 work.json */
+  book2?: true
 }
 
 /** 备份包 ZIP 条目(打包端/解包端共用,避免键名漂移) */
 export const BACKUP_ENTRIES = {
   manifest: 'manifest.json',
   work: 'work.json',
+  book2: 'book2.zip',
   games: 'games.json',
   saves: 'saves.json'
 } as const

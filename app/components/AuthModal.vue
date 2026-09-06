@@ -7,6 +7,7 @@ import { authClient } from '~/utils/auth-client'
 import { useAuthModal } from '~/composables/useAuthModal'
 
 const { open, onLoginSuccess } = useAuthModal()
+const toast = useToast()
 
 const errorMsg = ref('')
 const busy = ref(false)
@@ -92,7 +93,7 @@ async function onOtpLogin() {
 
 // ---- 注册(验证码模态框内两步:填表+发码 → 输码完成) ----
 const regStep = ref<'form' | 'code'>('form')
-const regForm = reactive({ username: '', email: '', password: '', confirm: '', otp: '' })
+const regForm = reactive({ username: '', email: '', password: '', confirm: '', otp: '', inviteCode: '' })
 const showPwReg = ref(false)
 const showPwConfirm = ref(false)
 const regError = ref('')
@@ -206,6 +207,29 @@ async function onFinishRegister() {
       regError.value = friendlyAuthError(signInErr.code || signInErr.message)
       return
     }
+    // 注册时填了邀请码:登录成功后绑定(双方各得奖励)。选填增益,失败仅提示、不阻断进入
+    const inviteCode = regForm.inviteCode.trim()
+    if (inviteCode) {
+      try {
+        const res = await $fetch<{ ok: true, reward: number }>('/api/invite/bind', {
+          method: 'POST',
+          body: { code: inviteCode }
+        })
+        toast.add({
+          title: '邀请码绑定成功',
+          description: `你和邀请人已各获得 ${res.reward.toLocaleString()} tokens`,
+          color: 'success'
+        })
+      } catch (e) {
+        // 服务端错误(409 已绑定/400 自己的码等)的中文文案在 ofetch 的 e.data.statusMessage
+        const data = (e as { data?: { statusMessage?: string } }).data
+        toast.add({
+          title: '邀请码绑定失败',
+          description: data?.statusMessage || (e instanceof Error ? e.message : String(e)),
+          color: 'warning'
+        })
+      }
+    }
     onLoginSuccess()
   } catch {
     regError.value = '网络异常,请稍后重试'
@@ -222,6 +246,7 @@ function resetRegister() {
   regForm.password = ''
   regForm.confirm = ''
   regForm.otp = ''
+  regForm.inviteCode = ''
 }
 
 // ---- 视图切换:登录 ⇄ 注册(互不混排) ----
@@ -510,6 +535,17 @@ function switchToOtpLogin() {
                 </UInput>
               </UFormField>
             </div>
+            <UFormField
+              label="邀请码"
+              hint="选填"
+            >
+              <UInput
+                v-model="regForm.inviteCode"
+                placeholder="有邀请码可填,双方各得 20 万 token"
+                class="w-full"
+                :disabled="regBusy || sendingRegOtp"
+              />
+            </UFormField>
             <UButton
               block
               color="primary"

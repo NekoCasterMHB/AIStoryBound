@@ -1,0 +1,13 @@
+{
+  // 单测专用 tsconfig:为 tsx 提供 #shared 别名解析(shared/ 纯函数 + app/utils 纯逻辑测试)
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "baseUrl": ".",
+    "paths": {
+      "#shared": ["./shared"],
+      "#shared/*": ["./shared/*"]
+    }
+  }
+}

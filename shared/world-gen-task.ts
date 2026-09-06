@@ -54,8 +54,9 @@ export function parseWorldGenSteps(payload: string | null | undefined): WorldGen
 export type WorldGenTaskStatus = 'uploaded' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
 
 /** 管线阶段(与 app/utils/worldGen.ts 的 GenerateProgress.stage 对齐,复用生成页 stepper)
- *  arcs=补充配角故事线任务(按候选角色逐条生成,stageDetail 记录 doneUnits/totalUnits) */
-export type WorldGenStage = 'parse' | 'author' | 'extract' | 'merge' | 'check' | 'synthesize' | 'arcs' | 'done'
+ *  arcs=补充配角故事线任务(按候选角色逐条生成,stageDetail 记录 doneUnits/totalUnits)
+ *  annotate=标剧情转折(AI 把粗段合并为剧情段并生成节点[],产物进 v2 正典) */
+export type WorldGenStage = 'parse' | 'author' | 'extract' | 'merge' | 'check' | 'synthesize' | 'arcs' | 'annotate' | 'done'
 
 /** 任务类型:world=整书世界生成 | arcs=补充生成配角故事线 */
 export type WorldGenTaskKind = 'world' | 'arcs'
@@ -67,6 +68,25 @@ export type WorldGenKeySource = 'platform' | 'user'
 export interface WorldGenStageDetail {
   doneUnits: number
   totalUnits: number
+  /** merge 后并行收尾分支的进度(world 任务;三分支互不覆盖,各写各的槽位,见 world-gen-pipeline) */
+  /** synthesize 分支完成标记 */
+  synthDone?: 0 | 1
+  /** 配角故事线分支;null = 该模式未启用(不参与整体进度) */
+  arcs?: { doneUnits: number, totalUnits: number } | null
+  /** 标剧情转折分块进度;null = 无可标注内容 */
+  annotate?: { doneUnits: number, totalUnits: number } | null
+}
+
+/**
+ * merge 之后并行收尾分支(synthesize/arcs/annotate)的整体完成度 0..1。
+ * 只统计已上报的分支(arcs=null 表示未启用,剔除);旧任务无任何子字段时返回 null,调用方回退旧映射。
+ */
+export function postMergeRatio(d: WorldGenStageDetail): number | null {
+  if (d.synthDone === undefined && d.arcs === undefined && d.annotate === undefined) return null
+  const parts = [d.synthDone ? 1 : 0]
+  if (d.arcs) parts.push(d.arcs.totalUnits > 0 ? Math.min(1, d.arcs.doneUnits / d.arcs.totalUnits) : 0)
+  if (d.annotate) parts.push(d.annotate.totalUnits > 0 ? Math.min(1, d.annotate.doneUnits / d.annotate.totalUnits) : 0)
+  return parts.reduce((a, b) => a + b, 0) / parts.length
 }
 
 /** 任务 DTO(GET /api/world-gen/tasks 与 /:id 返回;不含 key 密文等敏感列) */
@@ -112,10 +132,10 @@ export interface WorldCacheHit {
 // ---- 流水线 token 估算(与 shared/world-build 的真实请求结构对应;按实测消耗校准,宁高勿低) ----
 /** 每提取单元:系统 schema + 指令的输入开销(tokens;实测 schema+规则 ≈ 900 汉字当量 ≈ 700 token,取整留余) */
 const EXTRACT_INPUT_OVERHEAD_TOKENS = 1000
-/** 每提取单元:典型提取 JSON 输出(tokens;10K 字单元通常产出 3~8 角色 + 各类实体,≈ 1500~2500) */
-const EXTRACT_OUTPUT_TOKENS = 2200
-/** 节约模式每提取单元输出:5 类实体 + 情节细纲、引用从简 */
-const ECO_EXTRACT_OUTPUT_TOKENS = 900
+/** 每提取单元:典型提取 JSON 输出(tokens;10K 字单元通常产出 3~8 角色 + 各类实体,含逐角色 plot 剧情,≈ 1800~3000) */
+const EXTRACT_OUTPUT_TOKENS = 2700
+/** 节约模式每提取单元输出:5 类实体 + 情节细纲 + 逐角色 plot 剧情、引用从简 */
+const ECO_EXTRACT_OUTPUT_TOKENS = 1200
 /** 一致性检查输入:紧凑实体库 ≈ 全书 token 数的该比例(去 quote、值截断,实体量随书长亚线性) */
 const CHECK_INPUT_TOKEN_RATIO = 0.10
 /** 一致性检查:指令输入开销 + 输出(tokens;输出为逐条批注 JSON,通常数百) */

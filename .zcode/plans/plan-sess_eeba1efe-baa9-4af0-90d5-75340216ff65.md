@@ -1,72 +1,65 @@
-## 收益(earnings)系统设计方案
+## 邀请码系统设计方案(奖励调整为:双方各 +20 万 token,返利 15%)
 
-### 现状(已核实)
-skill/novel 成交时,各自的 `server/api/store/*/purchase.post.ts` 在 `db.batch` 里"扣买家款 → 卖家 `ai_token_balance + 80%分成`(直接入账)→ 计数+1 → 插购买行(快照 sellerShare/platformFee)"。无任何挂账/账本/待领取概念;无 admin 直接发 token 端点。收益单位=平台 token。
+### 机制总览
+- 每个注册用户自动拥有一个专属邀请码(首次查看时懒生成,格式复用兑换码字符集,8 位)。
+- 填写入口两处共用同一绑定 API:① 注册表单选填项(注册登录成功后自动提交);② 个人主页「邀请码」按钮模态框。每人只能绑定一次(唯一约束兜底)。
+- 绑定成功:**双方立刻各 +200,000 token**(直接入 ai_token_balance,同一 D1 batch 原子完成)。
+- 被邀请人**后续每次充值到账**时,邀请人获得充值 token 数的 **15%**,以 `earnings(pending, source_type='invite_rebate')` 进入邀请人收益列表,领取后入账。
 
-### 目标机制
-一切收益(小说/技能销售分成 + 管理员手动发放)**先进入"待领取收益账本"**,用户在个人主页「收益」按钮看到角标 → 模态框列每笔 → 点「获取」/「一键全部领取」才把 token 加入 `ai_token_balance`。管理员发放带自定义原因,同样进该用户待领取列表。
-
-### 1. 数据模型(新建,零迁移包袱)
-`drizzle/init.sql` 末尾追加(幂等 CREATE TABLE/INDEX):
+### 1. 数据模型(新表,追加 init.sql + schema.ts,跑 migrate 两端)
 ```sql
-CREATE TABLE IF NOT EXISTS `earnings` (
-  `id` text PRIMARY KEY NOT NULL,                 -- uuid()
-  `user_id` text NOT NULL,                        -- 收款人
-  `amount` integer NOT NULL,                      -- token,正整数
-  `source_type` text NOT NULL,                    -- novel_sale | skill_sale | admin
-  `source_id` text,                               -- 对应购买记录 id(admin 发放为空,溯源用)
-  `item_title` text NOT NULL,                     -- 快照:《xx》销售分成 / 管理员发放
-  `reason` text,                                  -- 自定义原因(仅 admin)
-  `status` text DEFAULT 'pending' NOT NULL,       -- pending | claimed
-  `created_at` integer NOT NULL,                  -- timestamp_ms
-  `claimed_at` integer
+-- 邀请码(码 → 主人;每用户至多一个码,懒生成)
+CREATE TABLE IF NOT EXISTS `invite_codes` (
+  `code` text PRIMARY KEY NOT NULL,      -- 8 位大写无易混字符
+  `user_id` text NOT NULL,               -- 码主人
+  `created_at` integer NOT NULL,
+  FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
-CREATE INDEX IF NOT EXISTS `idx_earnings_user_status` ON `earnings` (`user_id`, `status`);
-CREATE INDEX IF NOT EXISTS `idx_earnings_user_time` ON `earnings` (`user_id`, `created_at`);
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_invite_code_user` ON `invite_codes` (`user_id`);
+
+-- 邀请绑定关系(被邀请人为主键 = 每人只能被邀请一次)
+CREATE TABLE IF NOT EXISTS `invite_relations` (
+  `invitee_id` text PRIMARY KEY NOT NULL,
+  `inviter_id` text NOT NULL,
+  `created_at` integer NOT NULL,
+  FOREIGN KEY (`invitee_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,
+  FOREIGN KEY (`inviter_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+CREATE INDEX IF NOT EXISTS `idx_invite_rel_inviter` ON `invite_relations` (`inviter_id`);
 ```
-跑 `node scripts/d1-migrate.mjs --remote`(dev 经 wrangler remote=true 直连云库,必须先建表)与 `--local` 保持两端同步。
-新增 `shared/earnings.ts`:类型 + `EARNINGS_SOURCE_LABELS`(novel_sale 小说销售/skill_sale 技能销售/admin 管理员发放)+ 状态文案。
 
-### 2. 服务端改动
-**a) 两个 purchase API**(`server/api/store/novels/[id]/purchase.post.ts`、`skills/[id]/purchase.post.ts`,逐行同构)
-- batch 里删除"卖家 `+sellerShare`"一条,改为同批插入一条 `earnings(pending, source_type='novel_sale'|'skill_sale', source_id=购买行id, item_title=商品标题, amount=sellerShare)`。
-- 顺手修原子性缺口:batch 前先 SELECT 买家余额,不足直接 402;保留条件扣款与 batch 后 changes 校验作并发兜底(现状"0 行扣款仍提交卖家入账+购买行"的隐患一并收窄)。返回结构不变。
+### 2. 服务端 API
+**a) `GET /api/invite/mine`**(登录):返回 `{ code, bound, inviterName?, inviteeCount }`;无码则生成并插入(主人为自己;码冲突重试)。查 `invite_relations` 得 bound/inviterName(join user),inviteeCount = 我邀请的人数。
 
-**b) 用户领取**(新 `POST /api/earnings/claim`,body `{ ids?: string[] }`,缺省=全部)
-- 一次 `db.batch` 完成,利用 D1 batch 串行事务天然防并发双领:
-  1) `UPDATE user SET ai_token_balance = ai_token_balance + (SELECT COALESCE(SUM(amount),0) FROM earnings WHERE id IN (ids|该用户全部) AND user_id=? AND status='pending')`(先按待领总额结算,子查询读到的是置 claimed 前的状态);
-  2) `UPDATE earnings SET status='claimed', claimed_at=? WHERE 同条件 AND status='pending'`。
-- 返回 `{ ok: true, credited, claimedCount }`;幂等(重复请求结算额为 0)。
+**b) `POST /api/invite/bind`** body `{ code }`(登录 + `createRateLimiter` 防爆破,复用 redeem 模式):
+- normalize(复用 `shared/redeem-code.ts` 的 `normalizeRedeemCode`)→ 查码得 inviter;校验:码存在、**不能填自己的码**;
+- 原子 `db.batch`:`INSERT invite_relations(invitee_id=我, inviter_id, now)`(PK 冲突 = 已绑定 → 409「已填写过邀请码」)+ 双方 `ai_token_balance + 200_000`;
+- 预检友好报错(已绑定/码不存在/自己的码),并发竞态由唯一约束兜底转 409;返回 `{ ok: true, inviterName }`。
 
-**c) 列表与角标数据**
-- 新 `GET /api/earnings`:本人全部收益(分页 page/pageSize≤50,返回 `{ rows, total }`,行含 item_title/reason/amount/status/created_at/claimed_at)。
-- `server/api/profile/me.get.ts` 扩展返回 `pendingEarningsCount`、`pendingEarningsTotal`(COUNT/SUM pending)——profile 页现有 `loadMe()` 一处即可刷余额+角标。
+**c) 充值返利 — 重构 `server/utils/payment-credit.ts` 的 `creditPaidOrder` 为单 `db.batch`**(顺带修复现有并发重复入账窗口):
+- 语句 1:订单置 paid 改为**条件更新** `WHERE order_no=? AND status!='paid'`(changes=0 → return 'success' 幂等短路,余额与返利全部跳过);无订单分支改同批 INSERT paid 订单(保留金额校验);
+- 语句 2:买家 `+ pkg.tokens`(到账数以包定义 `pkg.tokens` 为准,与现状一致);
+- 语句 3(条件):batch 前查 `invite_relations` 得买家邀请人,存在且 `Math.floor(pkg.tokens * 0.15) > 0` 时插 `earnings(inviter, 15%, 'invite_rebate', sourceId=订单 id, itemTitle='邀请返利:'+包名, pending)`;
+- 三个充值入口(网关回调/跳回兜底/管理补单)共用此函数,自动全覆盖;余额 update changes=0(用户不存在)仍返回 'fail'。
 
-**d) 管理员发放**(admin 中间件自动守护)
-- 新 `POST /api/admin/earnings/send`:`{ userId, amount, reason }`;校验 amount 正整数、reason 去空格 ≤200 字、目标用户在 user 表存在;插入 `earnings(source_type='admin', item_title='管理员发放', reason, status='pending')`。返回 ok。
-- 新 `GET /api/admin/earnings`:分页历史(join user 带收款人 name/email,可按关键词/状态过滤),格式对齐 admin/cache.get。
+**d) `shared/earnings.ts`**:`EarningsSourceType` 加 `'invite_rebate'`,`EARNINGS_SOURCE_LABELS.invite_rebate = '邀请返利'`。
 
-### 3. 前端改动
-**a) 个人主页** `app/pages/profile.vue`
-- 余额卡右上按钮组(约 975-992)加「收益」按钮;`pendingEarningsCount>0` 时按钮角上 `UBadge` 数字角标(样式参考 profile 1680-1698 / admin/index 待处理高亮)。
-- 收益模态框(结构参考 profile.vue 2286-2346 购买记录弹窗):顶部"可领取 X token"+「一键全部领取」主按钮;列表每笔一行(item_title/来源/自定义原因、金额 +X token、时间、状态 UBadge 待领取/已领取);待领取行带「获取」单笔按钮;空态/加载态齐全。领取成功 → toast + `loadMe()` 刷新余额与角标 + 重拉列表(参考 submitRedeem 418-448 的刷新式样)。
-- 进入页面即 `loadMe()`(已含),无需轮询;模态框每次打开重拉列表。
+### 3. 前端
+**a) `app/components/AuthModal.vue` 注册表单**(regStep 'form'):加选填「邀请码」输入(placeholder 说明双方各得 20 万 token);`onFinishRegister` 中 `signIn.email` 成功后、`onLoginSuccess()` 前,若非空则调 bind(失败仅 toast 警告,不阻断登录)。
 
-**b) 管理端**
-- `app/layouts/admin.vue:16-28` nav 加「收益发放」项 → 新 `app/pages/admin/earnings.vue`(骨架参考 admin/redeem.vue:1-63):上方发放表单(用户搜索单选复用 `GET /api/admin/users?q=`,参考 admin/mail.vue 搜索/选择式样;金额输入;原因输入;提交)→ 下方发放历史列表(分页)。
+**b) `app/pages/profile.vue`**:
+- 余额卡按钮行(收益/购买记录/兑换码)加第四个「邀请码」按钮(size sm,同款);
+- 邀请码模态框:上半部分「我的邀请码」大字 + 复制按钮 + 已邀请 N 人;下半部分未绑定时显示邀请码输入 + 「绑定」按钮(成功 toast「双方已各获得 20 万 token」+ loadMe 刷新余额),已绑定显示「已绑定邀请人:xxx」;底部说明文案(双方各 20 万;好友后续充值的 15% 将以「邀请返利」进入你的收益列表);
+- 本地 `EarningsItem.sourceType` 联合类型补 `'invite_rebate'`(该处是手抄副本,须同步);收益列表非 admin 条目走 itemTitle 默认展示,自动生效。
 
-**c) 文案同步**(5~8 处,`store/publish.vue`、`workshop/publish.vue`、`NovelStoreView.vue:150,992`、`StoreSkillsView.vue:160,1049`)
-"收益在成交时直接进入您的余额" → "收益在成交后进入个人中心「收益」,领取后到账"。
-
-### 4. 边界与不做
-- 历史成交已在余额直接入账,**不回填**(避免重复发放),新列表只记机制启用后的收益。
-- 不引入提现/退款/人民币钱包;币种维持 token;收益不占任何"池"(纯账本,领取时才产生余额变动)。
-- 角标仅个人主页收益入口,不加全局导航(需求原文如此)。
+### 4. 边界
+- 奖励直接入余额(不走收益列表);返利走收益列表(用户明确要求);返利基于实际到账 tokens(含新人包);退款不追回返利(范围外);绑定后关系不可改;绑定时机=邮箱已验证+已登录,防未验证刷奖励。
+- 历史充值不补发返利(仅绑定后新充值)。
 
 ### 5. 验证
-1. `npx nuxt typecheck`;`d1-migrate --remote` + `--local`。
-2. 本地 dev(4569,按 AGENTS.md 端口流程):a) 管理员页给 testuser 发一笔带原因收益 → testuser 登录个人主页见角标+列表 → 单笔/全部领取 → 余额增加、记录置已领取;b) 购买路径:admin 直发 skill(sellerId=admin)后 testuser 购买 → admin 收益为 pending(不直接入余额)而非即时到账。
-3. 改后收尾关闭 dev 并确认端口释放。
+1. `npx nuxt typecheck`;`node scripts/d1-migrate.mjs --remote` + `--local`。
+2. dev(4569,按端口规范)HTTP 级 E2E:注册第二个测试号(或直接用 curl 建)→ GET mine 得码 → testuser bind → 双方余额各 +20 万、重复 bind 返回 409、填自己的码被拒;给被邀请人造一笔 paid 订单走 creditPaidOrder 路径 → 邀请人收益列表出现 15% 邀请返利 pending;重复调用同单不重复入账/返利。
+3. 测试数据清理、关 dev、确认端口释放。
 
 ### 不做
-- 不改 git(需要提交时另说)。
+- 不提交 git;不做邀请排行榜/返利提现等扩展。

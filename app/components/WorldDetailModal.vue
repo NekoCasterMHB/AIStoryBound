@@ -2,9 +2,10 @@
 // 世界详情弹窗:展示本地作品的完整生成产物(概览元数据/故事线/实体库/冲突/生成告警),
 // 并提供概览元数据(summary/性向/尺度/设定/tags 等)的编辑——此前这些字段生成后全应用不可见、不可改。
 // 入口:书架卡片「世界详情」/ 生成完成页 / 选角页;保存后由父组件刷新列表。
-import { saveWork } from '../utils/worldGen'
-import { loadWorkSmart } from '../utils/bookStoreV2'
-import type { LocalWork, WorldEntities, EntityConflict, StoryBeat, CharacterArc } from '#shared/novel'
+import { saveWork, getWork } from '../utils/worldGen'
+import { loadWorkView, saveBook2Meta } from '../utils/bookStoreV2'
+import type { BookView } from '#shared/book-view'
+import type { WorldEntities, EntityConflict, StoryBeat, CharacterArc } from '#shared/novel'
 
 const props = defineProps<{ workId: string }>()
 const emit = defineEmits<{ saved: [] }>()
@@ -12,7 +13,7 @@ const emit = defineEmits<{ saved: [] }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const toast = useToast()
-const work = ref<LocalWork | null>(null)
+const work = ref<BookView | null>(null)
 const loaded = ref(false)
 const loadErr = ref('')
 const editing = ref(false)
@@ -60,7 +61,7 @@ watch(open, async (v) => {
   saving.value = false
   loaded.value = false
   loadErr.value = ''
-  const w = await loadWorkSmart(props.workId)
+  const w = await loadWorkView(props.workId)
   if (!w) {
     loadErr.value = '本地未找到该作品'
     loaded.value = true
@@ -71,16 +72,16 @@ watch(open, async (v) => {
 })
 
 function beginEdit() {
-  const o = work.value?.overlay
+  const m = work.value?.manifest
   draft.value = {
-    summary: o?.summary ?? '',
-    genre: o?.genre ?? '',
-    orientation: o?.orientation ?? '',
-    setting: o?.setting ?? '',
-    heat: o?.heat ?? '',
-    tags: joinList(o?.tags),
-    tropes: joinList(o?.tropes),
-    contentWarnings: joinList(o?.contentWarnings)
+    summary: m?.summary ?? '',
+    genre: m?.genre ?? '',
+    orientation: m?.orientation ?? '',
+    setting: m?.setting ?? '',
+    heat: m?.heat ?? '',
+    tags: joinList(m?.tags),
+    tropes: joinList(m?.tropes),
+    contentWarnings: joinList(m?.contentWarnings)
   }
   editing.value = true
 }
@@ -89,23 +90,29 @@ async function saveMeta() {
   if (!work.value || saving.value) return
   saving.value = true
   try {
-    const o = { ...(work.value.overlay ?? {}) }
-    o.summary = draft.value.summary.trim() || undefined
-    o.genre = draft.value.genre.trim() || undefined
-    o.orientation = draft.value.orientation.trim() || undefined
-    o.setting = draft.value.setting.trim() || undefined
-    const heat = draft.value.heat.trim()
-    o.heat = (HEAT_OPTS as readonly string[]).includes(heat) ? (heat as typeof HEAT_OPTS[number]) : undefined
-    const tags = splitList(draft.value.tags)
-    o.tags = tags.length ? tags : undefined
-    const tropes = splitList(draft.value.tropes)
-    o.tropes = tropes.length ? tropes : undefined
-    const cws = splitList(draft.value.contentWarnings)
-    o.contentWarnings = cws.length ? cws : undefined
-    work.value.overlay = o
-    // 云端已有对应作品时标记待同步(由书架「同步云端」推送)
-    if (work.value.syncStatus === 'synced') work.value.syncStatus = 'dirty'
-    await saveWork(JSON.parse(JSON.stringify(work.value)))
+    const meta = {
+      summary: draft.value.summary.trim() || undefined,
+      genre: draft.value.genre.trim() || undefined,
+      orientation: draft.value.orientation.trim() || undefined,
+      setting: draft.value.setting.trim() || undefined,
+      heat: ((HEAT_OPTS as readonly string[]).includes(draft.value.heat.trim()) ? draft.value.heat.trim() : undefined) as typeof HEAT_OPTS[number] | undefined,
+      tags: splitList(draft.value.tags).length ? splitList(draft.value.tags) : undefined,
+      tropes: splitList(draft.value.tropes).length ? splitList(draft.value.tropes) : undefined,
+      contentWarnings: splitList(draft.value.contentWarnings).length ? splitList(draft.value.contentWarnings) : undefined
+    }
+    if (work.value.source === 'book2') {
+      // v2 真源在 book2 zip:概览字段写回 manifest(可选扩展字段,§2);不落 works 副本
+      await saveBook2Meta(work.value.id, meta)
+      work.value.manifest = { ...work.value.manifest, ...meta }
+    } else {
+      // works 行(强制自动迁移前的过渡):概览字段写回 v1 overlay
+      const raw = await getWork(work.value.id)
+      if (!raw) throw new Error('本地未找到该作品')
+      raw.overlay = { ...raw.overlay, ...meta }
+      // 云端已有对应作品时标记待同步(由书架「同步云端」推送)
+      if (raw.syncStatus === 'synced') raw.syncStatus = 'dirty'
+      await saveWork(raw)
+    }
     editing.value = false
     toast.add({ title: '世界概览已更新', color: 'success' })
     emit('saved')
@@ -137,7 +144,7 @@ function srcBrief(sources: { chapter: number, quote?: string | null, verified?: 
 }
 
 const entityGroups = computed(() => {
-  const e: WorldEntities | undefined = work.value?.entities
+  const e: WorldEntities | undefined = work.value?.world.entities
   if (!e) return []
   const groups: { key: string, label: string, rows: EntityRow[] }[] = []
   const push = (key: string, label: string, rows: EntityRow[]) => {
@@ -188,10 +195,10 @@ const entityGroups = computed(() => {
   return groups
 })
 
-const conflicts = computed<EntityConflict[]>(() => work.value?.conflicts ?? [])
-const warnings = computed<string[]>(() => work.value?.warnings ?? [])
+const conflicts = computed<EntityConflict[]>(() => work.value?.world.conflicts ?? [])
+const warnings = computed<string[]>(() => [])
 const storyline = computed<StoryBeat[]>(() => work.value?.storyline ?? [])
-const characterArcs = computed<CharacterArc[]>(() => work.value?.characterArcs ?? [])
+const characterArcs = computed<CharacterArc[]>(() => work.value?.world.characterArcs ?? [])
 
 const VERDICT_LABEL: Record<string, string> = {
   later_wins: '以后文为准',
@@ -235,7 +242,7 @@ const VERDICT_LABEL: Record<string, string> = {
               世界概览
             </h3>
             <UButton
-              v-if="!editing && !work.book2SourceId"
+              v-if="!editing"
               label="编辑概览"
               icon="i-lucide-pencil"
               size="xs"
@@ -261,10 +268,10 @@ const VERDICT_LABEL: Record<string, string> = {
             class="space-y-2 text-sm"
           >
             <p
-              v-if="work.overlay?.summary"
+              v-if="work.manifest.summary"
               class="text-neutral-600 dark:text-neutral-300"
             >
-              {{ work.overlay.summary }}
+              {{ work.manifest.summary }}
             </p>
             <p
               v-else
@@ -274,23 +281,23 @@ const VERDICT_LABEL: Record<string, string> = {
             </p>
             <div class="flex flex-wrap gap-1.5">
               <UBadge
-                v-if="work.overlay?.orientation"
+                v-if="work.manifest.orientation"
                 color="info"
                 variant="subtle"
                 size="sm"
               >
-                {{ work.overlay.orientation }}
+                {{ work.manifest.orientation }}
               </UBadge>
               <UBadge
-                v-if="work.overlay?.heat"
+                v-if="work.manifest.heat"
                 color="warning"
                 variant="subtle"
                 size="sm"
               >
-                尺度:{{ work.overlay.heat }}
+                尺度:{{ work.manifest.heat }}
               </UBadge>
               <UBadge
-                v-for="tag in work.overlay?.tags ?? []"
+                v-for="tag in work.manifest.tags ?? []"
                 :key="tag"
                 color="primary"
                 variant="subtle"
@@ -300,22 +307,22 @@ const VERDICT_LABEL: Record<string, string> = {
               </UBadge>
             </div>
             <p
-              v-if="work.overlay?.setting"
+              v-if="work.manifest.setting"
               class="text-xs text-neutral-500"
             >
-              <span class="font-medium">设定:</span>{{ work.overlay.setting }}
+              <span class="font-medium">设定:</span>{{ work.manifest.setting }}
             </p>
             <p
-              v-if="work.overlay?.contentWarnings?.length"
+              v-if="work.manifest.contentWarnings?.length"
               class="text-xs text-amber-600 dark:text-amber-400"
             >
-              <span class="font-medium">内容警告:</span>{{ work.overlay.contentWarnings.join('、') }}
+              <span class="font-medium">内容警告:</span>{{ work.manifest.contentWarnings.join('、') }}
             </p>
             <p
-              v-if="work.overlay?.tropes?.length"
+              v-if="work.manifest.tropes?.length"
               class="text-xs text-neutral-500"
             >
-              <span class="font-medium">剧情原型:</span>{{ work.overlay.tropes.join('、') }}
+              <span class="font-medium">剧情原型:</span>{{ work.manifest.tropes.join('、') }}
             </p>
           </div>
 
@@ -542,7 +549,7 @@ const VERDICT_LABEL: Record<string, string> = {
         </section>
 
         <p
-          v-if="!entityGroups.length && !conflicts.length && !warnings.length && !storyline.length && !characterArcs.length && !work.overlay?.summary"
+          v-if="!entityGroups.length && !conflicts.length && !warnings.length && !storyline.length && !characterArcs.length && !work.manifest.summary"
           class="py-4 text-center text-sm text-neutral-400"
         >
           该作品还没有世界产物——到书架「重新生成世界」补齐

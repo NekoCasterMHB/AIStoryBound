@@ -1,6 +1,7 @@
 // server/api/world-gen/arcs.post.ts
 // 创建「补充生成配角故事线」云端任务(JSON 体):
-//   { workId, title, entities, storyline, config? }
+//   { workId, title, entities, storyline, plots?, text?, config? }
+// 全书正文(登场段原文窗口用)落 R2 spool(D1 单值上限 2MB),payload 只存 textKey,任务完成时清理;
 // 流程:候选角色预检 → 服务端估算 token → 平台模式余额预检(不预扣)→ 插任务行(kind=arcs,
 // sourceWorkId + payload 暂存输入)→ 启动 Workflow 逐单元生成(运行中只记账,完成时一次性结算)。
 // 用户自建 key:格式校验 + 指纹准入(与 /api/ai/chat 同门槛)→ AES-GCM 加密暂存到任务行,
@@ -16,7 +17,8 @@ import { estimateMessagesTokens } from '../../../shared/token-estimate'
 import { buildCharacterArcMessages, characterArcCandidates } from '../../../shared/world-build'
 import { encryptJson } from '../../utils/crypto'
 import { aiConfigFingerprint } from '../../utils/ai-fingerprint'
-import { ARCS_UNIT_OUTPUT_RESERVE } from '../../utils/world-gen-pipeline'
+import { ARCS_UNIT_OUTPUT_RESERVE, arcsTextInputKey } from '../../utils/world-gen-pipeline'
+import { getSkillBucket } from '../../utils/r2'
 import { startWorldGenTask } from '../../utils/world-gen-start'
 import { worldGenTaskToDTO } from '../../utils/world-gen-dto'
 
@@ -34,6 +36,8 @@ interface ArcsCreateBody {
   storyline?: unknown
   /** 全书正文(chapters.join('\n');用于登场段原文窗口,可选) */
   text?: string
+  /** 逐段事实底稿(段角色文件的 剧情/状态;arcs 精写的事实依据,见 format-v2 §6.1) */
+  plots?: { name: string, beatIndex: number, plot?: string | null, status?: string | null }[]
   config?: ArcsConfigBody
 }
 
@@ -102,13 +106,18 @@ export default defineEventHandler(async (event) => {
   // ---- 建任务行 ----
   const taskId = uuid()
   const now = new Date()
-  const payloadText = typeof body.text === 'string' ? body.text.slice(0, 10_000_000) : undefined
+  // 全书正文落 R2 spool(D1 单值/行上限 2MB,大书正文不能进 payload 列),payload 只存键;
+  // 管线终态(completed)删除 spool,paused 保留供续跑
+  const payloadText = typeof body.text === 'string' && body.text.trim() ? body.text.slice(0, 10_000_000) : undefined
+  if (payloadText) {
+    await getSkillBucket(event).put(arcsTextInputKey(taskId), payloadText)
+  }
   await db.insert(worldGenTasks).values({
     id: taskId,
     userId: sessUser.id,
     kind: 'arcs',
     sourceWorkId: workId,
-    payload: JSON.stringify({ entities, storyline, ...(payloadText ? { text: payloadText } : {}) }),
+    payload: JSON.stringify({ entities, storyline, ...(payloadText ? { textKey: arcsTextInputKey(taskId) } : {}), ...(Array.isArray(body.plots) ? { plots: body.plots.slice(0, 2000) } : {}) }),
     status: 'uploaded',
     stage: 'arcs',
     stageDetail: JSON.stringify({ doneUnits: 0, totalUnits }),

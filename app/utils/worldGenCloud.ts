@@ -3,7 +3,10 @@
 // 服务端负责全部 AI 调用(Workflows),本模块只做传输、进度展示与结果安装;
 // 自建 key 配置随上传表单上送云端加密暂存(任务结束即删),任务执行期间无需客户端在线。
 import type { WorldCacheHit, WorldGenMode, WorldGenStepSwitches, WorldGenTaskDTO } from '#shared/world-gen-task'
+import { postMergeRatio } from '#shared/world-gen-task'
 import { saveWork, getWorkBySourceTask } from './worldGen'
+import { loadBook2AsWork, saveBook2 } from './bookStoreV2'
+import { bookZipToDoc } from '#shared/novel-v2'
 import { importWorkFromBytes } from './shareZip'
 import type { CharacterArc, LocalWork } from '#shared/novel'
 
@@ -120,6 +123,8 @@ export interface SupplementArcsArgs {
   storyline: LocalWork['storyline']
   /** 全书正文(chapters.join('\n');服务端用于登场段原文窗口注入) */
   text?: string
+  /** 逐段事实底稿(段角色文件的 剧情/状态;arcs 精写的事实依据,见 format-v2 §6.1) */
+  plots?: { name: string, beatIndex: number, plot?: string | null, status?: string | null }[]
   /** 自建 key 配置(浏览器本地已验证的激活配置;上送云端加密暂存,任务结束即删) */
   config?: { format: string, baseUrl: string, apiKey: string, model: string } | null
 }
@@ -177,11 +182,33 @@ export interface InstallOptions {
 }
 
 /**
- * 下载成书 zip 并安装进本地书架(IndexedDB works);返回新作品。
- * 同一任务只允许落一本:先按 sourceTaskId 查已安装作品,已存在则按调用方意愿覆盖或跳过,
+ * 下载成书并安装进本地书架,返回新作品。
+ * 新生成任务(v2):优先下载 aisb-book zip → book2 真源落库(IndexedDB book2 表);旧任务无 v2 产物自动回退 v1。
+ * 同一任务只允许落一本:先按 sourceTaskId(v1)或 book2 行 id(v2)查已安装作品,已存在则按调用方意愿覆盖或跳过,
  * 防止生成页/书架页/多标签页对同一任务重复安装出多本一样的书。
  */
 export async function downloadAndInstallWorldTask(task: WorldGenTaskDTO, opts?: InstallOptions): Promise<LocalWork> {
+  // v2 产物存在时优先走 v2(book2 真源,id = 任务 id,重复安装幂等覆盖)
+  try {
+    const buf = await $fetch<ArrayBuffer>(`${WORLD_GEN_TASKS_URL}/${task.id}/download-v2`, { responseType: 'arrayBuffer' })
+    const doc = bookZipToDoc(new Uint8Array(buf))
+    const existingV2 = await loadBook2AsWork(task.id)
+    if (existingV2) {
+      if (!opts?.onDuplicate) return existingV2
+      const overwrite = await opts.onDuplicate(existingV2)
+      if (!overwrite) return existingV2
+    } else {
+      // v1 已装过同一任务的旧安装:视作重复(调用方决定覆盖/跳过)
+      const existingV1 = await getWorkBySourceTask(task.id)
+      if (existingV1 && !opts?.onDuplicate) return existingV1
+    }
+    await saveBook2(doc, task.id)
+    const work = await loadBook2AsWork(task.id)
+    if (work) return work
+  } catch (e) {
+    // 404/410 = 无 v2 产物(旧任务),走 v1;其余错误也回退 v1(成书不可因 v2 链路失败而不可用)
+    console.warn('[world-gen] v2 下载/安装失败,回退 v1', task.id, e)
+  }
   const existing = await getWorkBySourceTask(task.id)
   if (existing) {
     if (!opts?.onDuplicate) return existing
@@ -224,11 +251,18 @@ export function worldGenTaskPercent(task: WorldGenTaskDTO): number {
       return 85
     case 'check':
       return 90
-    case 'arcs':
+    case 'arcs': {
       // 按故事线条数推进:10%(第 0 条)→ 90%(最后一条)
       return Math.round(10 + unitRatio * 80)
-    case 'synthesize':
-      return 95
+    }
+    case 'annotate': // 标剧情转折:粗段合并为剧情段并生成节点[](v2 正典)
+      return 96
+    case 'synthesize': {
+      // merge 后三分支(成书/弧线/标转折)并行:按整体完成度推进 86→97;
+      // 旧任务/独立 arcs 任务无分支子字段(postMergeRatio=null),维持原 95
+      const r = postMergeRatio(task.stageDetail)
+      return r === null ? 95 : Math.round(86 + r * 11)
+    }
     case 'done':
       return 100
     default:
@@ -256,7 +290,18 @@ export function worldGenStageLabel(task: WorldGenTaskDTO): string {
       const { doneUnits, totalUnits } = task.stageDetail
       return totalUnits > 0 ? `补充故事线 ${doneUnits}/${totalUnits}` : '补充故事线'
     }
-    case 'synthesize': return '成书中'
+    case 'synthesize': {
+      // 并行收尾阶段:展示最落后分支的具体进度;全部完成后进入整理产物
+      const d = task.stageDetail
+      if (d.annotate && d.annotate.totalUnits > 0 && d.annotate.doneUnits < d.annotate.totalUnits) {
+        return `标注剧情转折 ${d.annotate.doneUnits}/${d.annotate.totalUnits}`
+      }
+      if (d.arcs && d.arcs.totalUnits > 0 && d.arcs.doneUnits < d.arcs.totalUnits) {
+        return `补充故事线 ${d.arcs.doneUnits}/${d.arcs.totalUnits}`
+      }
+      return d.synthDone ? '整理产物' : '成书中'
+    }
+    case 'annotate': return '标注剧情转折'
     case 'done': return '完成'
     default: return '处理中'
   }

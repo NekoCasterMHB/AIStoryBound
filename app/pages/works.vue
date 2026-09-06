@@ -2,7 +2,7 @@
 // /works — 我的书架(登录后):推荐书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
 import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments, isLegacyChapteredWork } from '../utils/worldGen'
-import { listBook2, loadBook2AsWork, deleteBook2 } from '../utils/bookStoreV2'
+import { listBook2, loadBook2AsWork, deleteBook2, loadBook2RawZip, importBook2Zip, loadWorkView, updateBook2 } from '../utils/bookStoreV2'
 import { NOVEL_ENCODING_LABELS } from '#shared/novel-encoding'
 import { characterArcCandidates } from '#shared/world-build'
 import { listLocalGames, deleteLocalGame } from '../utils/gameStore'
@@ -26,10 +26,13 @@ import {
 } from '../utils/worldGenCloud'
 import type { WorldGenTaskDTO } from '../utils/worldGenCloud'
 import { type LocalWork, type LocalGame, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
+import type { BookView } from '#shared/book-view'
 
 useHead({ title: 'AI Word2World · 我的书架' })
 
-const works = ref<LocalWork[]>([])
+const works = ref<BookView[]>([])
+/** 迁移失败残留的 v1 原始行(id → works 行),旧版分章检测用 */
+const rawV1ById = new Map<string, LocalWork>()
 const games = ref<Awaited<ReturnType<typeof listLocalGames>>>([])
 /** 云端备份(每作品整包:作品+游戏会话+存盘点;与本地作品按 workId 对应) */
 const backups = ref<CloudBackupMeta[]>([])
@@ -104,6 +107,7 @@ async function startPrebuilt(p: PresetNovelRow) {
 }
 
 async function refreshLocal() {
+  // v1 退役:不再静默自动迁移;检测到旧格式作品时由 V2MigrateModal 提示用户确认转换(见下方 v1Left)
   const [localWorks, v2Rows] = await Promise.all([listWorks(), listBook2()])
   const v2Ids = new Set(v2Rows.map(r => r.id))
   // 自愈:旧「桥接」曾把 book2 源作品落过 works 副本(带 book2SourceId)。book2 zip 才是真源,
@@ -112,28 +116,45 @@ async function refreshLocal() {
     if (w.book2SourceId && v2Ids.has(w.id)) await deleteWork(w.id).catch(() => {})
   }
   const keptWorks = localWorks.filter(w => !(w.book2SourceId && v2Ids.has(w.id)))
-  const localIds = new Set(keptWorks.map(w => w.id))
-  // 合并 v2 作品:loadBook2AsWork 自带 book2SourceId 标记;同 id 已被 works 占用的不重复列出
-  const v2Works: LocalWork[] = []
+  rawV1ById.clear()
+  for (const w of keptWorks) rawV1ById.set(w.id, w)
+  // 书架 = v2 视图列表(book2 真源)+ 迁移失败残留的 v1 行(works 源过渡视图)
+  const views: BookView[] = []
   for (const row of v2Rows) {
-    if (localIds.has(row.id)) continue
-    const w = await loadBook2AsWork(row.id)
-    if (w) v2Works.push(w)
+    const v = await loadWorkView(row.id)
+    if (v) views.push(v)
   }
-  works.value = [...keptWorks, ...v2Works]
+  for (const w of keptWorks) {
+    const v = await loadWorkView(w.id)
+    if (v && !views.some(x => x.id === v.id)) views.push(v)
+  }
+  works.value = views
   games.value = await listLocalGames()
+  // v1 残留检测:自动弹出转换提示;用户「稍后」则本次访问不再打扰,下次进入书架再提示
+  const hasV1Left = keptWorks.some(w => !w.book2SourceId || w.book2SourceId !== w.id)
+  if (hasV1Left && !migratePromptDismissed.value) migrateModalOpen.value = true
+}
+
+// ---- v2 转换提示模态框(检测到旧格式作品时弹出;组件内执行 dry-run/备份/转换) ----
+const migrateModalOpen = ref(false)
+const migratePromptDismissed = ref(false)
+
+function setMigrateModalOpen(v: boolean) {
+  migrateModalOpen.value = v
+  if (!v) migratePromptDismissed.value = true
 }
 
 // ---- 旧版分章格式作品:开始新游戏前提示重新生成 ----
 // 旧版按章节标题切分存储(多段);新版统一单段全文。旧的"无章节 txt"旧版也存单段,无差异不提示。
-const legacyStartWork = ref<LocalWork | null>(null)
+const legacyStartWork = ref<BookView | null>(null)
 const legacyStartOpen = computed({
   get: () => legacyStartWork.value !== null,
   set: (v: boolean) => { if (!v) legacyStartWork.value = null }
 })
 
-function selectRole(w: LocalWork) {
-  if (isLegacyChapteredWork(w)) {
+function selectRole(w: BookView) {
+  const raw = rawV1ById.get(w.id)
+  if (raw && isLegacyChapteredWork(raw)) {
     legacyStartWork.value = w
     return
   }
@@ -171,14 +192,14 @@ async function loadBackups() {
 }
 
 /** 本地作品是否有比云端备份更新的改动(有 → 作品卡显示「有更新待同步」) */
-function backupStale(work: LocalWork): boolean {
+function backupStale(work: BookView): boolean {
   const b = backups.value.find(x => x.workId === work.id)
   if (!b) return false
-  return (work.updatedAt ?? work.createdAt) > (b.workUpdatedAt ?? '')
+  return work.updatedAt > (b.workUpdatedAt ?? '')
 }
 
 /** 同步到云端:先查同 id 是否传过,传过则显示上次上传时间并确认覆盖 */
-async function syncWorkToCloudZip(work: LocalWork) {
+async function syncWorkToCloudZip(work: BookView) {
   if (syncingWorkId.value) return
   syncingWorkId.value = work.id
   try {
@@ -196,8 +217,14 @@ async function syncWorkToCloudZip(work: LocalWork) {
       return
     }
     await uploadWorkBackup(zip, meta)
-    work.syncStatus = 'synced'
-    await saveWork(work)
+    if (work.source === 'works') {
+      // v1:works 行标记 synced(书架「待同步」徽章);v2 真源在 book2,备份时间以云端记录为准
+      const raw = await getWork(work.id)
+      if (raw) {
+        raw.syncStatus = 'synced'
+        await saveWork(raw)
+      }
+    }
     await Promise.all([refreshLocal(), loadBackups()])
     toast.add({ title: '已同步到云端', description: '作品、游戏会话与存盘点已完整备份', color: 'success' })
   } catch (e) {
@@ -207,13 +234,14 @@ async function syncWorkToCloudZip(work: LocalWork) {
   }
 }
 
-/** 下载云端备份到本机:自动解压导入;本地已有同 id 作品 → 确认覆盖(保留现有则跳过作品,仍导入其游戏) */
+/** 下载云端备份到本机:自动解压导入;本地已有同 id 作品 → 确认覆盖(保留现有则跳过作品,仍导入其游戏)。
+ *  v2(book2)备份按原 id 落 book2;v1 备份落 works。 */
 async function restoreBackup(b: CloudBackupMeta) {
   if (restoringBackupId.value) return
   restoringBackupId.value = b.workId
   try {
     const bundle = parseWorkBackupZip(await downloadWorkBackup(b.workId))
-    const existing = await getWork(bundle.work.id)
+    const existing = bundle.book2Zip ? await loadBook2AsWork(bundle.workId) : await getWork(bundle.workId)
     let includeWork = true
     if (existing) {
       const ok = await askOverwriteModal(
@@ -226,7 +254,7 @@ async function restoreBackup(b: CloudBackupMeta) {
     await refreshLocal()
     toast.add({
       title: '已恢复到本机',
-      description: `《${bundle.work.title}》${bundle.games.length ? `及 ${bundle.games.length} 个游戏会话` : ''}已导入,可在「继续游戏」中进入`,
+      description: `《${bundle.title}》${bundle.games.length ? `及 ${bundle.games.length} 个游戏会话` : ''}已导入,可在「继续游戏」中进入`,
       color: 'success'
     })
   } catch (e) {
@@ -262,9 +290,9 @@ async function confirmDeleteBackup() {
 
 // ---- 删除作品:二次确认 + 同步清理关联游戏会话/存盘点(避免孤儿数据不可见不可清) ----
 const deleteOpen = ref(false)
-const deleteTarget = ref<LocalWork | null>(null)
+const deleteTarget = ref<BookView | null>(null)
 
-function askDeleteWork(w: LocalWork) {
+function askDeleteWork(w: BookView) {
   deleteTarget.value = w
   deleteOpen.value = true
 }
@@ -281,7 +309,7 @@ async function confirmDeleteWork() {
     await deleteLocalGame(g.id).catch(() => {})
   }
   // v2(book2)作品:zip 才是真源,works 里可能残留旧桥接副本 → 一并清掉
-  if (w.book2SourceId) await deleteBook2(w.id).catch(() => {})
+  if (w.source === 'book2') await deleteBook2(w.id).catch(() => {})
   await deleteWork(w.id)
   deleteOpen.value = false
   deleteTarget.value = null
@@ -294,49 +322,49 @@ async function confirmDeleteWork() {
 }
 
 /** 云端恢复且无正文:阅读不可用,可「补全正文」后重跑生成 */
-function isCloudRestored(w: LocalWork): boolean {
-  return w.chapters.length === 0 && !!w.overlay?.characters?.length
+function isCloudRestored(w: BookView): boolean {
+  return !w.fulltext && w.characters.length > 0
 }
 
 /** 实体库总数(人物/地点/势力/规则/时间线/物品/伏笔) */
-function entityCount(w: LocalWork): number {
-  const e = w.entities
+function entityCount(w: BookView): number {
+  const e = w.world.entities
   if (!e) return 0
-  return e.characters.length + e.locations.length + e.factions.length
-    + e.timeline_events.length + e.world_rules.length + e.items.length + e.foreshadowing.length
+  // 逐类防御:任一实体数组缺失(旧数据/异构导入)只少计数,不让整页书架渲染崩溃
+  const groups: unknown[][] = [e.characters, e.locations, e.factions, e.timeline_events, e.world_rules, e.items, e.foreshadowing]
+  return groups.reduce((sum, list) => sum + (list ? list.length : 0), 0)
 }
 
 /** 卡片标签:性向单独徽章展示(语义不同),这里返回玩法/标签,全部展示不截断 */
-function workCardTags(w: LocalWork): string[] {
+function workCardTags(w: BookView): string[] {
   const tags: string[] = []
-  for (const k of w.overlay?.kinkProfile ?? []) {
-    if (k.theme && !tags.includes(k.theme)) tags.push(k.theme)
-  }
-  for (const t of w.overlay?.tags ?? []) {
+  for (const t of w.manifest.tags ?? []) {
     if (t && !tags.includes(t)) tags.push(t)
   }
   return tags
 }
 
-/** 每部本地作品的「更多操作」菜单:世界详情 / 编辑正文 / 编辑角色卡 / 重新生成世界 / 同步云端 / 删除
- *  v2(book2 真源)作品的正文编辑/重新生成/云端同步依赖 works 行与 v1 产物,属后续阶段(P3/P4/P5),
- *  此处禁用;世界详情/编辑角色卡已支持 book2 直读直写 */
-function workMenuItems(w: LocalWork): DropdownMenuItem[][] {
-  const isBook2 = !!w.book2SourceId
+/** 每部本地作品的「更多操作」菜单:世界详情 / 分段·正文 / 编辑角色卡 / 重新生成世界 / 同步云端 / 删除
+ *  v1 作品的正文走 /edit 章节编辑器;v2(book2 真源)作品的正文按段编辑(SegmentsModal,§3 段即真相)。
+ *  v2 的重新生成/云端同步依赖 works 行与 v1 产物,属 P4/P5,仍禁用 */
+function workMenuItems(w: BookView): DropdownMenuItem[][] {
+  const isBook2 = w.source === 'book2'
   const firstGroup: DropdownMenuItem[] = [
     { label: '世界详情', icon: 'i-lucide-globe', onSelect: () => openWorldDetail(w.id) },
-    { label: w.chapters.length === 0 ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', disabled: isBook2, onSelect: () => navigateTo(`/edit/${w.id}`) },
+    isBook2
+      ? { label: '分段 / 正文', icon: 'i-lucide-list-tree', onSelect: () => openSegments(w.id) }
+      : { label: !w.fulltext ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
     { label: '编辑角色卡', icon: 'i-lucide-users', onSelect: () => openCharEditor(w.id) },
     { label: '重新生成世界', icon: 'i-lucide-refresh-cw', disabled: isBook2, onSelect: () => navigateTo(`/generate?from=work&id=${w.id}`) },
-    { label: '同步云端', icon: 'i-lucide-cloud-upload', disabled: syncingWorkId.value === w.id || isBook2, onSelect: () => syncWorkToCloudZip(w) }
+    { label: '同步云端', icon: 'i-lucide-cloud-upload', disabled: syncingWorkId.value === w.id, onSelect: () => syncWorkToCloudZip(w) }
   ]
   // 仅当真正缺少配角故事线且有候选角色(登场≥2次)时才展示增量补生成入口;
   // 缺 arcs 但无候选角色时点击只会提示"无需生成",不再浪费菜单位置
   if (
-    !(w.characterArcs ?? []).length
+    !(w.world.characterArcs ?? []).length
     && (w.storyline?.length ?? 0) > 0
-    && !!w.entities
-    && characterArcCandidates(w.entities, w.storyline).length > 0
+    && !!w.world.entities
+    && characterArcCandidates(w.world.entities, w.storyline).length > 0
   ) {
     firstGroup.push({
       label: '补充生成配角故事线',
@@ -359,18 +387,43 @@ function workMenuItems(w: LocalWork): DropdownMenuItem[][] {
 }
 
 // ---- 导出(原文 TXT / 全部 ZIP,与「导入 ZIP 分享包」配套) ----
-function onExportWorkTxt(w: LocalWork) {
-  const ok = downloadWorkAsTxt({ title: w.title, chapters: w.chapters })
+function onExportWorkTxt(w: BookView) {
+  const ok = downloadWorkAsTxt({ title: w.title, chapters: [{ title: '', content: w.fulltext }] })
   if (!ok) toast.add({ title: '作品没有正文,无法导出', color: 'warning' })
 }
 
-function onExportWorkZip(w: LocalWork) {
-  downloadWorkAsZip({ work: w, games: games.value.filter(g => g.workId === w.id) })
+async function onExportWorkZip(w: BookView) {
+  // v2(book2)作品:直接导出 aisb-book 目录 zip(作品格式 v2,导入端直接回读;作品层含正文与生成产物)
+  if (w.source === 'book2') {
+    void exportBook2Zip(w)
+    return
+  }
+  const raw = await getWork(w.id)
+  if (!raw) {
+    toast.add({ title: '本地未找到该作品,无法导出', color: 'error' })
+    return
+  }
+  downloadWorkAsZip({ work: raw, games: games.value.filter(g => g.workId === w.id) })
+}
+
+/** 导出 v2 作品的原始 book2 zip */
+async function exportBook2Zip(w: BookView) {
+  const zip = await loadBook2RawZip(w.id)
+  if (!zip) {
+    toast.add({ title: '本地未找到该 v2 作品数据,无法导出', color: 'error' })
+    return
+  }
+  const url = URL.createObjectURL(new Blob([zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength) as ArrayBuffer], { type: 'application/zip' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${(w.title || '作品').replace(/[\\/:*?"<>|\s]+/g, '_')}-作品.book2.zip`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 // ---- 导出游玩对话 TXT:菜单 → 会话选择弹窗 → 下载该会话旁白剧情(与旧「分享剧情」同款) ----
 const exportSessionOpen = ref(false)
-const exportSessionWork = ref<LocalWork | null>(null)
+const exportSessionWork = ref<BookView | null>(null)
 /** 该作品全部会话(按角色分组、组内按最后游玩倒序) */
 const exportSessionGroups = computed(() => {
   const gs = (exportSessionWork.value
@@ -392,7 +445,7 @@ function turnsOf(g: LocalGame): number {
   return g.messages.filter(m => m.role !== 'user').length
 }
 
-function openExportSession(w: LocalWork) {
+function openExportSession(w: BookView) {
   exportSessionWork.value = w
   exportSessionOpen.value = true
 }
@@ -419,14 +472,14 @@ function activeArcsTask(workId: string): WorldGenTaskDTO | undefined {
     && (t.status === 'uploaded' || t.status === 'running' || t.status === 'paused'))
 }
 
-async function supplementWorkArcs(w: LocalWork) {
+async function supplementWorkArcs(w: BookView) {
   if (supplementingArcsId.value) return
   if (activeArcsTask(w.id)) {
     toast.add({ title: '该作品已有进行中的补充故事线任务', description: '可先取消或等待完成', color: 'warning' })
     return
   }
   // 候选预检(与云端同一名单):无候选角色直接提示,不建任务
-  if (!w.entities || !w.storyline?.length || characterArcCandidates(w.entities, w.storyline).length === 0) {
+  if (!w.world.entities || !w.storyline?.length || characterArcCandidates(w.world.entities, w.storyline).length === 0) {
     toast.add({ title: '故事线中没有登场两次以上的角色,无需生成配角故事线', color: 'warning' })
     return
   }
@@ -435,9 +488,16 @@ async function supplementWorkArcs(w: LocalWork) {
     const task = await startSupplementArcsTask({
       workId: w.id,
       title: w.title || '未命名小说',
-      entities: w.entities,
+      entities: w.world.entities,
       storyline: w.storyline,
-      text: w.chapters.map(c => c.content).join('\n'),
+      // 事实底稿:段角色文件的 剧情/状态(arcs 精写的事实依据,§6.1)
+      plots: w.segments.flatMap((seg, i) => Object.entries(seg.characters).map(([name, file]) => ({
+        name,
+        beatIndex: i,
+        plot: typeof file['剧情'] === 'string' ? file['剧情'] : null,
+        status: (file['状态'] as Record<string, unknown> | undefined)?.['处境'] as string | null
+      }))),
+      text: w.fulltext,
       config: await getActiveRelayConfig() ?? undefined
     })
     pendingArcsTaskId.value = task.id
@@ -470,6 +530,15 @@ const charEditorOpen = ref(false)
 function openCharEditor(id: string) {
   charEditWorkId.value = id
   charEditorOpen.value = true
+}
+
+// ---- 分段 / 正文弹窗(v2 作品专属:正典浏览 + 段文本编辑 + 各角色本段文件) ----
+const segmentsOpen = ref(false)
+const segmentsWorkId = ref('')
+
+function openSegments(id: string) {
+  segmentsWorkId.value = id
+  segmentsOpen.value = true
 }
 
 async function onCardsSaved() {
@@ -526,7 +595,7 @@ async function installCloudTask(t: WorldGenTaskDTO) {
   try {
     const work = await downloadAndInstallWorldTask(t, {
       onDuplicate: async (existing) => {
-        const overwrite = await askOverwriteCloudTask(existing)
+        const overwrite = await askOverwriteCloudTask({ title: existing.title })
         duplicateDecision = overwrite
         return overwrite
       }
@@ -561,7 +630,7 @@ async function installCloudTask(t: WorldGenTaskDTO) {
 
 /** 云端任务是否已安装进书架(有本地作品的 sourceTaskId 指向该任务) */
 function taskInstalled(t: WorldGenTaskDTO): boolean {
-  return works.value.some(w => w.sourceTaskId === t.id)
+  return works.value.some(w => w.source === 'works' && w.sourceTaskId === t.id) || works.value.some(w => w.id === t.sourceHash)
 }
 
 // ---- arcs 任务结果写回(任务卡「更新世界情报」:拉取弧线并写入本地作品 characterArcs) ----
@@ -575,11 +644,21 @@ async function applyArcsResult(t: WorldGenTaskDTO) {
   try {
     const arcs = await fetchArcsResult(t.id)
     if (!t.sourceWorkId) throw new Error('任务缺少作品信息')
-    const work = await getWork(t.sourceWorkId)
+    const work = await loadWorkView(t.sourceWorkId)
     if (!work) throw new Error('本地未找到对应作品,可能已被删除')
-    work.characterArcs = arcs
-    work.updatedAt = new Date().toISOString()
-    await saveWork(work)
+    if (work.source === 'book2') {
+      // v2 真源:弧线写回 world.json 随包派生数据(loadWorkView 读回后弧线驱动游玩)
+      await updateBook2(work.id, (doc) => {
+        doc.world = { ...doc.world, characterArcs: arcs }
+        return true
+      })
+    } else {
+      const raw = await getWork(work.id)
+      if (!raw) throw new Error('本地未找到对应作品,可能已被删除')
+      raw.characterArcs = arcs
+      raw.updatedAt = new Date().toISOString()
+      await saveWork(raw)
+    }
     appliedArcsTaskIds.value[t.id] = true
     await refreshLocal()
     toast.add({ title: '世界情报已更新', description: `已写入 ${arcs.length} 条配角故事线`, color: 'success' })
@@ -636,7 +715,7 @@ function askOverwriteModal(title: string, body: string): Promise<boolean> {
 }
 
 /** 手动下载安装命中已安装作品:确认是否覆盖(不覆盖则保留现有,不重复添加) */
-function askOverwriteCloudTask(existing: LocalWork): Promise<boolean> {
+function askOverwriteCloudTask(existing: { title?: string }): Promise<boolean> {
   return askOverwriteModal(
     '已安装过该任务',
     `本地已有《${existing.title}》,来源与本次下载为同一云端任务。是否用最新内容覆盖它?选择「保留现有」则跳过下载,不重复添加。`
@@ -730,7 +809,7 @@ function hasGamesFor(workId: string): boolean {
   return games.value.some(g => g.workId === workId)
 }
 
-function openContinue(w: LocalWork) {
+function openContinue(w: BookView) {
   continueWorkTitle.value = w.title
   continueWorkId.value = w.id
   continueGames.value = games.value.filter(g => g.workId === w.id)
@@ -749,7 +828,7 @@ interface WorkCardAction {
   onClick?: () => void
 }
 
-function workCardActions(w: LocalWork): WorkCardAction[] {
+function workCardActions(w: BookView): WorkCardAction[] {
   const progress = progressFor('work', w.id)
   const readAction = (variant: 'solid' | 'soft'): WorkCardAction => isCloudRestored(w)
     ? {
@@ -766,7 +845,7 @@ function workCardActions(w: LocalWork): WorkCardAction[] {
       readAction('soft')
     ]
   }
-  if ((w.overlay?.characters?.length ?? 0) > 0) {
+  if ((w.characters.length ?? 0) > 0) {
     return [
       { label: '选择角色', icon: 'i-lucide-play', color: 'primary', variant: 'solid', onClick: () => selectRole(w) },
       readAction('soft')
@@ -780,10 +859,10 @@ function workCardActions(w: LocalWork): WorkCardAction[] {
 
 /** 作品卡 meta 行:作者 · 全书字数 · 尺度 · 舞台(空项省略) */
 /** 作品卡 meta 行:作者 · 全书字数 · 尺度(舞台单独成段,见模板 R2b) */
-function workMetaLine(w: LocalWork): string {
+function workMetaLine(w: BookView): string {
   const parts = [`作者: ${w.author || '佚名'}`]
-  parts.push(w.chapters.length ? `全书约 ${fmtChars(w.chapters.reduce((n, c) => n + c.content.length, 0))}` : '无正文')
-  if (w.overlay?.heat) parts.push(`尺度:${w.overlay.heat}`)
+  parts.push(w.fulltext ? `全书约 ${fmtChars(w.fulltext.length)}` : '无正文')
+  if (w.manifest.heat) parts.push(`尺度:${w.manifest.heat}`)
   return parts.join(' · ')
 }
 
@@ -872,7 +951,8 @@ function onPickZip() {
   zipInput.value?.click()
 }
 
-/** 导入 ZIP 分享包:校验格式与结构后作为个人作品入库(带新鲜 id,不与来源冲突) */
+/** 导入 ZIP 分享包:校验格式与结构后作为个人作品入库(带新鲜 id,不与来源冲突)。
+ *  双格式嗅探:aisb-book(v2)优先,失败回退 aisb-share v1 分享包。 */
 async function onZipChosen(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
@@ -880,8 +960,23 @@ async function onZipChosen(e: Event) {
   if (!file) return
   importing.value = true
   try {
-    const work = await importWorkFromZip(file)
-    await saveWork(work)
+    let work: LocalWork | null = null
+    let v2Err: unknown = null
+    try {
+      work = await importBook2Zip(new Uint8Array(await file.arrayBuffer()))
+    } catch (e) {
+      v2Err = e
+    }
+    if (!work) {
+      try {
+        work = await importWorkFromZip(file)
+      } catch (v1Err) {
+        // 两种格式都失败:返回更可解释的错误(book2 包错误信息优先于 v1 的"格式不匹配")
+        const msg = v2Err instanceof Error ? v2Err.message : String(v2Err)
+        throw new Error(/格式不匹配|无法解析/.test(msg) ? msg : (v1Err instanceof Error ? v1Err.message : String(v1Err)), { cause: v1Err })
+      }
+    }
+    await saveWorkIfV1(work)
     activeTab.value = 'personal'
     await refreshLocal()
     toast.add({ title: '已导入', description: `《${work.title}》已作为个人作品加入书架`, color: 'success' })
@@ -890,6 +985,11 @@ async function onZipChosen(e: Event) {
   } finally {
     importing.value = false
   }
+}
+
+/** v1 作品落 works;v2 作品已在 importBook2Zip 内落 book2,不再写 works 行 */
+async function saveWorkIfV1(work: LocalWork) {
+  if (!work.book2SourceId) await saveWork(work)
 }
 
 function onPickFile() {
@@ -1384,10 +1484,10 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
 
                 <!-- R2b 舞台说明文(单独一段,最多两行) -->
                 <p
-                  v-if="w.overlay?.setting"
+                  v-if="w.manifest.setting"
                   class="mt-1 line-clamp-2 text-xs leading-relaxed text-neutral-500"
                 >
-                  {{ w.overlay.setting }}
+                  {{ w.manifest.setting }}
                 </p>
 
                 <!-- R3 状态徽章:云端恢复 + 阅读进度 + 补充故事线中 -->
@@ -1429,17 +1529,17 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                 </div>
                 <!-- R4 性向/标签 + 世界详情徽章(可点进世界详情) -->
                 <div
-                  v-if="(w.overlay?.orientation && w.overlay.orientation !== '不明') || workCardTags(w).length || entityCount(w) || w.conflicts?.length || w.warnings?.length"
+                  v-if="(w.manifest.orientation && w.manifest.orientation !== '不明') || workCardTags(w).length || entityCount(w) || w.world.conflicts?.length || w.world.conflicts?.length"
                   class="mt-2 flex flex-wrap gap-1"
                 >
                   <UBadge
-                    v-if="w.overlay?.orientation && w.overlay.orientation !== '不明'"
+                    v-if="w.manifest.orientation && w.manifest.orientation !== '不明'"
                     color="info"
                     variant="subtle"
                     size="sm"
                     icon="i-lucide-heart"
                   >
-                    {{ w.overlay.orientation }}
+                    {{ w.manifest.orientation }}
                   </UBadge>
                   <UBadge
                     v-for="tag in workCardTags(w)"
@@ -1462,7 +1562,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     实体 {{ entityCount(w) }}
                   </UBadge>
                   <UBadge
-                    v-if="w.conflicts?.length"
+                    v-if="w.world.conflicts?.length"
                     color="warning"
                     variant="subtle"
                     size="sm"
@@ -1470,25 +1570,14 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                     class="cursor-pointer transition hover:opacity-70"
                     @click="openWorldDetail(w.id)"
                   >
-                    冲突 {{ w.conflicts.length }}
-                  </UBadge>
-                  <UBadge
-                    v-if="w.warnings?.length"
-                    color="warning"
-                    variant="subtle"
-                    size="sm"
-                    icon="i-lucide-triangle-alert"
-                    class="cursor-pointer transition hover:opacity-70"
-                    @click="openWorldDetail(w.id)"
-                  >
-                    告警 {{ w.warnings.length }}
+                    冲突 {{ w.world.conflicts.length }}
                   </UBadge>
                 </div>
 
                 <!-- R5 底部信息:最后操作 / tokens 消耗各占一行(顶到卡片底部) -->
                 <div class="mt-auto flex flex-col gap-1 pt-3">
                   <p class="min-w-0 truncate text-xs text-neutral-500">
-                    最后操作: {{ fmtTime(w.updatedAt ?? w.createdAt) }}
+                    最后操作: {{ fmtTime(w.updatedAt) }}
                   </p>
                   <UBadge
                     v-if="w.tokensUsed"
@@ -1719,6 +1808,12 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       v-model:open="worldDetailOpen"
       :work-id="worldDetailWorkId"
       @saved="refreshLocal"
+    />
+
+    <!-- 分段 / 正文(v2 作品专属) -->
+    <SegmentsModal
+      v-model:open="segmentsOpen"
+      :work-id="segmentsWorkId"
     />
 
     <!-- 删除作品确认(同时清理该作品的本地游戏存档) -->
@@ -2045,5 +2140,12 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
         </div>
       </template>
     </UModal>
+
+    <!-- v2 转换提示:检测到旧格式作品时自动弹出,用户确认后才迁移 -->
+    <V2MigrateModal
+      :open="migrateModalOpen"
+      @update:open="setMigrateModalOpen"
+      @migrated="refreshLocal"
+    />
   </div>
 </template>

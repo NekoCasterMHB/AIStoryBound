@@ -19,7 +19,14 @@ export function worldGenTaskToDTO(row: WorldGenTaskRow): WorldGenTaskDTO {
     sourceWorkId: row.sourceWorkId,
     status: row.status as WorldGenTaskStatus,
     stage: row.stage as WorldGenStage,
-    stageDetail: { doneUnits: detail.doneUnits, totalUnits: detail.totalUnits },
+    stageDetail: {
+      doneUnits: detail.doneUnits,
+      totalUnits: detail.totalUnits,
+      // 并行收尾分支进度(world 任务 merge 后;旧任务/独立 arcs 任务无子字段)
+      synthDone: detail.synthDone,
+      arcs: detail.arcs,
+      annotate: detail.annotate
+    },
     sourceHash: row.sourceHash,
     fileSize: row.fileSize,
     title: row.title,

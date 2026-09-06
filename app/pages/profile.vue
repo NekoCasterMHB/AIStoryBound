@@ -217,24 +217,39 @@ const balanceText = computed(() => balance.value.toLocaleString())
 // ---- 购买加油包 ----
 const buyOpen = ref(false)
 const selectedPkg = ref<TokenPackage | null>(null)
-/** 已购过限购新人包(paid)后不再展示该卡片,由购买记录判断 */
-const boughtOneTimePack = ref(false)
-/** 30 分钟内待支付的新人包订单:存在时点支付走"继续支付"续付该单,避免撞服务端限购 400 */
-const pendingOneTimeOrder = ref<PurchaseRecord | null>(null)
-const newbiePkg = computed(() => !boughtOneTimePack.value ? (TOKEN_PACKAGES.find(p => p.oneTimeOnly) ?? null) : null)
-const regularPackages = TOKEN_PACKAGES.filter(p => !p.oneTimeOnly)
+/** 已支付的一次性限购包 id 集合(新人包 + 双倍首充包):对应卡片隐藏 */
+const boughtOneTimeIds = ref<Set<string>>(new Set())
+/** 30 分钟内待支付的限购包订单(按 packageId):存在时点支付走"继续支付"续付该单,避免撞服务端限购 400 */
+const pendingByPackageId = ref<Record<string, PurchaseRecord>>({})
+const newbiePkg = computed(() => !boughtOneTimeIds.value.has('tokens_1m_once')
+  ? (TOKEN_PACKAGES.find(p => p.id === 'tokens_1m_once') ?? null)
+  : null)
+const regularPackages = TOKEN_PACKAGES.filter(p => !p.oneTimeOnly && !p.doublePack)
+/** 双倍首充包(同价双 token,每档限购一次):已购买的档位不再展示 */
+const doublePackages = computed(() => TOKEN_PACKAGES.filter(p => p.doublePack && !boughtOneTimeIds.value.has(p.id)))
 const buyBusy = ref<'wxpay' | 'alipay' | null>(null)
 const buyError = ref<string | null>(null)
 
-/** 拉取购买记录,判断限购新人包状态:paid 隐藏卡片,pending(30 分钟内)改走继续支付 */
+/** 拉取购买记录,判断各限购包状态:paid 隐藏对应卡片,pending(30 分钟内)改走继续支付 */
 async function refreshOneTimePackStatus() {
   const purchases = await $fetch<PurchaseRecord[]>('/api/profile/purchases').catch(() => [])
-  boughtOneTimePack.value = purchases.some(p => p.packageId === 'tokens_1m_once' && p.status === 'paid')
-  pendingOneTimeOrder.value = purchases.find(p => p.packageId === 'tokens_1m_once' && canContinue(p)) ?? null
+  const bought = new Set<string>()
+  const pending: Record<string, PurchaseRecord> = {}
+  for (const p of purchases) {
+    if (p.packageId === 'tokens_1m_once' || TOKEN_PACKAGES.find(x => x.id === p.packageId)?.doublePack) {
+      if (p.status === 'paid') bought.add(p.packageId)
+      else if (canContinue(p)) pending[p.packageId] = p
+    }
+  }
+  boughtOneTimeIds.value = bought
+  pendingByPackageId.value = pending
 }
 
 function openBuy() {
-  selectedPkg.value = (newbiePkg.value ?? regularPackages[0]) ?? null
+  // 打开弹窗即刷新限购状态:下单跳网关未付款再返回(bfcache 恢复不重跑挂载)时,
+  // 避免状态陈旧导致已购档仍显示/待支付档绕过续付引导撞服务端 400
+  void refreshOneTimePackStatus()
+  selectedPkg.value = (newbiePkg.value ?? doublePackages.value[0] ?? regularPackages[0]) ?? null
   buyError.value = null
   buyOpen.value = true
 }
@@ -261,11 +276,12 @@ async function submitOrder(payType: 'wxpay' | 'alipay') {
   buyBusy.value = payType
   buyError.value = null
   try {
-    // 新人包存在 30 分钟内待支付订单:服务端限购校验会拒绝重复下单(400),直接续付该订单
-    if (selectedPkg.value.id === newbiePkg.value?.id && pendingOneTimeOrder.value) {
+    // 限购包存在 30 分钟内待支付订单:服务端限购校验会拒绝重复下单(400),直接续付该订单
+    const pendingOrder = pendingByPackageId.value[selectedPkg.value.id]
+    if (selectedPkg.value.oneTimeOnly && pendingOrder) {
       const res = await $fetch<{ action: string, params: Record<string, string> }>('/api/payment/continue', {
         method: 'POST',
-        body: { orderNo: pendingOneTimeOrder.value.orderNo }
+        body: { orderNo: pendingOrder.orderNo }
       })
       jumpToGateway(res)
       return
@@ -454,7 +470,7 @@ async function submitRedeem() {
 interface EarningsItem {
   id: string
   amount: number
-  sourceType: 'novel_sale' | 'skill_sale' | 'admin'
+  sourceType: 'novel_sale' | 'skill_sale' | 'admin' | 'invite_rebate'
   sourceId: string | null
   itemTitle: string
   reason: string | null
@@ -512,6 +528,72 @@ async function claimEarnings(ids?: string[]) {
     toast.add({ title: errText(e), color: 'error' })
   } finally {
     earningsBusy.value = false
+  }
+}
+
+// ---- 邀请码(我的专属码 + 绑定他人邀请码;绑定成功双方各得 20 万 token) ----
+interface InviteInfo {
+  code: string
+  bound: boolean
+  inviterName: string | null
+  inviteeCount: number
+}
+const inviteOpen = ref(false)
+const inviteLoading = ref(false)
+const inviteInfo = ref<InviteInfo | null>(null)
+const inviteInput = ref('')
+const inviteBusy = ref(false)
+const inviteMsg = ref<{ kind: 'ok' | 'error', text: string } | null>(null)
+const copied = ref(false)
+
+function openInvite() {
+  inviteInput.value = ''
+  inviteMsg.value = null
+  inviteOpen.value = true
+  void loadInvite()
+}
+
+async function loadInvite() {
+  inviteLoading.value = true
+  try {
+    inviteInfo.value = await $fetch<InviteInfo>('/api/invite/mine')
+  } catch {
+    inviteInfo.value = null
+  } finally {
+    inviteLoading.value = false
+  }
+}
+
+async function copyInviteCode() {
+  if (!inviteInfo.value) return
+  try {
+    await navigator.clipboard.writeText(inviteInfo.value.code)
+    copied.value = true
+    setTimeout(() => {
+      copied.value = false
+    }, 1500)
+  } catch {
+    toast.add({ title: '复制失败,请手动选择复制', color: 'warning' })
+  }
+}
+
+async function submitInvite() {
+  const code = inviteInput.value.trim()
+  if (!code || inviteBusy.value) return
+  inviteBusy.value = true
+  inviteMsg.value = null
+  try {
+    const res = await $fetch<{ ok: true, inviterName: string | null, reward: number }>('/api/invite/bind', {
+      method: 'POST',
+      body: { code }
+    })
+    inviteMsg.value = { kind: 'ok', text: `绑定成功!你和${res.inviterName || '邀请人'}已各获得 ${res.reward.toLocaleString()} tokens` }
+    void loadMe()
+    void loadInvite()
+  } catch (e) {
+    inviteMsg.value = { kind: 'error', text: errText(e) }
+  } finally {
+    inviteBusy.value = false
   }
 }
 
@@ -1079,6 +1161,15 @@ watch(narrLength, v => saveNarrLength(v))
           >
             兑换码
           </UButton>
+          <UButton
+            color="neutral"
+            variant="outline"
+            size="sm"
+            icon="i-lucide-gift"
+            @click="openInvite"
+          >
+            邀请码
+          </UButton>
         </div>
       </div>
 
@@ -1475,7 +1566,7 @@ watch(narrLength, v => saveNarrLength(v))
                   成人模式
                 </p>
                 <p class="text-xs text-neutral-500">
-                  开启后,游玩时成人内容出现频率大幅上升,并明显偏向训诫、BDSM、打屁股、捆绑、强制等亚文化题材,按角色性欲强度档位推进;默认关闭,开启后对所有游戏生效,也可在选角页单独调整
+                  开启后,游玩时成人内容出现频率大幅上升,并明显偏向训诫、BDSM、打屁股、捆绑、强制等亚文化题材,按角色性压抑指数档位推进;默认关闭,开启后对所有游戏生效,也可在选角页单独调整
                 </p>
               </div>
               <USwitch v-model="adultModeOn" />
@@ -1913,6 +2004,8 @@ watch(narrLength, v => saveNarrLength(v))
           </div>
         </div>
       </template>
+
+      <!-- 数据管理页签已删除:v2 迁移入口收敛到书架的 V2MigrateModal(检测到旧格式作品自动弹出) -->
     </UTabs>
     <!-- 功能插件详细配置弹窗(该适配器的设置 + 模拟/真机切换 + 手动控制) -->
     <ToyConfigModal
@@ -2020,7 +2113,7 @@ watch(narrLength, v => saveNarrLength(v))
                 到账 {{ newbiePkg.tokens.toLocaleString() }} tokens
               </p>
               <p
-                v-if="pendingOneTimeOrder"
+                v-if="pendingByPackageId[newbiePkg.id]"
                 class="mt-1.5 flex items-center gap-1 text-xs font-medium text-amber-600"
               >
                 <UIcon
@@ -2068,6 +2161,74 @@ watch(narrLength, v => saveNarrLength(v))
                   到账 {{ pkg.tokens.toLocaleString() }} tokens
                 </p>
               </UCard>
+            </div>
+
+            <!-- 双倍首充包(同价双 token,每档每人限购一次):有可购档位才显示 -->
+            <div
+              v-if="doublePackages.length"
+              class="space-y-2"
+            >
+              <p class="flex items-center gap-1.5 text-sm font-semibold text-highlighted">
+                <UIcon
+                  name="i-lucide-zap"
+                  class="size-4 text-amber-500"
+                />
+                首充双倍 · 每档限购一次
+              </p>
+              <div class="grid gap-3 sm:grid-cols-3">
+                <UCard
+                  v-for="pkg in doublePackages"
+                  :key="pkg.id"
+                  class="cursor-pointer border-2 transition"
+                  :class="selectedPkg?.id === pkg.id ? 'border-amber-400' : 'border-amber-200/60 dark:border-amber-900/40'"
+                  :ui="{ body: 'p-2 sm:p-3' }"
+                  @click="selectedPkg = pkg"
+                >
+                  <p class="flex items-center gap-1.5 font-semibold">
+                    {{ pkg.label }}
+                    <UBadge
+                      size="sm"
+                      color="warning"
+                      variant="soft"
+                    >
+                      限购一次
+                    </UBadge>
+                  </p>
+                  <p class="text-xs text-neutral-500">
+                    {{ pkg.description }}
+                    <br>
+                    {{ pkg.description2 }}
+                  </p>
+                  <p class="mt-2 flex items-baseline gap-1.5">
+                    <span class="text-lg font-bold">¥{{ pkg.priceYuan }}</span>
+                    <span
+                      v-if="pkg.originalPriceYuan"
+                      class="text-xs text-neutral-400 line-through"
+                    >¥{{ pkg.originalPriceYuan }}</span>
+                    <UBadge
+                      v-if="pkg.discountLabel"
+                      size="sm"
+                      color="error"
+                      variant="soft"
+                    >
+                      {{ pkg.discountLabel }}
+                    </UBadge>
+                  </p>
+                  <p class="text-xs font-medium text-amber-600 dark:text-amber-400">
+                    到账 {{ pkg.tokens.toLocaleString() }} tokens(双倍)
+                  </p>
+                  <p
+                    v-if="pendingByPackageId[pkg.id]"
+                    class="mt-1.5 flex items-center gap-1 text-xs font-medium text-amber-600"
+                  >
+                    <UIcon
+                      name="i-lucide-circle-alert"
+                      class="size-3.5 shrink-0"
+                    />
+                    有一笔待支付订单,点击支付将续付该订单
+                  </p>
+                </UCard>
+              </div>
             </div>
           </div>
           <p
@@ -2522,6 +2683,96 @@ watch(narrLength, v => saveNarrLength(v))
             >
               加载更多(还剩 {{ earningsTotal - earnings.length }} 条)
             </UButton>
+          </p>
+        </div>
+      </template>
+    </UModal>
+
+    <!-- 邀请码弹窗:我的专属邀请码 + 绑定他人邀请码(每人一次) -->
+    <UModal
+      v-model:open="inviteOpen"
+      title="邀请码"
+    >
+      <template #body>
+        <div class="space-y-4">
+          <p
+            v-if="inviteLoading"
+            class="py-4 text-center text-sm text-neutral-500"
+          >
+            加载中…
+          </p>
+          <template v-else-if="inviteInfo">
+            <!-- 我的邀请码 -->
+            <div class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-center dark:border-neutral-700 dark:bg-neutral-900">
+              <p class="text-xs text-neutral-500">
+                我的邀请码
+              </p>
+              <p class="mt-1 font-mono text-2xl font-bold tracking-[0.3em] text-highlighted">
+                {{ inviteInfo.code }}
+              </p>
+              <div class="mt-2 flex items-center justify-center gap-3">
+                <UButton
+                  size="xs"
+                  color="primary"
+                  variant="soft"
+                  :icon="copied ? 'i-lucide-check' : 'i-lucide-copy'"
+                  @click="copyInviteCode"
+                >
+                  {{ copied ? '已复制' : '复制' }}
+                </UButton>
+                <span class="text-xs text-neutral-500">已邀请 {{ inviteInfo.inviteeCount }} 人</span>
+              </div>
+            </div>
+
+            <!-- 绑定邀请码(每人一次) -->
+            <div>
+              <p class="mb-1.5 text-sm font-medium">
+                填写邀请码
+              </p>
+              <p
+                v-if="inviteInfo.bound"
+                class="rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-500 dark:border-neutral-700"
+              >
+                已绑定邀请人:{{ inviteInfo.inviterName || '—' }}(每人只能填写一次)
+              </p>
+              <template v-else>
+                <div class="flex gap-2">
+                  <UInput
+                    v-model="inviteInput"
+                    placeholder="输入好友的邀请码"
+                    class="flex-1"
+                    :disabled="inviteBusy"
+                    @keyup.enter="submitInvite"
+                  />
+                  <UButton
+                    color="primary"
+                    :loading="inviteBusy"
+                    :disabled="!inviteInput.trim()"
+                    @click="submitInvite"
+                  >
+                    绑定
+                  </UButton>
+                </div>
+                <p
+                  v-if="inviteMsg"
+                  :class="inviteMsg.kind === 'ok' ? 'text-emerald-600' : 'text-red-500'"
+                  class="mt-1.5 text-xs"
+                >
+                  {{ inviteMsg.text }}
+                </p>
+              </template>
+            </div>
+
+            <p class="rounded-lg bg-primary-50 px-3 py-2 text-xs leading-relaxed text-primary-600 dark:bg-primary-950/40 dark:text-primary-400">
+              邀请奖励:好友注册时填写你的邀请码(或注册后在个人中心补填),双方各得
+              20 万 token;好友后续每次充值到账,你还将获得其充值 token 数的 15%,以「邀请返利」进入你的收益列表,一键领取到账。
+            </p>
+          </template>
+          <p
+            v-else
+            class="py-4 text-center text-sm text-neutral-500"
+          >
+            加载失败,请关闭后重试
           </p>
         </div>
       </template>

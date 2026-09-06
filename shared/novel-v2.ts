@@ -7,6 +7,7 @@
 //  - games/ = 游玩/会话(与作品解耦)。
 // 本文件纯类型 + 同步序列化,前后端/服务端均可引用(fflate 在两端均可用)。
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
+import type { WorldEntities, EntityConflict, CharacterArc } from './novel'
 
 /** 格式标识与版本 */
 export const BOOK2_FORMAT = 'aisb-book'
@@ -98,6 +99,15 @@ export interface BookGame {
   session: unknown
 }
 
+/** 引擎派生数据随包(可选,world.json 条目):实体库/冲突/配角弧线。
+ *  v2 模型里这些是"characters/segments + 读取层"的派生视图,当前读取层尚未全部现拼,
+ *  转换/生成时随包携带保证功能不回退;旧消费者忽略此文件。 */
+export interface BookWorld {
+  entities?: WorldEntities
+  conflicts?: EntityConflict[]
+  characterArcs?: CharacterArc[]
+}
+
 /** 完整 v2 作品(zip 的运行时表示) */
 export interface BookDoc {
   manifest: AisbBookManifest
@@ -107,6 +117,8 @@ export interface BookDoc {
   segments: Record<string, SegmentDir>
   /** 跨段不变基础设定;key=姓名 */
   characters: Record<string, BookCharacter>
+  /** 引擎派生数据随包(可选) */
+  world?: BookWorld
   /** 游戏会话(可空) */
   games?: Record<string, BookGame>
 }
@@ -123,6 +135,11 @@ export interface AisbBookManifest {
   orientation?: string
   heat?: '淡' | '中' | '烈'
   setting?: string
+  /** 世界概览扩展字段(可选,向前兼容;世界详情编辑写回,消费端不识别时忽略) */
+  summary?: string
+  genre?: string
+  contentWarnings?: string[]
+  tropes?: string[]
   exportedAt?: string
 }
 
@@ -134,6 +151,7 @@ const ENTRY_FULLTEXT = (title: string) => `${sanitizePath(title)}.txt`
 const ENTRY_CANON = (seg: string) => `segments/${seg}/正典.json`
 const ENTRY_CHARACTER = (seg: string, name: string) => `segments/${seg}/${sanitizePath(name)}.json`
 const ENTRY_BOOK_CHAR = (name: string) => `characters/${sanitizePath(name)}.json`
+const ENTRY_WORLD = 'world.json'
 const ENTRY_GAME = (id: string) => `games/${sanitizePath(id)}/session.json`
 
 /** 只保留文件安全的字符(角色名/书名做文件名);控制字符一并替换 */
@@ -156,6 +174,9 @@ export function bookDocToZip(doc: BookDoc): Uint8Array {
   }
   for (const [name, ch] of Object.entries(doc.characters)) {
     entries[ENTRY_BOOK_CHAR(name)] = strToU8(JSON.stringify(ch, null, 2))
+  }
+  if (doc.world) {
+    entries[ENTRY_WORLD] = strToU8(JSON.stringify(doc.world, null, 2))
   }
   for (const [id, g] of Object.entries(doc.games ?? {})) {
     entries[ENTRY_GAME(id)] = strToU8(JSON.stringify(g.session))
@@ -225,11 +246,14 @@ export function bookZipToDoc(bytes: Uint8Array): BookDoc {
   }
 
   const title = manifest.title || '未命名'
+  // world.json(引擎派生数据随包):可选,解析失败按缺失
+  const world = json<BookWorld>(ENTRY_WORLD) ?? undefined
   return {
     manifest,
     fulltext: str(ENTRY_FULLTEXT(title)) ?? '',
     segments,
     characters,
+    ...(world && typeof world === 'object' ? { world } : {}),
     ...(Object.keys(games).length ? { games } : {})
   }
 }

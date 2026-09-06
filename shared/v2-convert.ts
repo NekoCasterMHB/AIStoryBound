@@ -8,6 +8,7 @@ import type { LocalWork, CharacterCard, ChapterSegment, StoryBeat } from './nove
 import type { BookDoc, BookCharacter, SegmentCanon, SegmentCharacterFile, AisbBookManifest } from './novel-v2'
 import { BOOK2_FORMAT, BOOK2_VERSION } from './novel-v2'
 import { characterCardToBook } from './normalize-card'
+import { interpretCharacter } from './character-interpreter'
 
 /** LocalWork → BookDoc:把 v1 作品转成 v2 目录(含切段) */
 export function workToV2(work: LocalWork): BookDoc {
@@ -171,60 +172,13 @@ export function v2ToWork(doc: BookDoc, base: { id: string, createdAt?: string, u
   }
 }
 
-/** BookCharacter → CharacterCard(英文键,供旧引擎读取) */
+/** BookCharacter → CharacterCard(引擎语义卡,供旧引擎读取)。
+ *  v2 原生化后这是唯一正向映射的薄封装:语义归一全部委托 character-interpreter 的
+ *  interpretCharacter(单一映射,消除双份保留键规则);profile 自由区附在卡上随引擎注入。 */
 export function bookCharacterToCard(bc: BookCharacter): CharacterCard | undefined {
-  if (!bc['姓名']?.trim()) return undefined
-  const personalityRaw: unknown = bc['性格']
-  const card: CharacterCard = {
-    name: bc['姓名'].trim(),
-    role: typeof bc['角色'] === 'string' && bc['角色'].trim() ? bc['角色'].trim() : '配角',
-    personality: Array.isArray(personalityRaw)
-      ? (personalityRaw as unknown[]).filter((x): x is string => typeof x === 'string')
-      : (typeof personalityRaw === 'string' ? (personalityRaw as string).split(/[、，,;；]/).map(s => s.trim()).filter(Boolean) : [])
-  }
-  const set = (k: 'identity' | 'appearance' | 'background' | 'alias' | 'first_appearance', v: unknown, type: 'text' | 'list') => {
-    const val = type === 'text'
-      ? (typeof v === 'string' ? v : Array.isArray(v) ? v.filter(x => typeof x === 'string').join('；') : typeof v === 'object' && v ? JSON.stringify(v) : null)
-      : (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : typeof v === 'string' ? (v as string).split(/[、，,;；]/).map(s => s.trim()).filter(Boolean) : undefined)
-    if (val !== undefined && val !== null && val !== '' && !(Array.isArray(val) && !val.length)) (card as unknown as Record<string, unknown>)[k] = val
-  }
-  set('identity', bc['身份'], 'text')
-  set('appearance', bc['外貌'], 'text')
-  set('background', bc['背景'], 'text')
-  set('alias', bc['别名'], 'text')
-  set('first_appearance', bc['首次出场'], 'text')
-  card.speech_style = Array.isArray(bc['说话风格']) ? bc['说话风格'] : undefined
-  card.abilities = Array.isArray(bc['能力']) ? bc['能力'] : undefined
-  card.goals = Array.isArray(bc['目标']) ? bc['目标'] : undefined
-  card.fears = Array.isArray(bc['恐惧']) ? bc['恐惧'] : undefined
-  card.secrets = Array.isArray(bc['秘密']) ? bc['秘密'] : undefined
-  if (Array.isArray(bc['关系'])) {
-    const rels = bc['关系'].flatMap((r): { name: string, type: string, value: number }[] => {
-      if (!r || typeof r !== 'object') return []
-      const name = typeof r['对象'] === 'string' ? r['对象'] : ''
-      if (!name) return []
-      return [{ name, type: typeof r['说明'] === 'string' ? r['说明'] : '', value: typeof r['值'] === 'number' ? r['值'] : 0 }]
-    })
-    if (rels.length) card.relationships = rels
-  }
-  const n = (v: unknown): number | null | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : null)
-  card.patience = n(bc['耐心']) ?? undefined
-  card.softness = n(bc['心软']) ?? undefined
-  card.desire = n(bc['性欲强度']) ?? undefined
-  if (typeof bc['已死亡'] === 'boolean') card.dead = bc['已死亡']
-  if (Array.isArray(bc['玩法喜好'])) card.kinks = bc['玩法喜好'].flatMap((k): { theme: string, view: string | null, role: string | null, detail: string | null }[] => {
-    if (!k || typeof k !== 'object') return []
-    const theme = typeof k['主题'] === 'string' ? k['主题'] : ''
-    if (!theme) return []
-    return [{ theme, view: typeof k['态度'] === 'string' ? k['态度'] : null, role: typeof k['角色'] === 'string' ? k['角色'] : null, detail: typeof k['细节'] === 'string' ? k['细节'] : null }]
-  })
-  if (bc['成人属性'] && typeof bc['成人属性'] === 'object') card.sex = bc['成人属性'] as CharacterCard['sex']
-  // 未识别键 → profile(自由区,cardBrief 注入 AI「补充设定」)
-  const consumed = new Set(['姓名', '角色', '身份', '外貌', '性格', '背景', '目标', '关系', '别名', '性别', '年龄', '说话风格', '能力', '恐惧', '弱点', '秘密', '首次出场', '已死亡', '耐心', '心软', '性欲强度', '玩法喜好', '成人属性', '弧线'])
-  const profile: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(bc)) {
-    if (!consumed.has(k)) profile[k] = v
-  }
-  if (Object.keys(profile).length) card.profile = profile
+  const parsed = interpretCharacter(bc)
+  if (!parsed) return undefined
+  const card = parsed.card
+  if (Object.keys(parsed.profile).length) card.profile = parsed.profile
   return card
 }

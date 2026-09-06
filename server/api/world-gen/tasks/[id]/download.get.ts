@@ -1,7 +1,8 @@
 // server/api/world-gen/tasks/[id]/download.get.ts
 // 下载云端成书 zip(fflate 按需打包,不在 R2 存副本):
 //   manifest.json(aisb-share 格式)+ work.json(完整 LocalWork,含正文与生成产物)+ story.txt(原文)。
-// 客户端用现有 importWorkFromZip 逻辑即可直接安装进 IndexedDB 书架。
+// v2 单轨:新生成任务的 resultKey 是 aisb-book 目录 zip(作品格式 v2),此处现场转换为 v1 结构打包,
+// 旧客户端/分享链路无感;旧任务遗留的 v1 world json 按 JSON 路径回退兼容。
 import { and, eq, sql } from 'drizzle-orm'
 import { zipSync, strToU8 } from 'fflate'
 import { useD1 } from '../../../../utils/d1'
@@ -9,6 +10,13 @@ import { requireUser } from '../../../../utils/authz'
 import { worldCache, worldGenTasks } from '../../../../db/schema'
 import { getSkillBucket } from '../../../../utils/r2'
 import { SHARE_FORMAT, SHARE_VERSION } from '../../../../../shared/share-format'
+import { bookZipToDoc } from '../../../../../shared/novel-v2'
+import { v2ToWork } from '../../../../../shared/v2-convert'
+
+/** 是否为 zip 字节流(PK 魔数) */
+function isZipBytes(b: Uint8Array): boolean {
+  return b.length > 4 && b[0] === 0x50 && b[1] === 0x4b
+}
 
 export default defineEventHandler(async (event) => {
   const sessUser = await requireUser(event)
@@ -25,13 +33,48 @@ export default defineEventHandler(async (event) => {
   }
 
   const bucket = getSkillBucket(event)
-  const worldObj = await bucket.get(row.resultKey)
-  if (!worldObj) throw createError({ statusCode: 410, statusMessage: '成书缓存缺失,请重新生成' })
-  let world: { title?: string, author?: string | null, overlay?: { title?: string, summary?: string }, entities?: unknown, conflicts?: unknown, storyline?: unknown, characterArcs?: unknown, warnings?: string[], tokensUsed?: number, mode?: string }
-  try {
-    world = JSON.parse(await worldObj.text()) as typeof world
-  } catch {
-    throw createError({ statusCode: 410, statusMessage: '成书缓存损坏,请重新生成' })
+  const resultObj = await bucket.get(row.resultKey)
+  if (!resultObj) throw createError({ statusCode: 410, statusMessage: '成书缓存缺失,请重新生成' })
+  const resultBytes = new Uint8Array(await resultObj.arrayBuffer())
+
+  // v2 单轨:resultKey 为 aisb-book zip → 现场转换为 v1 work 结构;旧任务(json)走回退解析
+  let world: {
+    title?: string
+    author?: string | null
+    overlay?: { title?: string, summary?: string }
+    entities?: unknown
+    conflicts?: unknown
+    storyline?: unknown
+    characterArcs?: unknown
+    warnings?: string[]
+    tokensUsed?: number
+    mode?: string
+  }
+  if (isZipBytes(resultBytes)) {
+    try {
+      const doc = bookZipToDoc(resultBytes)
+      const work = v2ToWork(doc, { id: row.id })
+      world = {
+        title: work.title,
+        author: work.author ?? null,
+        overlay: work.overlay as typeof world.overlay,
+        entities: work.entities,
+        conflicts: work.conflicts,
+        storyline: work.storyline,
+        characterArcs: work.characterArcs,
+        warnings: work.warnings ?? [],
+        tokensUsed: row.keySource === 'user' ? undefined : row.tokensUsed,
+        mode: row.mode
+      }
+    } catch {
+      throw createError({ statusCode: 410, statusMessage: '成书缓存损坏,请重新生成' })
+    }
+  } else {
+    try {
+      world = JSON.parse(new TextDecoder().decode(resultBytes)) as typeof world
+    } catch {
+      throw createError({ statusCode: 410, statusMessage: '成书缓存损坏,请重新生成' })
+    }
   }
 
   // 原文(拉取的任务同样可下;源文件按 hash 全站共享存储)

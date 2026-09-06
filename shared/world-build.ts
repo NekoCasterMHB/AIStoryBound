@@ -100,7 +100,7 @@ const PLOT_BEAT_SCHEMA = '"plot_beat": {"summary": "本段发生了什么,按时
 
 /** 7 类实体提取的 JSON schema(引用逐字、必填字段带 quote) */
 export const EXTRACT_SCHEMA_HINT = `{
-  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄,null 可","identity": "身份职业|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标动机"],"fears": ["恐惧弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"status": "该角色在本段的处境/状态一句话(身份转变、受伤、被囚、身亡等,仅本段可证实)|null","desire": "性欲强度 0-100 整数,按原文行为推断,null 可","kinks": [{"theme": "成人题材玩法,如 打屁股/捆绑/训诫/SM/强制高潮 等","view": "喜欢|厌恶|接受|null","role": "承受|施予|双方|null","quote": "支持该喜好的原文句|null"}],${SEX_SCHEMA_EXTRACT},"quote": "本段最能代表该人物的原文句"}],
+  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄,null 可","identity": "身份职业|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标动机"],"fears": ["恐惧弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"status": "该角色在本段的处境/状态一句话(身份转变、受伤、被囚、身亡等,仅本段可证实)|null","plot": "该角色在本段的剧情/行动线:他做了什么、如何推进本段事件(含起因/经过/结果,80~150字)|null","desire": "性欲强度 0-100 整数,按原文行为推断,null 可","kinks": [{"theme": "成人题材玩法,如 打屁股/捆绑/训诫/SM/强制高潮 等","view": "喜欢|厌恶|接受|null","role": "承受|施予|双方|null","quote": "支持该喜好的原文句|null"}],${SEX_SCHEMA_EXTRACT},"quote": "本段最能代表该人物的原文句"}],
   "locations": [{"name": "地点名","type": "类别|null","description": "描述|null","notable": ["标志性的人/事/物"],"quote": "原文句"}],
   "factions": [{"name": "势力名","description": "描述|null","goal": "目标|null","members": ["成员名"],"quote": "原文句"}],
   "timeline_events": [{"time": "时间/先后|null","event": "事件概述","characters_involved": ["人物名"],"quote": "原文句"}],
@@ -114,7 +114,7 @@ export const JSON_ONLY_SYSTEM = `你必须只输出一个合法的 JSON 对象,�
 
 /** 节约模式:只提取 5 类核心实体(去掉 items/foreshadowing),字段说明从简 */
 export const EXTRACT_SCHEMA_HINT_ECO = `{
-  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄|null","identity": "身份|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标"],"fears": ["弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"status": "该角色在本段的处境/状态一句话(身份转变、受伤、被囚、身亡等,仅本段可证实)|null","desire": "性欲强度 0-100 整数,null 可","kinks": [{"theme": "成人题材玩法,如 打屁股/捆绑/训诫/SM/强制高潮 等","view": "喜欢|厌恶|接受|null","role": "承受|施予|双方|null","quote": "支持该喜好的原文句|null"}],${SEX_SCHEMA_EXTRACT},"quote": "最能代表该人物的原文句"}],
+  "characters": [{"name": "人名(原文用名)","alias": ["别名/称呼"],"gender": "男/女/未知|null","age": "年龄|null","identity": "身份|null","appearance": "外貌|null","personality": ["性格特征"],"speech_style": ["说话风格"],"background": "背景|null","abilities": ["能力/技能"],"goals": ["目标"],"fears": ["弱点"],"secrets": ["秘密"],"relationships": [{"name": "对方姓名","type": "关系类型","quote": "支持该关系的原文句"}],"dead": true,"status": "该角色在本段的处境/状态一句话(身份转变、受伤、被囚、身亡等,仅本段可证实)|null","plot": "该角色在本段的剧情/行动线:他做了什么、如何推进本段事件(含起因/经过/结果,80~150字)|null","desire": "性欲强度 0-100 整数,null 可","kinks": [{"theme": "成人题材玩法,如 打屁股/捆绑/训诫/SM/强制高潮 等","view": "喜欢|厌恶|接受|null","role": "承受|施予|双方|null","quote": "支持该喜好的原文句|null"}],${SEX_SCHEMA_EXTRACT},"quote": "最能代表该人物的原文句"}],
   "locations": [{"name": "地点名","type": "类别|null","description": "描述|null","notable": ["标志性的人/事/物"],"quote": "原文句"}],
   "factions": [{"name": "势力名","description": "描述|null","goal": "目标|null","members": ["成员名"],"quote": "原文句"}],
   "timeline_events": [{"time": "时间/先后|null","event": "事件概述","characters_involved": ["人物名"],"quote": "原文句"}],
@@ -1297,13 +1297,23 @@ export const ARC_WINDOW_CHARS = 2500
 /** 弧线生成时注入的登场段数量上限(取前 N 个登场段,控制输入体积) */
 export const ARC_WINDOW_BEAT_LIMIT = 3
 
+/** 逐段事实底稿(extract 产出的剧情/状态,事实真源):arcs 精写时事实不得与之冲突,见 docs/format-v2.md §6.1 */
+export interface ArcFactDraft {
+  beatIndex: number
+  plot?: string | null
+  status?: string | null
+}
+
 /** 单角色弧线请求(arcs 云端任务逐单元调用):只为指定角色生成一条弧线,输入只含该角色素材。
- *  textWindow 为该角色登场段的原文节选(可选):模型据此还原真实细节,不得与原文矛盾。 */
+ *  textWindow 为该角色登场段的原文节选(可选):模型据此还原真实细节,不得与原文矛盾。
+ *  drafts 为该角色各段的事实底稿(主线提取产出的剧情/状态,可选,分层:事实层=段文件,叙事层=弧线):
+ *  beats 的**事实**必须与底稿一致,arcs 的职责是把客观记录精化为以该角色为中心的叙事。 */
 export function buildCharacterArcMessages(
   title: string,
   candidate: { card: MergedCharacter, beats: number[] },
   storyline: StoryBeat[] | undefined,
-  textWindow?: string
+  textWindow?: string,
+  drafts?: ArcFactDraft[]
 ): { role: 'system' | 'user', content: string }[] {
   const beats = [...(storyline ?? [])].sort((a, b) => a.index - b.index)
   const beatLines = beats.map(b => `[段${b.index + 1}] ${b.summary}${b.cast?.length ? `（登场:${b.cast.slice(0, 6).join('、')}）` : ''}`).join('\n')
@@ -1325,15 +1335,24 @@ export function buildCharacterArcMessages(
   const windowPart = textWindow?.trim()
     ? `\n\n该角色登场段的原文节选(还原细节用,戏份内容不得与原文矛盾):\n${textWindow.trim()}`
     : ''
+  // 事实底稿(extract 逐段剧情/状态):beats 的事实必须与其一致,本任务只做叙事精化
+  const draftLines = (drafts ?? [])
+    .filter(d => (d.plot && d.plot.trim()) || (d.status && d.status.trim()))
+    .sort((a, b) => a.beatIndex - b.beatIndex)
+    .map(d => `第${d.beatIndex + 1}段:${d.plot?.trim() ?? ''}${d.status?.trim() ? `（处境:${d.status.trim()}）` : ''}`)
+  const draftPart = draftLines.length
+    ? `\n\n该角色各段的事实底稿(主线提取的客观记录;**每个 beat 的事实必须与底稿一致**,你的任务是把记录精化为以该角色为中心的叙事——补动机、情绪与目标推进,不得与底稿冲突或新增底稿没有的事实):\n${draftLines.join('\n')}`
+    : ''
   return [
     { role: 'system' as const, content: `你必须只输出一个合法的 JSON 对象,不要输出任何其他文字、注释或 Markdown 围栏。\n输出结构必须满足:\n${CHARACTER_ARC_SCHEMA}` },
     {
       role: 'user' as const,
-      content: `小说《${title}》的主线故事线(按段序)如下:\n${beatLines}\n\n以下为该角色的人物卡素材:\n${cardLine}${windowPart}\n\n请为该角色生成一条独立故事线(角色弧线):\n`
+      content: `小说《${title}》的主线故事线(按段序)如下:\n${beatLines}\n\n以下为该角色的人物卡素材:\n${cardLine}${windowPart}${draftPart}\n\n请为该角色生成一条独立故事线(角色弧线):\n`
         + '- 只能使用上方故事线中已出现且与该角色相关的信息,不得新增原著没有的情节、不得编造该角色的独立事件;\n'
         + `- 该角色共登场 ${candidate.beats.length} 段(上方「登场段」已逐段列出):必须为每一个登场段各生成一条 beat(按 beatIndex 对齐),不得合并多个段、不得省略任何登场段;\n`
         + '- beats 按主线细纲段序对齐(beatIndex 对应段号),只列出该角色实际登场/有戏份的段(未登场段不写);\n'
         + '- summary 以该角色为中心叙述其行动、处境与目标推进,不要重复整段主线剧情;\n'
+        + (draftLines.length ? '- 有事实底稿的段:beat 的事实(做了什么、处境)必须与底稿一致,在此之上精化叙事;底稿未覆盖的段才依据故事线与原文节选推断;\n' : '')
         + '- 出场信息不足可以省略 beats 或仅给 summary+ending,不要硬凑。'
     }
   ]

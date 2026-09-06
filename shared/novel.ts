@@ -2,6 +2,7 @@
 // AI Word2World 共享类型与工具(不依赖运行时,前后端/服务端均可引用)
 import { detectNovelEncoding } from './novel-encoding'
 import type { NovelEncoding } from './novel-encoding'
+import type { SegmentDir } from './novel-v2'
 
 /** 小说解析状态 */
 export type NovelStatus = 'uploaded' | 'parsing' | 'ready' | 'failed'
@@ -217,7 +218,8 @@ export function normalizeCharacterCard(raw: unknown): CharacterCard | undefined 
       return [{
         name: rName,
         // 异版本可能没有 type(关系说明在 description),type 兜底取 description
-        type: typeof rel.type === 'string' && rel.type.trim() ? rel.type.trim()
+        type: typeof rel.type === 'string' && rel.type.trim()
+          ? rel.type.trim()
           : (typeof rel.description === 'string' && rel.description.trim() ? rel.description.trim() : ''),
         value: typeof rel.value === 'number' && Number.isFinite(rel.value) ? rel.value : 0
       }]
@@ -360,6 +362,8 @@ export interface ExtractedCharacter {
   dead?: boolean | null
   /** 该角色在本提取单元的处境/状态一句话(身份转变、受伤、被囚、身亡等;章节变体素材) */
   status?: string | null
+  /** 该角色在本提取单元的剧情/行动线(做了什么,含起因经过结果,80~150 字;v2 段角色文件「剧情」原料,见 format-v2 §6.1) */
+  plot?: string | null
   /** 性欲强度,0-100 整数(提取时按原文行为推断) */
   desire?: number | null
   /** 成人题材玩法喜好(theme=玩法,view=喜欢/厌恶/接受,role=承受/施予/双方;按原文行为与对话推断) */
@@ -638,6 +642,10 @@ export interface LocalWork {
   /** 作品格式 v2(aisb-book)来源:指向 book2 行 id。存在=该作品由 v2 生成/导入,book2 zip 才是真源;
    *  旧 works 作品无此字段(=传统 v1 作品)。 */
   book2SourceId?: string
+  /** v2 段数据(仅 book2 作品带,按 canon.index 升序,下标与 storyline 对齐):
+   *  正典(标题/主角/节点[]/正文)+ 各角色本段文件(状态/剧情);引擎读取层消费,见 docs/format-v2.md §8。
+   *  v1 作品无此字段,相关能力自动降级。 */
+  v2Segments?: SegmentDir[]
 }
 
 /** 本地游戏会话(浏览器驱动回合,本地落盘;登录用户可手动同步云端) */
@@ -710,6 +718,10 @@ export interface GameState {
   characterStates?: Record<string, CharacterDynamicState>
   quests?: string[]
   flags?: Record<string, boolean | string | number>
+  /** 节点进度(仅 v2 段带 节点[] 时使用,见 docs/format-v2.md §7.4):
+   *  beat=所属段下标(0-based,换段重置);lastNode=已达最大节点序号(0-based,-1=未触发);
+   *  stallTurns=连续无节点推进的回合数(卡住引导用,≥5 且进度<40% 时混入推进选项) */
+  nodeProgress?: { beat: number, lastNode: number, stallTurns?: number }
   /** AI 内部状态(不展示给玩家,仅进 prompt) */
   internal?: Record<string, unknown>
 }
@@ -777,6 +789,8 @@ export interface TurnStructured {
   }
   /** 剧情当前推进到的细纲段序号(1-based,每回合报告;仍在同段保持同值;不确定可省略) */
   current_beat?: number | null
+  /** 本段已达的最大事件里程碑序号(0-based 整数;仅 v2 段带 节点[] 时回报,无节点/不确定省略) */
+  current_nodes?: number | null
   /** 整局剧情摘要(覆盖式更新:基于旧摘要+近期剧情压缩,保留关键关系/伏笔/进展) */
   summary?: string
 }

@@ -203,141 +203,141 @@ function fmtTs(ts: number | null) {
     >
       <template #body>
         <div class="space-y-4">
-        <!-- 发放范围:指定用户 / 全部用户 -->
-        <div class="grid grid-cols-2 gap-1.5 rounded-lg border border-neutral-200 p-1 dark:border-neutral-700">
-          <UButton
-            size="sm"
-            color="primary"
-            block
-            :variant="grantMode === 'single' ? 'solid' : 'ghost'"
-            @click="grantMode = 'single'"
-          >
-            指定用户
-          </UButton>
-          <UButton
-            size="sm"
-            color="primary"
-            block
-            :variant="grantMode === 'all' ? 'solid' : 'ghost'"
-            @click="grantMode = 'all'"
-          >
-            全部用户
-          </UButton>
-        </div>
-
-        <!-- 指定用户:搜索单选 -->
-        <div v-if="grantMode === 'single'">
-          <p class="mb-1.5 text-sm font-medium">
-            收款用户
-          </p>
-          <UInput
-            v-model="search"
-            placeholder="搜索昵称 / 邮箱…"
-            :loading="searching"
-          >
-            <template #trailing>
-              <UButton
-                v-if="recipient"
-                icon="i-lucide-x"
-                size="xs"
-                color="neutral"
-                variant="ghost"
-                aria-label="清除选择"
-                @click="clearRecipient"
-              />
-            </template>
-          </UInput>
-          <div
-            v-if="candidates.length > 0"
-            class="mt-1.5 space-y-1 rounded-lg border border-neutral-200 py-1 dark:border-neutral-700"
-          >
-            <button
-              v-for="u in candidates"
-              :key="u.id"
-              type="button"
-              class="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800"
-              @click="pickRecipient(u)"
-            >
-              <span class="min-w-0 truncate font-medium">{{ u.name }}</span>
-              <span class="shrink-0 text-xs text-neutral-500">{{ u.email }}</span>
-            </button>
-          </div>
-          <div
-            v-if="recipient"
-            class="mt-1.5 flex flex-wrap items-center gap-1.5"
-          >
-            <UBadge
-              color="primary"
-              variant="soft"
-              size="sm"
-            >
-              {{ recipient.name }}
-            </UBadge>
-            <span class="text-xs text-neutral-500">{{ recipient.email }}</span>
-          </div>
-        </div>
-
-        <!-- 全部用户:无需选择具体用户 -->
-        <p
-          v-else
-          class="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900"
-        >
-          将向全部注册用户发放等额 token,每人生成一条「待领取」收益
-        </p>
-
-        <div>
-          <p class="mb-1.5 text-sm font-medium">
-            发放数量(token)
-          </p>
-          <div class="flex flex-wrap items-center gap-2">
-            <UInput
-              v-model.number="amount"
-              type="number"
-              min="1"
-              placeholder="整数 token 数量"
-              class="w-44"
-            />
+          <!-- 发放范围:指定用户 / 全部用户 -->
+          <div class="grid grid-cols-2 gap-1.5 rounded-lg border border-neutral-200 p-1 dark:border-neutral-700">
             <UButton
-              v-for="v in QUICK_AMOUNTS"
-              :key="v"
-              size="xs"
-              color="neutral"
-              variant="soft"
-              @click="amount = v"
+              size="sm"
+              color="primary"
+              block
+              :variant="grantMode === 'single' ? 'solid' : 'ghost'"
+              @click="grantMode = 'single'"
             >
-              {{ fmtM(v) }}
+              指定用户
+            </UButton>
+            <UButton
+              size="sm"
+              color="primary"
+              block
+              :variant="grantMode === 'all' ? 'solid' : 'ghost'"
+              @click="grantMode = 'all'"
+            >
+              全部用户
             </UButton>
           </div>
-        </div>
 
-        <div>
-          <p class="mb-1.5 text-sm font-medium">
-            原因(展示给收款人)
+          <!-- 指定用户:搜索单选 -->
+          <div v-if="grantMode === 'single'">
+            <p class="mb-1.5 text-sm font-medium">
+              收款用户
+            </p>
+            <UInput
+              v-model="search"
+              placeholder="搜索昵称 / 邮箱…"
+              :loading="searching"
+            >
+              <template #trailing>
+                <UButton
+                  v-if="recipient"
+                  icon="i-lucide-x"
+                  size="xs"
+                  color="neutral"
+                  variant="ghost"
+                  aria-label="清除选择"
+                  @click="clearRecipient"
+                />
+              </template>
+            </UInput>
+            <div
+              v-if="candidates.length > 0"
+              class="mt-1.5 space-y-1 rounded-lg border border-neutral-200 py-1 dark:border-neutral-700"
+            >
+              <button
+                v-for="u in candidates"
+                :key="u.id"
+                type="button"
+                class="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                @click="pickRecipient(u)"
+              >
+                <span class="min-w-0 truncate font-medium">{{ u.name }}</span>
+                <span class="shrink-0 text-xs text-neutral-500">{{ u.email }}</span>
+              </button>
+            </div>
+            <div
+              v-if="recipient"
+              class="mt-1.5 flex flex-wrap items-center gap-1.5"
+            >
+              <UBadge
+                color="primary"
+                variant="soft"
+                size="sm"
+              >
+                {{ recipient.name }}
+              </UBadge>
+              <span class="text-xs text-neutral-500">{{ recipient.email }}</span>
+            </div>
+          </div>
+
+          <!-- 全部用户:无需选择具体用户 -->
+          <p
+            v-else
+            class="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            将向全部注册用户发放等额 token,每人生成一条「待领取」收益
           </p>
-          <UInput
-            v-model="reason"
-            class="w-full"
-            :maxlength="200"
-            placeholder="如:优质内容奖励 / 活动补偿 / 问题致歉…"
-          />
-        </div>
 
-        <p
-          v-if="sendError"
-          class="text-sm text-red-500"
-        >
-          {{ sendError }}
-        </p>
+          <div>
+            <p class="mb-1.5 text-sm font-medium">
+              发放数量(token)
+            </p>
+            <div class="flex flex-wrap items-center gap-2">
+              <UInput
+                v-model.number="amount"
+                type="number"
+                min="1"
+                placeholder="整数 token 数量"
+                class="w-44"
+              />
+              <UButton
+                v-for="v in QUICK_AMOUNTS"
+                :key="v"
+                size="xs"
+                color="neutral"
+                variant="soft"
+                @click="amount = v"
+              >
+                {{ fmtM(v) }}
+              </UButton>
+            </div>
+          </div>
 
-        <UButton
-          color="primary"
-          icon="i-lucide-hand-coins"
-          :loading="sending"
-          class="self-start"
-          @click="onSend"
-        >
-          发放收益
-        </UButton>
+          <div>
+            <p class="mb-1.5 text-sm font-medium">
+              原因(展示给收款人)
+            </p>
+            <UInput
+              v-model="reason"
+              class="w-full"
+              :maxlength="200"
+              placeholder="如:优质内容奖励 / 活动补偿 / 问题致歉…"
+            />
+          </div>
+
+          <p
+            v-if="sendError"
+            class="text-sm text-red-500"
+          >
+            {{ sendError }}
+          </p>
+
+          <UButton
+            color="primary"
+            icon="i-lucide-hand-coins"
+            :loading="sending"
+            class="self-start"
+            @click="onSend"
+          >
+            发放收益
+          </UButton>
         </div>
       </template>
     </UModal>

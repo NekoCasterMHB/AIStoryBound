@@ -8,11 +8,12 @@ import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
 import { loadScenePrefs, saveScenePrefs } from '../../utils/scenePrefs'
 import { loadNarrTemp, saveNarrTemp, NARR_TEMP_MIN, NARR_TEMP_MAX, NARR_TEMP_STEP } from '../../utils/narrPrefs'
 import { loadEnabledAiSkillObjects, listInstalledSkills, loadEnabledAiSkills, saveEnabledAiSkills } from '../../utils/aiSkills'
-import { ADULT_CONTENT_POLICY, buildTurnPrompt, cardBrief, effectiveCards, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, estimateTurnPromptBreakdown, REINJECT_WINDOW_CHARS } from '#shared/game'
+import { ADULT_CONTENT_POLICY, buildTurnPrompt, cardBrief, effectiveCards, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, estimateTurnPromptBreakdown, REINJECT_WINDOW_CHARS, applyNodeProgress, nodeStallGuidance } from '#shared/game'
 import { uuid } from '#shared/novel'
-import type { CharacterDynamicState, GameState, LocalGame, LocalWork, TurnStructured } from '#shared/novel'
+import type { CharacterDynamicState, GameState, LocalGame, TurnStructured } from '#shared/novel'
+import type { BookView } from '#shared/book-view'
 import { getLocalGame, saveLocalGame } from '../../utils/gameStore'
-import { getWork, touchWork, addWorkTokens } from '../../utils/worldGen'
+import { addWorkTokensSmart, touchWorkSmart, loadWorkView } from '../../utils/bookStoreV2'
 import type { AiSkill } from '#shared/ai-skills'
 import { saveGamePoint, listGamePoints, pruneGamePoints, capGamePoints } from '../../utils/gameSaveStore'
 import { toyController } from '../../toy/api'
@@ -37,7 +38,7 @@ const route = useRoute()
 const gameId = route.params.id as string
 
 const game = ref<LocalGame | null>(null)
-const work = ref<LocalWork | null>(null)
+const work = ref<BookView | null>(null)
 const state = ref<GameState>({})
 const messages = ref<LocalGame['messages']>([])
 const options = ref<{ idx: number, text: string }[]>([])
@@ -101,8 +102,8 @@ const plotBeat = ref(0)
 const storylineBeats = computed(() => work.value?.storyline ?? [])
 const currentBeatLabel = computed(() => storylineBeats.value[plotBeat.value]?.label ?? `第${plotBeat.value + 1}段`)
 
-/** 全书拼接正文(与 splitUnits 的 join('\n') 同源):段 startChar 直接在此上取原文窗口 */
-const joinedText = computed(() => (work.value?.chapters ?? []).map(c => c.content).join('\n'))
+/** 归档全文(v2 单章全文;works 源为拼接全文):段 startChar 直接在此上取原文窗口 */
+const joinedText = computed(() => work.value?.fulltext ?? '')
 
 /** 旧字段字符串(如「第3段」)→ 段下标;非段格式返回 null */
 function beatFromLegacyLabel(label: string | null | undefined): number | null {
@@ -136,20 +137,27 @@ function advancePlotBeat(reportedBeat: number | null | undefined): void {
   }
 }
 
-/** 构建段回注:当前段情节摘要 + 段起始原文窗口 + 后段走向摘要(全部来自细纲,不经章节) */
+/** 构建段回注:当前段情节摘要 + 段起始原文窗口 + 后段走向摘要。
+ *  v2 作品段窗口取自正典 text(v2 无法从 startChar 还原);v1 沿用全书拼接正文按 startChar 取窗。 */
 function buildBeatReinject(): { beatIndex?: number, beatTitle?: string, beatSummary?: string, window: string, nextBeat?: { title?: string, summary?: string } } | undefined {
   const beats = storylineBeats.value
   const beat = beats[plotBeat.value]
   if (!beat) return undefined
+  const seg = work.value?.segments[plotBeat.value]
   const start = Math.max(0, beat.startChar)
-  const window = joinedText.value.slice(start, start + REINJECT_WINDOW_CHARS)
+  const window = seg?.canon.text?.trim()
+    ? seg.canon.text.slice(0, REINJECT_WINDOW_CHARS)
+    : joinedText.value.slice(start, start + REINJECT_WINDOW_CHARS)
   const next = beats[plotBeat.value + 1]
+  const nextSeg = work.value?.segments[plotBeat.value + 1]
+  const nextTitle = next?.label
+  const nextSummary = nextSeg?.canon.beat || next?.summary
   return {
     beatIndex: beat.index,
-    beatTitle: beat.label,
-    beatSummary: beat.summary,
+    beatTitle: seg?.canon.title || beat.label,
+    beatSummary: seg?.canon.beat || beat.summary,
     window,
-    ...(next ? { nextBeat: { title: next.label, summary: next.summary } } : {})
+    ...(next ? { nextBeat: { title: nextTitle, summary: nextSummary ?? '' } } : {})
   }
 }
 /** AI Skill 玩法库(个人中心逐项开关 + 链接导入):本轮成人互动可用的玩法菜单(含详细设定)
@@ -213,8 +221,9 @@ onMounted(async () => {
     }
   }
   game.value = g
-  work.value = g.workId ? await getWork(g.workId) : null
-  if (g.workId) void touchWork(g.workId)
+  // 作品读取:loadWorkView 统一入口(book2 真源;works 行仅强制自动迁移前的过渡)
+  work.value = g.workId ? await loadWorkView(g.workId) : null
+  if (g.workId) void touchWorkSmart(g.workId)
   state.value = ensureDesires(g.state, cards.value)
   messages.value = g.messages
   // 段定位:新存档读 currentBeat,旧存档回退解析旧 currentChapter 字符串
@@ -233,13 +242,17 @@ onMounted(async () => {
 })
 
 const playerName = computed(() => game.value?.playerName ?? '玩家')
-const cards = computed(() => work.value?.overlay?.characters ?? [])
+const cards = computed(() => work.value?.characters ?? [])
 const playerCard = computed(() => cards.value.find(c => c.name === game.value?.characterName))
 
 /** 当前阶段段下标(0-based;随收尾器回报推进):有效卡按此叠加阶段变体 */
 const stageIndex = computed(() => plotBeat.value)
-/** 有效角色卡 = 基础卡 + 阶段变体(≤当前段)+ 运行时动态状态(收尾合并/性欲播种/面板展示共用) */
-const effectiveCardsList = computed(() => effectiveCards(cards.value, stageIndex.value, state.value))
+/** 当前段 v2 目录(正典 + 段角色文件;仅 book2 作品带,v1 为 undefined → 相关能力降级) */
+const v2Segment = computed(() => work.value?.segments[plotBeat.value])
+/** 当前段事件里程碑总数(无节点数据 = 0,节点逻辑不启用) */
+const nodeTotal = computed(() => v2Segment.value?.canon.节点?.length ?? 0)
+/** 有效角色卡 = 基础卡 + 阶段变体(≤当前段)+ v2 段角色文件状态浅覆盖 + 运行时动态状态(收尾合并/性欲播种/面板展示共用) */
+const effectiveCardsList = computed(() => effectiveCards(cards.value, stageIndex.value, state.value, v2Segment.value?.characters))
 
 const streaming = ref(false)
 /** 叙事流式已完成、选项(结构化)生成中:此阶段显示选项骨架屏 */
@@ -519,7 +532,7 @@ const timelineTitle = computed(() => timelineName.value ?? '角色时间线')
 
 /** 章节变体 patch 字段名 → 中文标签 */
 const VARIANT_FIELD_LABELS: Record<string, string> = {
-  identity: '身份', appearance: '外貌', dead: '身亡', desire: '性欲强度', sex: '床笫', alias: '别名'
+  identity: '身份', appearance: '外貌', dead: '身亡', desire: '性压抑指数', sex: '床笫', alias: '别名'
 }
 function variantFieldText(key: string, value: unknown): string {
   const label = VARIANT_FIELD_LABELS[key] ?? key
@@ -588,7 +601,7 @@ async function generateOpenings() {
       },
       {
         role: 'user' as const,
-        content: `作品《${work.value?.overlay?.title || '未命名小说'}》,题材:${work.value?.overlay?.genre ?? '未知'}${work.value?.overlay?.orientation ? `，性向:${work.value.overlay.orientation}` : ''}${work.value?.overlay?.heat ? `，尺度:${work.value.overlay.heat}` : ''}${work.value?.overlay?.setting ? `，舞台:${work.value.overlay.setting}` : ''}${work.value?.overlay?.tags?.length ? `，标签:${work.value.overlay.tags.slice(0, 8).join('、')}` : ''}\n故事背景:${work.value?.overlay?.summary ?? '无'}\n玩家扮演:${brief}\n当前状态:${JSON.stringify(state.value)}`
+        content: `作品《${work.value?.title || '未命名小说'}》,题材:${work.value?.manifest.genre ?? '未知'}${work.value?.manifest.orientation ? `，性向:${work.value.manifest.orientation}` : ''}${work.value?.manifest.heat ? `，尺度:${work.value.manifest.heat}` : ''}${work.value?.manifest.setting ? `，舞台:${work.value.manifest.setting}` : ''}${work.value?.manifest.tags?.length ? `，标签:${work.value.manifest.tags.slice(0, 8).join('、')}` : ''}\n故事背景:${work.value?.manifest.summary ?? '无'}\n玩家扮演:${brief}\n当前状态:${JSON.stringify(state.value)}`
       }
     ]
     // maxTokens 2400(与叙事一致):4 个开场约 800 字,中文 tokenizer 下 800 可能截断,截断易致少卡/非法 JSON
@@ -603,7 +616,7 @@ async function generateOpenings() {
       if (!res.ok) retryTokens += res.usage?.totalTokens ?? 0
     }
     // 失败尝试与重试的用量都入账,避免少扣
-    void addWorkTokens(game.value?.workId ?? '', retryTokens + (res.usage?.totalTokens ?? 0))
+    void addWorkTokensSmart(game.value?.workId ?? '', retryTokens + (res.usage?.totalTokens ?? 0))
     if (!res.ok) throw new Error(res.message)
     const list = (res.data.openings ?? []).slice(0, 4)
     if (list.length === 0) throw new Error('AI 未返回开场设定,请重试')
@@ -679,7 +692,7 @@ async function seedDesiresByOpening(): Promise<void> {
     { signal: turnAbort?.signal }
   )
   if (!res.ok) return
-  void addWorkTokens(game.value?.workId ?? '', res.usage?.totalTokens ?? 0)
+  void addWorkTokensSmart(game.value?.workId ?? '', res.usage?.totalTokens ?? 0)
   // 消耗统计:开局性欲初始化大项(首回合,真实 usage;叙事大项稍后覆盖写入)
   turnCostReport.value = [{
     stage: 'desires',
@@ -802,7 +815,7 @@ async function runOptionsPhase(
     }
   }
 
-  void addWorkTokens(game.value.workId, retryTokens + (optRes.usage?.totalTokens ?? 0))
+  void addWorkTokensSmart(game.value.workId, retryTokens + (optRes.usage?.totalTokens ?? 0))
   const turn = optRes.data
 
   state.value = mergeState(state.value, turn.state_delta, effectiveCardsList.value, narratorMsg.idx)
@@ -812,9 +825,17 @@ async function runOptionsPhase(
   game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(options.value))
   // 推进段定位:收尾器报告当前推进到的段序号(1-based),向前且最多跳 2 段时采纳
   advancePlotBeat(turn.current_beat)
+  // 节点进度(仅 v2 段带 节点[] 时启用):收尾器回报已达最大节点序号,无推进则累计停滞
+  state.value = applyNodeProgress(state.value, plotBeat.value, turn.current_nodes, nodeTotal.value)
 
   if (options.value.length === 0) {
     toast.add({ title: '本回合没有生成选项,可重新生成或直接输入行动', color: 'warning' })
+  }
+  // 卡住引导(§7.4):段内长时间无节点推进且进度 <40% 时,混入指向下一未触发节点的引导选项(仍只是建议)
+  const guidance = nodeStallGuidance(state.value, v2Segment.value?.canon.节点)
+  if (guidance && options.value.length > 0) {
+    options.value = [{ idx: 0, text: guidance }, ...options.value.map((o, i) => ({ ...o, idx: i + 1 }))]
+    game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(options.value))
   }
 
   const total = narrTokens + (retryTokens + (optRes.usage?.totalTokens ?? 0))
@@ -977,9 +998,9 @@ async function sendTurn(choice?: string) {
       : undefined
     // 1) 叙事流式(中继 SSE)
     const promptArgs = {
-      title: work.value?.overlay?.title || '未命名小说',
-      genre: work.value?.overlay?.genre,
-      summary: work.value?.overlay?.summary,
+      title: work.value?.title || '未命名小说',
+      genre: work.value?.manifest.genre,
+      summary: work.value?.manifest.summary,
       playerName: playerName.value,
       playerCard: playerCard.value,
       cards: cards.value,
@@ -995,17 +1016,18 @@ async function sendTurn(choice?: string) {
       opening: game.value.opening,
       deviceSpec,
       narrLength: narrLength.value,
-      entities: work.value?.entities,
-      conflicts: work.value?.conflicts,
+      entities: work.value?.world.entities,
+      conflicts: work.value?.world.conflicts,
       storyline: work.value?.storyline,
-      characterArcs: work.value?.characterArcs,
+      v2Segment: v2Segment.value,
+      characterArcs: work.value?.world.characterArcs,
       playerArcCharacter: game.value?.characterName,
-      overlayMeta: work.value?.overlay
+      overlayMeta: work.value
         ? {
-            orientation: work.value.overlay.orientation,
-            setting: work.value.overlay.setting,
-            heat: work.value.overlay.heat,
-            tags: work.value.overlay.tags
+            orientation: work.value.manifest.orientation,
+            setting: work.value.manifest.setting,
+            heat: work.value.manifest.heat,
+            tags: work.value.manifest.tags
           }
         : undefined,
       reinjectPlot
@@ -1059,7 +1081,7 @@ async function sendTurn(choice?: string) {
     // 正文已完整(叙事流结束):打字机播放中,停止按钮转「快进」
     narrReady.value = true
     // 游玩消耗累计到作品计量(含失败重试已消耗的部分)
-    void addWorkTokens(game.value.workId, narrResult.retryTokens + (narrResult.usage?.totalTokens ?? 0))
+    void addWorkTokensSmart(game.value.workId, narrResult.retryTokens + (narrResult.usage?.totalTokens ?? 0))
     // 消耗统计:叙事大项(真实 usage,含重试)+ 输入细项(按字符估算);保留首回合欲望大项
     const narrUsage = narrResult.usage
     const narrTotal = narrResult.retryTokens + (narrUsage?.totalTokens ?? 0)
@@ -1270,7 +1292,7 @@ watch([messages, streamDisplay], async () => {
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="min-w-0">
             <h1 class="truncate text-xl font-semibold">
-              {{ work?.overlay?.title || '故事' }}
+              {{ work?.title || '故事' }}
             </h1>
             <p class="text-xs text-neutral-500">
               你是「{{ playerName }}」{{ started ? ` · ${currentBeatLabel}` : '' }}
@@ -2033,7 +2055,7 @@ watch([messages, streamDisplay], async () => {
                 class="size-8 text-neutral-300"
               />
               <p class="text-sm text-neutral-500">
-                故事尚未开始。以「{{ playerName }}」的身份进入《{{ work?.overlay?.title || '' }}》，AI 将为你生成开场设定。
+                故事尚未开始。以「{{ playerName }}」的身份进入《{{ work?.title || '' }}》，AI 将为你生成开场设定。
               </p>
               <UButton
                 label="开始故事"
@@ -2050,7 +2072,7 @@ watch([messages, streamDisplay], async () => {
               class="size-8 text-neutral-300"
             />
             <p class="text-sm text-neutral-500">
-              故事尚未开始。以「{{ playerName }}」的身份进入《{{ work?.overlay?.title || '' }}》
+              故事尚未开始。以「{{ playerName }}」的身份进入《{{ work?.title || '' }}》
               <template v-if="game?.opening?.mode === 'beat'">
                 ，将从「{{ game.opening.beatTitle || '所选细纲段' }}」的情节开始演绎。
               </template>

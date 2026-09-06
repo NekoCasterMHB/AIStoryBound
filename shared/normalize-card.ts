@@ -17,12 +17,19 @@ export function characterCardToBook(c: CharacterCard): BookCharacter | undefined
     bc[k] = v as never
   }
   map('身份', c.identity)
+  // 性别/年龄:解释器读卡时消费为引擎字段,写回必须同样映射,否则编辑保存后这两项从 v2 卡上丢失
+  map('性别', c.gender === '未知' ? undefined : c.gender)
+  map('年龄', c.age)
   map('外貌', c.appearance)
   if (c.personality?.length) bc['性格'] = c.personality
   map('背景', c.background)
   if (c.goals?.length) bc['目标'] = c.goals
   if (c.relationships?.length) bc['关系'] = c.relationships.map(r => ({ 对象: r.name, 值: r.value, 说明: r.type || undefined }))
-  if (c.alias) bc['别名'] = [c.alias]
+  // 别名:读侧 toText 把数组按「;」连接为字符串,写回对称拆分还原数组(多别名不丢)
+  if (c.alias) {
+    const aliases = c.alias.split(/[；;]/).map(s => s.trim()).filter(Boolean)
+    if (aliases.length) bc['别名'] = aliases
+  }
   if (c.speech_style?.length) bc['说话风格'] = c.speech_style
   if (c.abilities?.length) bc['能力'] = c.abilities
   if (c.fears?.length) bc['恐惧'] = c.fears

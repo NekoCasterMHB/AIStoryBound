@@ -10,9 +10,10 @@ import type { CachedPreset, CharacterCard, LocalGame, LocalWork, ReadingProgress
 import type { AiSkill } from '#shared/ai-skills'
 import type { ToySettings } from '#shared/toy'
 import type { PluginDescriptor } from '#shared/plugin'
+import type { AisbBookManifest, BookCharacter, BookGame, BookWorld, SegmentCanon, SegmentCharacterFile } from '#shared/novel-v2'
 
 export const DB_NAME = 'aiSpankWorld-local'
-export const DB_VERSION = 10
+export const DB_VERSION = 11
 export const STORE_WORLDS = 'worlds'
 export const STORE_SAVES = 'saves'
 export const STORE_PRESETS = 'presets'
@@ -28,8 +29,11 @@ export const STORE_TOY_ADAPTERS = 'toy-adapters'
 export const STORE_PREFS = 'prefs'
 /** 断点续跑:extract 单元提取结果缓存(本地生成管线已移除,表保留兼容旧库数据) */
 export const STORE_EXTRACT_CACHE = 'extract-cache'
-/** 作品格式 v2(aisb-book):以 BookDoc zip 字节存储,与旧 works 并存(方案 B,存量不迁移) */
-export const STORE_BOOK2 = 'book2'
+/** 作品格式 v2(aisb-book)原生存储:结构化四表(zip 只在导入/导出/备份边界序列化) */
+export const STORE_BOOKS = 'books'
+export const STORE_BOOK_SEGMENTS = 'book-segments'
+export const STORE_BOOK_CHARACTERS = 'book-characters'
+export const STORE_BOOK_WORLD = 'book-world'
 
 /** 兼容旧 worlds store 的行结构(旧版按 novelId 存 CharacterCard 数组) */
 interface LegacyWorldRow {
@@ -69,7 +73,10 @@ export class AIStoryBoundDB extends Dexie {
   'toy-adapters'!: Table<ImportedPluginRow, string>
   prefs!: Table<PrefsRow, string>
   'extract-cache'!: Table<{ key: string } & Record<string, unknown>, string>
-  book2!: Table<Book2Row, string>
+  books!: Table<BookMetaRow, string>
+  'book-segments'!: Table<BookSegmentRow, [string, number]>
+  'book-characters'!: Table<BookCharacterRow, [string, string]>
+  'book-world'!: Table<BookWorldRow, string>
 
   constructor() {
     super(DB_NAME)
@@ -90,19 +97,61 @@ export class AIStoryBoundDB extends Dexie {
       ...this.version(9).stores,
       [STORE_BOOK2]: 'id'
     })
+    // v11:v2 存储原生化——book2 单表 zip 行删除(未上线,无存量迁移),拆为结构化四表:
+    // 修改一张人物卡/一段正典 = 重写对应行,读取按需查表,zip 只在导入/导出/备份边界序列化
+    this.version(11).stores({
+      ...this.version(10).stores,
+      [STORE_BOOK2]: null,
+      [STORE_BOOKS]: 'id, updatedAt',
+      [STORE_BOOK_SEGMENTS]: '[id+seq], id',
+      [STORE_BOOK_CHARACTERS]: '[id+name], id',
+      [STORE_BOOK_WORLD]: 'id'
+    })
   }
 }
 
-/** book2 行:v2 作品以 zip 字节存储,可列目录(不解析全文) */
-export interface Book2Row {
+// v10 遗留常量:v11 已删除该表,保留常量仅为旧导入引用兼容
+export const STORE_BOOK2 = 'book2'
+
+/** v2 作品元数据行(books 表;fulltext 归档随行,修改频率低) */
+export interface BookMetaRow {
   id: string
   title: string
-  /** 段数(目录展示用,避免解包) */
-  segmentCount: number
-  charCount: number
+  author?: string
   updatedAt: string
-  /** v2 目录 zip 字节 */
-  zip: Uint8Array
+  /** 游玩消耗累计(行级字段,游玩时增量更新;不进 zip,备份恢复后归零) */
+  tokensUsed?: number
+  /** manifest 完整 JSON(format/version/kind/segmentCount/charCount/概览扩展字段) */
+  manifest: AisbBookManifest
+  /** 归档全文(仅阅读用,不入逻辑;逻辑正文在段正典) */
+  fulltext: string
+  /** 分享 kind=game 包导入时附带的游戏会话(罕见,可空) */
+  games?: Record<string, BookGame>
+}
+
+/** v2 剧情段行(book-segments 表;key 为段文件夹名如 '000') */
+export interface BookSegmentRow {
+  id: string
+  /** 段序(0-based;排序用) */
+  seq: number
+  /** 段文件夹名(如 '000';与 zip 内目录名一致) */
+  key: string
+  canon: SegmentCanon
+  /** 该段有可用状态/剧情的角色文件(key=姓名) */
+  characters: Record<string, SegmentCharacterFile>
+}
+
+/** v2 基础人物卡行(book-characters 表;编辑按卡保存) */
+export interface BookCharacterRow {
+  id: string
+  name: string
+  card: BookCharacter
+}
+
+/** v2 引擎派生数据行(book-world 表;单作品一行) */
+export interface BookWorldRow {
+  id: string
+  world?: BookWorld
 }
 
 /** 共享 Dexie 实例(单例;versionchange 自动关连接由 Dexie 内置处理) */

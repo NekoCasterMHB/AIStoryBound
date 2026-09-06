@@ -2,8 +2,8 @@
 // 编辑角色卡弹窗:修改/新增/删除本地作品 overlay.characters;
 // v1 作品保存回 IndexedDB works,v2(book2)作品写回 book2 zip 的 characters/ 层
 // 入口:书架「本地作品」卡片上的「角色卡」按钮;保存后由父组件刷新列表
-import { saveWork } from '../utils/worldGen'
-import { loadWorkSmart, saveBook2Characters } from '../utils/bookStoreV2'
+import { saveWork, getWork } from '../utils/worldGen'
+import { loadWorkView, saveBook2Characters } from '../utils/bookStoreV2'
 import { listLocalGames, saveLocalGame } from '../utils/gameStore'
 import { desireTierName, DESIRE_TIERS, SEX_TEXT_KEYS } from '#shared/novel'
 import type { CharacterArc, CharacterCard, SexAttrs, SexTextField } from '#shared/novel'
@@ -46,16 +46,16 @@ watch(open, async (v) => {
   loaded.value = false
   loadErr.value = ''
   selIdx.value = 0
-  // book2 源(v2)经 loadWorkSmart 读 zip;v1 源读 works
-  const work = await loadWorkSmart(props.workId)
-  if (!work) {
+  // loadWorkView 统一入口:角色卡 = v2 语义卡(单一解释器;profile 自由区随卡)
+  const view = await loadWorkView(props.workId)
+  if (!view) {
     loadErr.value = '本地未找到该作品'
     loaded.value = true
     return
   }
-  workTitle.value = work.title
-  draft.value = JSON.parse(JSON.stringify(work.overlay?.characters ?? []))
-  characterArcs.value = work.characterArcs ?? []
+  workTitle.value = view.title
+  draft.value = JSON.parse(JSON.stringify(view.characters))
+  characterArcs.value = view.world.characterArcs ?? []
   rebuildProfileEntries()
   loaded.value = true
 })
@@ -168,7 +168,7 @@ function relNum(v: string | number | null | undefined): number {
 }
 
 /** 可空字符串字段 ↔ 空串(模板 v-model 用,避免 null 与输入框类型冲突) */
-type StrKey = 'alias' | 'age' | 'identity' | 'appearance' | 'background' | 'first_appearance'
+type StrKey = 'age' | 'identity' | 'appearance' | 'background' | 'first_appearance'
 function strField(key: StrKey) {
   return computed({
     // 旧数据 age 可能是数字,统一转字符串再绑定输入框
@@ -177,7 +177,17 @@ function strField(key: StrKey) {
   })
 }
 
-const aliasModel = strField('alias')
+// 别名标签编辑:v2「别名」是数组;引擎卡内以「;」连接串表示(解释器读侧同款分隔),存回时拆分为数组
+const aliasTags = computed<string[]>({
+  get: () => (sel.value?.alias ?? '').split(/[；;]/).map(s => s.trim()).filter(Boolean),
+  set: (tags: string[]) => {
+    if (!sel.value) return
+    // 清洗:去空白、剔除内嵌分隔符,防止与数组往返冲突
+    const clean = tags.map(t => t.replace(/[；;]/g, '').trim()).filter(Boolean)
+    sel.value.alias = clean.length ? clean.join('；') : undefined
+  }
+})
+
 const ageModel = strField('age')
 const identityModel = strField('identity')
 const appearanceModel = strField('appearance')
@@ -286,10 +296,10 @@ const desireModel = computed({
   set: (v: string) => { if (sel.value) sel.value.desire = numOrNull(v) }
 })
 
-/** 性欲档位说明(输入框 description:空值时给五档总览,有值时给当前档位) */
+/** 性压抑档位说明(输入框 description:空值时给五档总览,有值时给当前档位) */
 const desireDesc = computed(() => {
   const v = sel.value?.desire
-  if (v == null) return '0-100 分五档:懵懂无知/腼腆娇羞/情动意乱/欲念难抑/兽欲大发;低强度=性冷淡,欲望波动小、难被挑起'
+  if (v == null) return '0-100 分五档:懵懂无知/腼腆娇羞/情动意乱/欲念难抑/兽欲大发;低指数=性冷淡,欲望波动小、难被挑起'
   const tier = desireTierName(v)
   const desc = DESIRE_TIERS.find(t => t.label === tier)?.desc ?? ''
   return tier ? `${tier}:${desc}` : '0-100'
@@ -353,12 +363,14 @@ async function onSave() {
   saving.value = true
   try {
     // 重新读取最新数据,避免覆盖弹窗打开期间的其它改动(如游玩累计 tokens)
-    const work = await loadWorkSmart(props.workId)
-    if (!work) throw new Error('本地未找到该作品')
-    if (work.book2SourceId) {
+    const view = await loadWorkView(props.workId)
+    if (!view) throw new Error('本地未找到该作品')
+    if (view.source === 'book2') {
       // v2 真源在 book2 zip:人物卡写回 characters/ 基础层
       await saveBook2Characters(props.workId, cards)
     } else {
+      const work = await getWork(props.workId)
+      if (!work) throw new Error('本地未找到该作品')
       await saveWork({
         ...work,
         overlay: { ...work.overlay, characters: cards },
@@ -367,7 +379,7 @@ async function onSave() {
         updatedAt: new Date().toISOString()
       })
     }
-    await clearOverlappingPatches(work.overlay?.characters ?? [], cards)
+    await clearOverlappingPatches(view.characters, cards)
     emit('saved')
     open.value = false
   } catch (e) {
@@ -557,10 +569,13 @@ function confirmRemoveCard() {
                   />
                 </UFormField>
                 <UFormField label="别名">
-                  <UInput
-                    v-model="aliasModel"
-                    placeholder="别名 / 称呼"
+                  <UInputTags
+                    v-model="aliasTags"
+                    placeholder="输入别名后回车添加,如 学习委员"
                     class="w-full"
+                    add-on-blur
+                    :delimiter="/[；;]/"
+                    add-on-paste
                   />
                 </UFormField>
                 <UFormField label="年龄">
@@ -852,54 +867,93 @@ function confirmRemoveCard() {
               </UFormField>
               <UFormField
                 label="题材喜好(亚文化玩法)"
-                description="如 打屁股/捆绑/训诫/SM/强制高潮;态度与承受/施予定位影响叙事演绎"
+                description="每个玩法一张卡片;「态度」影响该玩法的演绎倾向,「定位」决定承受/施予方向"
               >
-                <div class="space-y-2">
+                <div class="space-y-3">
                   <div
                     v-for="(k, i) in sel.kinks ?? []"
                     :key="i"
-                    class="flex items-center gap-2"
+                    class="rounded-lg border border-neutral-200 p-3 dark:border-neutral-700"
                   >
-                    <UInput
-                      v-model="k.theme"
-                      placeholder="玩法,如 打屁股"
-                      class="min-w-0 flex-1"
-                    />
-                    <USelectMenu
-                      :model-value="k.view ?? undefined"
-                      :items="KINK_VIEWS"
-                      :search-input="false"
-                      class="w-28 shrink-0"
-                      @update:model-value="v => (k.view = v ?? null)"
-                    />
-                    <USelectMenu
-                      :model-value="k.role ?? undefined"
-                      :items="KINK_ROLES"
-                      :search-input="false"
-                      class="w-24 shrink-0"
-                      @update:model-value="v => (k.role = v ?? null)"
-                    />
-                    <UButton
-                      icon="i-lucide-x"
-                      color="error"
-                      variant="ghost"
-                      size="xs"
-                      aria-label="删除喜好"
-                      @click="removeKink(i)"
-                    />
+                    <!-- 卡片头:序号 + 玩法名 + 删除 -->
+                    <div class="mb-3 flex items-center gap-2">
+                      <UBadge
+                        color="neutral"
+                        variant="soft"
+                        size="sm"
+                        class="shrink-0 font-mono"
+                      >
+                        {{ i + 1 }}
+                      </UBadge>
+                      <UInput
+                        v-model="k.theme"
+                        placeholder="玩法名称,如 打屁股"
+                        class="min-w-0 flex-1"
+                      />
+                      <UButton
+                        icon="i-lucide-trash-2"
+                        color="error"
+                        variant="ghost"
+                        size="xs"
+                        aria-label="删除此玩法"
+                        @click="removeKink(i)"
+                      />
+                    </div>
+                    <!-- 卡片体:态度 / 定位 双列 -->
+                    <div class="grid grid-cols-2 gap-3">
+                      <UFormField
+                        label="态度"
+                        size="sm"
+                        :ui="{ label: 'text-xs' }"
+                      >
+                        <USelectMenu
+                          :model-value="k.view ?? '未知'"
+                          :items="KINK_VIEWS"
+                          :search-input="false"
+                          class="w-full"
+                          @update:model-value="v => (k.view = v === '未知' ? null : (v ?? null))"
+                        />
+                      </UFormField>
+                      <UFormField
+                        label="定位"
+                        size="sm"
+                        :ui="{ label: 'text-xs' }"
+                      >
+                        <USelectMenu
+                          :model-value="k.role ?? '未知'"
+                          :items="KINK_ROLES"
+                          :search-input="false"
+                          class="w-full"
+                          @update:model-value="v => (k.role = v === '未知' ? null : (v ?? null))"
+                        />
+                      </UFormField>
+                    </div>
+                    <UFormField
+                      label="细节说明"
+                      size="sm"
+                      class="mt-2"
+                      :ui="{ label: 'text-xs' }"
+                    >
+                      <UInput
+                        :model-value="k.detail ?? ''"
+                        placeholder="可选;如 力度偏好/进阶玩法/禁区"
+                        class="w-full"
+                        @update:model-value="v => (k.detail = v.trim() || null)"
+                      />
+                    </UFormField>
                   </div>
                   <div
                     v-if="!(sel.kinks ?? []).length"
-                    class="text-xs text-neutral-400"
+                    class="rounded-lg border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-400 dark:border-neutral-700"
                   >
-                    暂无喜好,点击下方按钮添加
+                    暂无玩法,点击下方按钮添加
                   </div>
                   <UButton
-                    label="添加喜好"
+                    label="添加玩法"
                     icon="i-lucide-plus"
                     color="neutral"
                     variant="soft"
-                    size="xs"
+                    size="sm"
                     @click="addKink"
                   />
                 </div>
@@ -1005,7 +1059,7 @@ function confirmRemoveCard() {
                 </UFormField>
               </div>
               <UFormField
-                label="性欲强度(0-100)"
+                label="性压抑指数(0-100)"
                 :description="desireDesc"
               >
                 <UInput

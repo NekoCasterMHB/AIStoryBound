@@ -19,6 +19,8 @@ export interface TokenPackage {
   discountLabel?: string
   /** 限购:true 时每个用户最多购买一次(按已支付订单判定) */
   oneTimeOnly?: boolean
+  /** 双倍首充包:同价双 token 的限购档,购买 UI 单独分组展示 */
+  doublePack?: boolean
 }
 
 /** DeepSeek V4 flash 输出单价(USD / 1M tokens,峰值价) */
@@ -79,6 +81,46 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     priceYuan: 500,
     originalPriceYuan: packPriceYuan(50),
     discountLabel: '5.3 折'
+  },
+  // ---- 双倍首充包(同价双 token,每档每人限购一次;与新人包同用 oneTimeOnly 限购机制) ----
+  {
+    id: 'tokens_2m_once',
+    label: '双倍 2M',
+    shortLabel: '双倍2M',
+    description: '首充双倍 · 每人限购 1 次',
+    description2: '约 20+ 次完整世界生成',
+    tokens: 2_000_000,
+    priceYuan: 15,
+    originalPriceYuan: packPriceYuan(2),
+    discountLabel: '3.8 折',
+    oneTimeOnly: true,
+    doublePack: true
+  },
+  {
+    id: 'tokens_20m_once',
+    label: '双倍 20M',
+    shortLabel: '双倍20M',
+    description: '首充双倍 · 每人限购 1 次',
+    description2: '约 200+ 次完整世界生成',
+    tokens: 20_000_000,
+    priceYuan: 120,
+    originalPriceYuan: packPriceYuan(20),
+    discountLabel: '3.1 折',
+    oneTimeOnly: true,
+    doublePack: true
+  },
+  {
+    id: 'tokens_100m_once',
+    label: '双倍 100M',
+    shortLabel: '双倍100M',
+    description: '首充双倍 · 每人限购 1 次',
+    description2: '文字对话约 1.7 亿字',
+    tokens: 100_000_000,
+    priceYuan: 500,
+    originalPriceYuan: packPriceYuan(100),
+    discountLabel: '2.6 折',
+    oneTimeOnly: true,
+    doublePack: true
   }
 ]
 

@@ -4,7 +4,8 @@
 // 也支持预置小说详情页跳转(?from=preset&id=xxx&eco=0|1):自动加载该小说为附件,直接进入确认页由用户确认;
 // 支持创意工坊「书架」购买的本地作品跳转(?from=work&id=xxx):从本地书架加载章节进入确认页。
 // 相同 txt 的历史成书按内容哈希命中共享缓存:可拉取(扣记录消耗的一半)或重新生成(正常扣费并刷新缓存)。
-import { parseLocalNovel, getWork, toContentSegments } from '../utils/worldGen'
+import { parseLocalNovel } from '../utils/worldGen'
+import { loadWorkView } from '../utils/bookStoreV2'
 import { CancelledError } from '../utils/aiRelay'
 import { checkWorldGenQuota, estimateWorldGenTokens } from '../utils/tokenQuota'
 import { DEFAULT_STEP_SWITCHES, parseWorldGenSteps } from '#shared/world-gen-task'
@@ -263,7 +264,7 @@ const genPercent = computed(() => {
   if (p.stage === 'extract') {
     return p.totalUnits ? Math.round(15 + (p.doneUnits / p.totalUnits) * 65) : 15
   }
-  return { parse: 5, author: 15, merge: 85, check: 92, synthesize: 97, arcs: 97 }[p.stage] ?? 30
+  return { parse: 5, author: 15, merge: 85, check: 92, synthesize: 97, arcs: 97, annotate: 98 }[p.stage] ?? 30
 })
 
 // 实时 token 展示:管线保证数值单调不减,这里再做平滑动画(指数趋近,避免大跳变)
@@ -697,20 +698,12 @@ async function loadWorkIntoConfirm(workId: string) {
   liveShown.value = 0
   genState.value = { phase: 'parsing', title: '本地作品', progress: null, error: null, resultId: null, tokensUsed: 0 }
   try {
-    const work = await getWork(workId)
+    const work = await loadWorkView(workId)
     if (seq !== runSeq) return // 加载期间已被取消
-    if (!work || !work.chapters.length) {
+    if (!work || !work.fulltext) {
       throw new Error('本地作品不存在或没有章节内容,请先在书架获取小说')
     }
-    pendingGen.value = { title: work.title, chapters: work.chapters, frontMatter: '' }
-    // 旧版分章格式作品(多段 chapters)重新生成时归一化为单段全文:避免新作品仍被判定为旧版
-    if (work.chapters.length > 1 && work.worldFormat !== 2) {
-      try {
-        pendingGen.value = { title: work.title, chapters: toContentSegments(work.chapters.map(c => c.content).join('\n')), frontMatter: '' }
-      } catch {
-        // 归一化失败(空内容)保持原样,由后续管线兜底
-      }
-    }
+    pendingGen.value = { title: work.title, chapters: [{ title: '', content: work.fulltext }], frontMatter: '' }
     // 本地作品自带作者(商城购买的小说记录发布者填写):直接采用,跳过联网识别(省 token)
     presetAuthor.value = work.author ?? null
     genState.value.title = work.title

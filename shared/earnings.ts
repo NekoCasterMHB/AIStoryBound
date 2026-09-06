@@ -12,12 +12,13 @@ export const EARNINGS_STATUS_LABELS: Record<EarningsStatus, string> = {
 }
 
 /** 收益来源类型 */
-export type EarningsSourceType = 'novel_sale' | 'skill_sale' | 'admin'
+export type EarningsSourceType = 'novel_sale' | 'skill_sale' | 'admin' | 'invite_rebate'
 
 export const EARNINGS_SOURCE_LABELS: Record<EarningsSourceType, string> = {
   novel_sale: '小说销售分成',
   skill_sale: '技能销售分成',
-  admin: '管理员发放'
+  admin: '管理员发放',
+  invite_rebate: '邀请返利'
 }
 
 /** 收益账本单行(服务端返回结构,时间统一为毫秒时间戳) */

@@ -727,3 +727,21 @@ export const earnings = sqliteTable('earnings', {
   index('idx_earnings_user_status').on(t.userId, t.status),
   index('idx_earnings_user_time').on(t.userId, t.createdAt)
 ])
+
+// ---- 邀请码(码 → 主人;每用户至多一个码,首次查看懒生成) ----
+export const inviteCodes = sqliteTable('invite_codes', {
+  /** 8 位大写无易混字符(字符集同兑换码,长度不同便于区分) */
+  code: text('code').primaryKey(),
+  /** 码主人 user.id */
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [uniqueIndex('idx_invite_code_user').on(t.userId)])
+
+// ---- 邀请绑定关系(被邀请人为主键 = 每人只能被邀请一次;绑定即双方各得奖励,被邀请人后续充值返利给邀请人) ----
+export const inviteRelations = sqliteTable('invite_relations', {
+  /** 被邀请人 user.id(主键 = 一人只能被邀请一次) */
+  inviteeId: text('invitee_id').primaryKey(),
+  /** 邀请人 user.id */
+  inviterId: text('inviter_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+}, t => [index('idx_invite_rel_inviter').on(t.inviterId)])

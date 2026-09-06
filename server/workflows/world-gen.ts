@@ -8,7 +8,7 @@
 //    catch 识别该错误后自动另起新实例续跑(已完成单元从 world_gen_units 跳过),而非判失败。
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers'
 import {
-  createWorldGenCtx, extractUnitAt, isDeployResetError, markTask, markTaskFailed, markTaskPaused, stepAuthorAi,
+  createWorldGenCtx, extractUnitAt, isDeployResetError, markTask, markTaskFailed, markTaskPaused, stepAnnotate, stepAuthorAi,
   stepCheck, stepEnabled, stepFinalize, stepMerge, stepParseAndPlan, stepSupplementArcs, stepSynthesize, requireTask,
   WorldGenCancelledError, InsufficientTokensError, EXTRACT_CONCURRENCY
 } from '../utils/world-gen-pipeline'
@@ -75,20 +75,28 @@ export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowPa
         await step.do('check', { retries: { limit: 1, delay: '10 second' } }, () => stepCheck(ctx))
       }
 
-      // 7) 成书(瞬时错误由 step 重试兜底;custom 关润色时内部走轻量成书)
+      // 7~7.6) 成书 + 配角故事线(开关开启时)+ 标剧情转折:三者只依赖 merge 产物,并行执行
+      //        (壁钟时间 = 最慢分支而非三者之和);分支进度写 stage_detail 独立槽位,告警经返回值
+      //        交给 finalize 聚合,不整写 stage/warnings 列。annotate/arcs 内部失败降级为告警,
+      //        synthesize 失败即任务失败;余额不足抛 InsufficientTokensError 统一转 paused。
+      const annotateStep = step.do('annotate', {
+        retries: { limit: 1, delay: '10 second' }
+      }, () => stepAnnotate(ctx))
+      const arcsStep = stepEnabled(task, 'arcs')
+        ? step.do('supplement-arcs', { retries: { limit: 1, delay: '10 second' } }, () => stepSupplementArcs(ctx))
+        : null
       await step.do('synthesize', {
         retries: { limit: 3, delay: '15 second', backoff: 'exponential' }
       }, () => stepSynthesize(ctx))
+      const [annotateRes, arcsRes] = await Promise.all([
+        annotateStep,
+        arcsStep ?? Promise.resolve({ count: 0, warnings: [] as string[] })
+      ])
 
-      // 7.5) 配角独立故事线(开关开启时;逐单元生成,写 scratch 供 finalize 落盘;失败降级不中止)
-      if (stepEnabled(task, 'arcs')) {
-        await step.do('supplement-arcs', { retries: { limit: 1, delay: '10 second' } }, () => stepSupplementArcs(ctx))
-      }
-
-      // 8) 落 R2 缓存 + 入库 + 结算 + 清 key/scratch
+      // 8) 落 R2 缓存 + 入库 + 结算 + 清 key/scratch(汇总并行分支告警)
       await step.do('finalize', {
         retries: { limit: 3, delay: '5 second', backoff: 'exponential' }
-      }, () => stepFinalize(ctx))
+      }, () => stepFinalize(ctx, [...arcsRes.warnings, ...annotateRes.warnings]))
     } catch (e) {
       if (e instanceof WorldGenCancelledError) return
       if (e instanceof InsufficientTokensError) {
