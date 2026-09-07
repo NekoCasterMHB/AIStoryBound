@@ -456,16 +456,18 @@ class ToyController {
       return { ok: false, reason: `未知调教形态「${String(pattern)}」(正弦/脉冲/锯齿/心跳/漫步/恒定/全随机)` }
     }
     const caps = slot.adapter.manifest.capabilities ?? { functions: [] }
-    const fn = caps.functions.find(f => f.id === fnId)
+    // 功能 id 精确匹配;失败回退能力中文名(AI 偶尔用中文名代替 id),后续一律用规范 id
+    const fn = caps.functions.find(f => f.id === fnId) ?? caps.functions.find(f => f.name === fnId)
     if (!fn) return { ok: false, reason: `设备不支持功能「${fnId}」` }
+    const fid = fn.id
     const s = settings ?? DEFAULT_TOY_SETTINGS
     if (!s.aiEnabled) return { ok: false, reason: 'AI 设备控制总开关已关闭' }
-    if (!isAiFunctionEnabled(s, fnId, id)) {
-      return { ok: false, reason: `功能「${fnId}」未开启 AI 控制,请在详细配置中启用` }
+    if (!isAiFunctionEnabled(s, fid, id)) {
+      return { ok: false, reason: `功能「${fid}」未开启 AI 控制,请在详细配置中启用` }
     }
     const declaredMax = fn.intensityRange?.[1] ?? DEFAULT_FUNCTION_MAX_INTENSITY
-    const lim = functionLimitOf(s, fnId, declaredMax, id)
-    return this.startWave(fnId, [0, lim.maxIntensity], { pattern, settings: s, duration, adapterId: id })
+    const lim = functionLimitOf(s, fid, declaredMax, id)
+    return this.startWave(fid, [0, lim.maxIntensity], { pattern, settings: s, duration, adapterId: id })
   }
 
   /** 停止调教(发停止帧归零;不停止其他功能)。adapterId 缺省 = active */

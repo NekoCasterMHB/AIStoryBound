@@ -79,7 +79,7 @@ export type { PluginBrief, PluginCapBrief } from './plugin'
 export function narratorDeviceSpec(devices: PluginBrief[]): string {
   const lines = devices.map((d) => {
     const fns = d.capabilities.map(f =>
-      `${f.name}(强度${f.intensityRange[0]}-${f.intensityRange[1]}${f.supportsMode ? `,模式1-${f.modeCount}` : ''})`
+      `${f.name}(功能id: ${f.id},强度${f.intensityRange[0]}-${f.intensityRange[1]}${f.supportsMode ? `,模式1-${f.modeCount}` : ''})`
     ).join('、')
     return `- [${d.connected ? '已连接' : '未连接'}] ${d.name}(id: ${d.id}):${fns}`
   }).join('\n')
@@ -88,7 +88,7 @@ export function narratorDeviceSpec(devices: PluginBrief[]): string {
 - [[wave:功能id:形态[:持续秒数]]] 或 [[wave:插件id:功能id:形态[:持续秒数]]] — 在该功能上启动调教波形(持续式强度起伏,适合长段调教/高潮铺垫/惩罚持续),形态: sine 正弦 / pulse 脉冲 / sawtooth 锯齿 / heartbeat 心跳 / random 漫步 / constant 恒定 / auto 全随机;持续秒数省略=持续到 [[stop:功能id]] 或下一条指令;强度不超该能力上限;
 - [[stop:功能id]] 或 [[stop:插件id:功能id]] — 停止该功能的调教并归零(强度起伏结束时用);
 - [[pause:毫秒]] — 戏剧性停顿,如 [[pause:800]](常规标点停顿由系统自动处理,只在关键情绪点时用)。
-可用设备:\n${lines}\n强度必须在该能力声明的范围内取值;mode 为该功能支持的档位;duration 为持续秒数(到时设备自动停止)。剧情节奏需要多少条就埋多少,数量不设上限;未连接设备的事件会被拒绝。没有设备互动情节就不埋指令。`
+可用设备:\n${lines}\n指令中的功能id 必须用清单括号内标注的功能id(如 electric),不要用中文名代替;强度必须在该能力声明的范围内取值;mode 为该功能支持的档位;duration 为持续秒数(到时设备自动停止)。剧情节奏需要多少条就埋多少,数量不设上限;未连接设备的事件会被拒绝。没有设备互动情节就不埋指令。`
 }
 
 /** 性欲值嗜好放大:玩法名与人物卡嗜好 theme 互相包含即命中;多条命中取该场景的最高档。

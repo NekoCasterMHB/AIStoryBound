@@ -196,7 +196,9 @@ export function validateDeviceEvent(raw: unknown, caps: ToyCapabilities): ToyVal
   if (typeof raw !== 'object' || raw === null) return { ok: false, reason: '设备事件必须是 JSON 对象' }
   const o = raw as Record<string, unknown>
   if (typeof o.function !== 'string' || !o.function.trim()) return { ok: false, reason: '设备事件缺少 function' }
+  // 功能 id 精确匹配;失败回退能力中文名(AI 偶尔用中文名代替 id),归一化输出规范 id
   const fn = caps.functions.find(f => f.id === o.function)
+    ?? caps.functions.find(f => f.name === o.function)
   if (!fn) return { ok: false, reason: `设备不支持功能「${o.function}」` }
 
   // 目标适配器(多适配器路由;缺省 = 当前连接设备)

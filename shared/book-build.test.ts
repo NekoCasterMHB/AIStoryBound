@@ -1,7 +1,7 @@
 // 生成管线 v2 打包测试(docs/format-v2.md §3.0/§6.2):标转折归一 + BookDoc 打包
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { buildBookDoc, normalizeSegmentAnnotations, buildAnnotateMessages } from './book-build'
+import { buildBookDoc, normalizeSegmentAnnotations, buildAnnotateMessages, remapArcsToSegments } from './book-build'
 import type { CharacterArc, CharacterCard, StoryBeat, WorldOverlay } from './novel'
 
 const beats: StoryBeat[] = [
@@ -124,4 +124,33 @@ test('buildAnnotateMessages:给出分块粗段与输出 schema 说明', () => {
   assert.match(user, /剧情段/)
   assert.match(user, /段0:/)
   assert.match(user, /nodes/)
+})
+
+test('remapArcsToSegments:粗段序 → 剧情段序,同段多 beat 合并为一条', () => {
+  const arcs: CharacterArc[] = [{
+    character: '何清玲',
+    summary: '成长线',
+    beats: [
+      { beatIndex: 0, summary: '接文件', status: '初识' },
+      { beatIndex: 1, summary: '绊倒后整理物品' }, // 与粗段0同属剧情段0 → 合并
+      { beatIndex: 2, summary: '主动约复习', status: '主动' }
+    ],
+    ending: '在一起'
+  }]
+  // groupBeats 产物:粗段 [0,1] → 段0,粗段 [2] → 段1
+  const groups = [[0, 1], [2]]
+  const out = remapArcsToSegments(arcs, groups)
+  assert.equal(out[0]!.beats.length, 2)
+  assert.equal(out[0]!.beats[0]!.beatIndex, 0)
+  assert.equal(out[0]!.beats[0]!.summary, '接文件；绊倒后整理物品')
+  assert.equal(out[0]!.beats[0]!.status, '初识') // status 取首条非空
+  assert.equal(out[0]!.beats[1]!.beatIndex, 1)
+  assert.equal(out[0]!.beats[1]!.summary, '主动约复习')
+  assert.equal(out[0]!.beats[1]!.status, '主动')
+  assert.equal(out[0]!.ending, '在一起')
+  // 越界粗段丢弃;空 groups 原样返回(降级安全)
+  const withInvalid = remapArcsToSegments([{ character: 'x', summary: '', beats: [{ beatIndex: 9, summary: '幽灵' }] }], groups)
+  assert.equal(withInvalid[0]!.beats.length, 0)
+  const passthrough = remapArcsToSegments(arcs, [])
+  assert.equal(passthrough, arcs)
 })

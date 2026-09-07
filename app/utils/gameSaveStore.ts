@@ -35,45 +35,44 @@ export async function saveGamePoint(point: GameSavePoint): Promise<void> {
   await db.table(STORE).put(JSON.parse(JSON.stringify(point)))
 }
 
-/** 列出某游戏的全部存档点,按序号倒序(最新的在前) */
+/** 列出某游戏的全部存档点,按序号倒序(最新的在前);走 gameId 索引(v12),不全表扫描 */
 export async function listGamePoints(gameId: string): Promise<GameSavePoint[]> {
   if (typeof indexedDB === 'undefined') return []
-  const all = await db.table(STORE).toArray()
-  return all
-    .filter(p => p.gameId === gameId)
-    .sort((a, b) => b.idx - a.idx)
+  const mine = await db.table(STORE).where('gameId').equals(gameId).toArray()
+  return mine.sort((a, b) => b.idx - a.idx)
 }
 
-/** 删除某游戏序号 >= fromIdx 的存档点(回滚后清理失效快照) */
+/** 删除某游戏序号 >= fromIdx 的存档点(回滚后清理失效快照);走 gameId 索引 */
 export async function pruneGamePoints(gameId: string, fromIdx: number): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const all = await db.table(STORE).toArray()
-  for (const p of all) {
-    if (p.gameId === gameId && p.idx >= fromIdx) {
-      await db.table(STORE).delete(p.key)
-    }
+  const mine = await db.table(STORE).where('gameId').equals(gameId).toArray()
+  for (const p of mine) {
+    if (p.idx >= fromIdx) await db.table(STORE).delete(p.key)
   }
 }
 
-/** 删除某游戏会话的全部存档点(删除会话时清理,避免 IndexedDB 残留) */
+/** 删除某游戏会话的全部存档点(删除会话时清理,避免 IndexedDB 残留);走 gameId 索引 */
 export async function deleteGamePoints(gameId: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const all = await db.table(STORE).toArray()
-  for (const p of all) {
-    if (p.gameId === gameId) await db.table(STORE).delete(p.key)
-  }
+  await db.table(STORE).where('gameId').equals(gameId).delete()
 }
 
 /** 每局存档点数量上限(仅保留最近 N 个,防长局无限膨胀 IndexedDB) */
 export const MAX_SAVE_POINTS = 50
 
-/** 截断某游戏的存档点:只保留序号最新的 MAX_SAVE_POINTS 个 */
+/** 截断某游戏的存档点:只保留序号最新的 MAX_SAVE_POINTS 个;走 gameId 索引 */
 export async function capGamePoints(gameId: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const all = await db.table(STORE).toArray()
-  const mine = all.filter(p => p.gameId === gameId).sort((a, b) => b.idx - a.idx)
-  if (mine.length <= MAX_SAVE_POINTS) return
-  for (const p of mine.slice(MAX_SAVE_POINTS)) {
+  const mine = await db.table(STORE).where('gameId').equals(gameId).toArray()
+  const sorted = mine.sort((a, b) => b.idx - a.idx)
+  if (sorted.length <= MAX_SAVE_POINTS) return
+  for (const p of sorted.slice(MAX_SAVE_POINTS)) {
     await db.table(STORE).delete(p.key)
   }
+}
+
+/** 按键查存档点是否存在(开局去重:同 key 已有快照则不重复写) */
+export async function hasGamePoint(key: string): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') return false
+  return (await db.table(STORE).get(key)) != null
 }

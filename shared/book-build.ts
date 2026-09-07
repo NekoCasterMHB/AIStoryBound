@@ -5,7 +5,7 @@
 import { characterCardToBook } from './normalize-card'
 import type { BookCharacter, BookDoc, SegmentNode } from './novel-v2'
 import { BOOK2_FORMAT, BOOK2_VERSION } from './novel-v2'
-import type { CharacterCard, StoryBeat, WorldOverlay } from './novel'
+import type { CharacterArc, CharacterCard, StoryBeat, WorldOverlay } from './novel'
 
 // ---- AI 标转折(§3.0:AI 只在已有粗段上标注/合并,不重读全文、不给出字符切点) ----
 
@@ -30,11 +30,19 @@ export interface AnnotateBeat {
 }
 
 /** 标转折消息(分块调用:每块 ≤ ANNOTATE_CHUNK_BEATS 个粗段,合并只发生在块内) */
-export function buildAnnotateMessages(title: string, beats: AnnotateBeat[]): { system: string, user: string } {
+export function buildAnnotateMessages(
+  title: string,
+  beats: AnnotateBeat[],
+  /** 上一块末粗段(分块标注时的衔接上下文):让模型知道前情,从新剧情段干净起步(跨块不合并) */
+  prevTail?: { title?: string, summary?: string }
+): { system: string, user: string } {
   const system = '你必须只输出一个合法的 JSON 对象。'
   const beatLines = beats.map(b =>
     `- 段${b.index}:${(b.summary || b.label || '').slice(0, 160)}${b.cast?.length ? `(出场:${b.cast.slice(0, 6).join('、')})` : ''}`
   ).join('\n')
+  const prevPart = prevTail?.summary?.trim()
+    ? `\n\n背景(不属于本块,仅作衔接参考):上一次标注结束于「${(prevTail.title || '上一剧情段').slice(0, 24)}」:${prevTail.summary.trim().slice(0, 140)}。本块从该情节之后继续,第一粗段应开始新的剧情段,不要回头改写或覆盖背景中已标注的内容。`
+    : ''
   const user = `小说《${title}》已按字数切成若干粗段,每段一行(编号为粗段下标)。请按剧情转折/时间点把相邻粗段合并成"剧情段"(如 相识期/恋爱期/婚后/分手后),并为每个剧情段标注:
 - beats:合并的粗段下标数组(升序连续;每段至少 1 个;全部粗段必须恰好归属一个剧情段)
 - title:该剧情段的时间点标题(短词;不确定可省略)
@@ -43,7 +51,7 @@ export function buildAnnotateMessages(title: string, beats: AnnotateBeat[]): { s
 
 粗段列表:
 ${beatLines}
-
+${prevPart}
 只输出 {"segments":[{"beats":[0,1],"title":"相识期","protagonists":["名"],"nodes":["事件…"]}]}。`
   return { system, user }
 }
@@ -134,8 +142,8 @@ export interface ChapterExtractStatuses {
   characters: { name: string, status?: string | null, plot?: string | null }[]
 }
 
-/** 把粗段按标注分组为剧情段;无标注时一粗段一段 */
-function groupBeats(storyline: StoryBeat[], annotations: SegmentAnnotation[]): number[][] {
+/** 把粗段按标注分组为剧情段;无标注时一粗段一段(导出供 finalize 弧线坐标换算复用) */
+export function groupBeats(storyline: StoryBeat[], annotations: SegmentAnnotation[]): number[][] {
   const n = storyline.length
   if (n === 0) return []
   const valid = annotations.filter(a => a.beats.length > 0 && a.beats[0]! < n)
@@ -154,6 +162,37 @@ function groupBeats(storyline: StoryBeat[], annotations: SegmentAnnotation[]): n
   }
   groups.sort((a, b) => a[0]! - b[0]!)
   return groups
+}
+
+/** 弧线坐标系统一(§11.1):粗段序 → 剧情段序。云端 arcs 按粗段细纲生成(与 annotate 并行),
+ *  而游玩端/客户端 arcs 任务均以剧情段序消费(find(b.beatIndex === 当前段));落盘前在此换算,
+ *  同一剧情段内的多条 beat 合并为一条(summary 以「;」拼接,status 取首条非空),保证每段至多一条。
+ *  groups 为 groupBeats 产物(粗段 → 所在剧情段下标);空 groups(无粗段)时原样返回,降级安全。 */
+export function remapArcsToSegments(arcs: CharacterArc[], groups: number[][]): CharacterArc[] {
+  if (groups.length === 0) return arcs
+  const segOf = new Map<number, number>()
+  groups.forEach((beatIdxs, gi) => {
+    for (const bi of beatIdxs) segOf.set(bi, gi)
+  })
+  return arcs.map((arc) => {
+    const bySeg = new Map<number, { beatIndex: number, summary: string, status?: string | null }>()
+    for (const beat of arc.beats) {
+      const seg = segOf.get(beat.beatIndex)
+      if (seg == null) continue // 越界/未知粗段:丢弃(归一化已保证升序合法,防御性兜底)
+      const hit = bySeg.get(seg)
+      if (hit) {
+        if (beat.summary?.trim()) hit.summary = hit.summary ? `${hit.summary}；${beat.summary.trim()}` : beat.summary.trim()
+        if (!hit.status && beat.status?.trim()) hit.status = beat.status.trim()
+      } else {
+        bySeg.set(seg, {
+          beatIndex: seg,
+          summary: beat.summary?.trim() ?? '',
+          ...(beat.status?.trim() ? { status: beat.status.trim() } : {})
+        })
+      }
+    }
+    return { ...arc, beats: [...bySeg.values()].sort((a, b) => a.beatIndex - b.beatIndex) }
+  })
 }
 
 /** 管线产物 → BookDoc(纯函数;AI 标转折结果决定剧情段粒度与节点) */

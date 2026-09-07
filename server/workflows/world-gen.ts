@@ -9,7 +9,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers'
 import {
   createWorldGenCtx, extractUnitAt, isDeployResetError, markTask, markTaskFailed, markTaskPaused, stepAnnotate, stepAuthorAi,
-  stepCheck, stepEnabled, stepFinalize, stepMerge, stepParseAndPlan, stepSupplementArcs, stepSynthesize, requireTask,
+  stepCheck, stepDisambiguate, stepEnabled, stepFinalize, stepMerge, stepParseAndPlan, stepSupplementArcs, stepSynthesize, requireTask,
   WorldGenCancelledError, InsufficientTokensError, EXTRACT_CONCURRENCY
 } from '../utils/world-gen-pipeline'
 import type { WorldGenEnv } from '../utils/world-gen-pipeline'
@@ -69,6 +69,11 @@ export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowPa
       await step.do('merge', {
         retries: { limit: 3, delay: '10 second', backoff: 'exponential' }
       }, () => stepMerge(ctx, plan))
+
+      // 4.5) 实体消歧(全模式,成本极低;跨单元别名裂开的实体在此归并,失败降级为告警不中止)
+      await step.do('disambiguate', {
+        retries: { limit: 1, delay: '10 second' }
+      }, () => stepDisambiguate(ctx))
 
       // 6) 一致性检查(开关开启时;失败降级为告警,不中止)
       if (stepEnabled(task, 'check')) {

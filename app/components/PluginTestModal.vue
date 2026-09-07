@@ -253,9 +253,11 @@ async function executeOne(t: TestCmd): Promise<void> {
   // 目标插件:优先按指令携带的插件 id(t.adapter)匹配;无前缀时回退按功能 id 找到唯一声明它的插件
   const spec = t.adapter
     ? connectedSpecs.value.find(s => s.descriptor.id === t.adapter)
-    : connectedSpecs.value.find(s => s.capabilities.some(c => c.id === fn))
+    : connectedSpecs.value.find(s => s.capabilities.some(c => c.id === fn || c.name === fn))
   const adapter = adapters.value.find(a => a.manifest.id === spec?.descriptor.id)
+  // 能力解析:先按 id 精确匹配,失败回退中文名(AI 偶尔用中文名代替功能 id);执行一律用规范 id
   const cap = spec?.capabilities.find(c => c.id === fn)
+    ?? spec?.capabilities.find(c => c.name === fn)
   if (!spec || !adapter || !cap) {
     const why = t.adapter
       ? `插件「${t.adapter}」未连接或没有能力「${fn}」`
@@ -269,15 +271,15 @@ async function executeOne(t: TestCmd): Promise<void> {
   try {
     if (t.type === 'dev') {
       const res = await toyController.execute(
-        { adapter: spec.descriptor.id, function: t.function, intensity: t.intensity ?? 0, ...(t.mode != null ? { mode: t.mode } : {}), ...(t.duration != null ? { duration: t.duration } : {}) },
+        { adapter: spec.descriptor.id, function: cap.id, intensity: t.intensity ?? 0, ...(t.mode != null ? { mode: t.mode } : {}), ...(t.duration != null ? { duration: t.duration } : {}) },
         { source: 'ai', settings: s }
       )
       logs.value.push({ adapter: label.split(' · ')[0]!, capability: cap.name, raw: t.raw, ok: res.ok, detail: res.ok ? '✓ 已执行' : res.reason })
     } else if (t.type === 'wave') {
-      const res = await toyController.startWaveForAI(t.function, t.pattern, t.duration, s)
+      const res = await toyController.startWaveForAI(cap.id, t.pattern, t.duration, s)
       logs.value.push({ adapter: label.split(' · ')[0]!, capability: cap.name, raw: t.raw, ok: res.ok, detail: res.ok ? '✓ 已启动调教' : res.reason })
     } else {
-      toyController.stopWave(t.function)
+      toyController.stopWave(cap.id)
       logs.value.push({ adapter: label.split(' · ')[0]!, capability: cap.name, raw: t.raw, ok: true, detail: '✓ 已停止调教' })
     }
   } catch (e) {

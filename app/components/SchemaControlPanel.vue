@@ -177,6 +177,12 @@ function waveCapsOf(group: UiGroup): CapabilityDef[] {
   return props.spec.capabilities.filter(cap => ids.has(cap.id) && capabilityIntensityParam(cap) != null)
 }
 
+/** 控件稳定 key(同组可能出现同类型控件,如模式 + 时长两个 stepper) */
+function controlKey(group: UiGroup, c: ControlDef, i: number): string {
+  const bindPart = c.type === 'action' ? `${c.capability}:${c.label}` : `${c.bind.capability}:${c.bind.param}`
+  return `${group.id}:${i}:${c.type}:${bindPart}`
+}
+
 /** 调教形态草稿(未选择时取运行中的形态,缺省随机漫步) */
 const draftPattern = reactive<Record<string, TrainPattern>>({})
 
@@ -245,7 +251,7 @@ function selectWavePattern(capId: string, p: TrainPattern): void {
     </div>
     <div
       v-else
-      class="space-y-4"
+      :class="compact ? 'space-y-3' : 'space-y-4'"
     >
       <div
         v-for="group in groups"
@@ -254,39 +260,34 @@ function selectWavePattern(capId: string, p: TrainPattern): void {
         <p class="mb-1.5 text-xs font-medium text-neutral-500">
           {{ group.title }}
         </p>
-        <div class="flex flex-wrap justify-center gap-4 divide-x divide-gray-200 dark:divide-gray-700">
+        <!-- 横板布局:每控件一行(标签左 + 控件横向铺满 + 值右) -->
+        <div :class="compact ? 'space-y-1.5' : 'space-y-2'">
           <div
-            v-for="control in group.controls"
-            :key="`${group.id}:${control.type}`"
-            class="flex flex-col items-center gap-1.5 px-2 py-1"
+            v-for="(control, ci) in group.controls"
+            :key="controlKey(group, control, ci)"
+            class="flex items-center gap-2"
           >
             <template v-if="control.type === 'slider'">
-              <span class="text-xs tabular-nums text-neutral-500">
-                {{ draftOf(control.bind.capability, control.bind.param) }}
-              </span>
+              <span class="w-7 shrink-0 text-[11px] leading-none text-neutral-500">强度</span>
               <USlider
-                orientation="vertical"
+                class="min-w-0 flex-1"
                 :model-value="Number(draftOf(control.bind.capability, control.bind.param))"
                 :min="sliderBounds(control).min"
                 :max="sliderBounds(control).max"
                 :step="sliderBounds(control).step"
                 :disabled="autoActive"
-                :class="compact ? 'h-24' : 'h-36'"
-                :ui="{ root: 'w-5' }"
                 @update:model-value="(v: number | undefined) => onSliderInput(control.bind.capability, v ?? 0)"
               />
+              <span class="w-7 shrink-0 text-right text-xs tabular-nums text-neutral-500">
+                {{ draftOf(control.bind.capability, control.bind.param) }}
+              </span>
             </template>
 
             <template v-else-if="control.type === 'stepper'">
-              <span
-                v-if="control.bind.param === 'duration'"
-                class="text-[11px] leading-none text-neutral-500"
-              >时长</span>
-              <span
-                v-else-if="control.bind.param === 'mode'"
-                class="text-[11px] leading-none text-neutral-500"
-              >模式</span>
-              <div :class="control.values.length > 3 ? 'grid grid-cols-2 gap-1' : 'flex gap-1'">
+              <span class="w-7 shrink-0 text-[11px] leading-none text-neutral-500">
+                {{ control.bind.param === 'duration' ? '时长' : '模式' }}
+              </span>
+              <div class="flex min-w-0 flex-1 flex-wrap gap-1">
                 <UButton
                   v-for="v in control.values"
                   :key="String(v.value)"
@@ -303,23 +304,27 @@ function selectWavePattern(capId: string, p: TrainPattern): void {
             </template>
 
             <template v-else-if="control.type === 'select'">
+              <span class="w-7 shrink-0 truncate text-[11px] leading-none text-neutral-500">
+                {{ control.bind.param }}
+              </span>
               <USelect
                 size="sm"
                 :model-value="String(draftOf(control.bind.capability, control.bind.param))"
                 :items="(control.options ?? []).map(o => ({ label: o.label, value: String(o.value) }))"
                 value-key="value"
                 :disabled="autoActive"
-                class="w-28"
+                class="min-w-0 flex-1"
                 @update:model-value="(v: string | undefined) => { setDraft(control.bind.capability, control.bind.param, v ?? ''); onControlChange(control.bind.capability) }"
               />
             </template>
 
             <template v-else-if="control.type === 'toggle'">
-              <span class="text-xs text-neutral-500">
+              <span class="w-7 shrink-0 truncate text-[11px] leading-none text-neutral-500">
                 {{ control.label ?? control.bind.param }}
               </span>
               <USwitch
                 size="sm"
+                class="ms-auto"
                 :model-value="Boolean(draftOf(control.bind.capability, control.bind.param))"
                 :disabled="autoActive"
                 @update:model-value="(v: boolean) => { setDraft(control.bind.capability, control.bind.param, v); onControlChange(control.bind.capability) }"
@@ -340,10 +345,10 @@ function selectWavePattern(capId: string, p: TrainPattern): void {
             </template>
 
             <template v-else-if="control.type === 'display'">
-              <span class="text-xs text-neutral-500">
+              <span class="w-7 shrink-0 truncate text-[11px] leading-none text-neutral-500">
                 {{ control.label ?? control.bind.param }}
               </span>
-              <span class="text-sm tabular-nums">
+              <span class="ms-auto text-sm tabular-nums">
                 {{ liveValueOf(control.bind.capability, control.bind.param) }}
               </span>
             </template>
@@ -352,12 +357,12 @@ function selectWavePattern(capId: string, p: TrainPattern): void {
         <!-- 调教模式:可调强度的能力统一提供(手动启用;自动控制期间锁定) -->
         <div
           v-if="waveCapsOf(group).length"
-          class="mt-3 space-y-2 border-t border-gray-200 pt-2 dark:border-gray-700"
+          class="mt-2 space-y-1.5 border-t border-gray-200 pt-2 dark:border-gray-700"
         >
           <div
             v-for="cap in waveCapsOf(group)"
             :key="cap.id"
-            class="flex flex-wrap items-center justify-center gap-1.5"
+            class="flex flex-wrap items-center gap-1.5"
           >
             <UButton
               size="xs"
@@ -370,7 +375,7 @@ function selectWavePattern(capId: string, p: TrainPattern): void {
               {{ toyController.isWaveActive(cap.id, props.spec.descriptor.id) ? '调教中' : '调教' }}
             </UButton>
             <span class="text-[11px] leading-none text-neutral-500">形态</span>
-            <div class="grid grid-cols-4 gap-1">
+            <div class="flex min-w-0 flex-wrap gap-1">
               <UButton
                 v-for="p in TRAIN_PATTERN_OPTIONS"
                 :key="p.id"

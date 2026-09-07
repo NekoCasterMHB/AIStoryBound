@@ -13,7 +13,7 @@ import type { PluginDescriptor } from '#shared/plugin'
 import type { AisbBookManifest, BookCharacter, BookGame, BookWorld, SegmentCanon, SegmentCharacterFile } from '#shared/novel-v2'
 
 export const DB_NAME = 'aiSpankWorld-local'
-export const DB_VERSION = 11
+export const DB_VERSION = 12
 export const STORE_WORLDS = 'worlds'
 export const STORE_SAVES = 'saves'
 export const STORE_PRESETS = 'presets'
@@ -106,6 +106,11 @@ export class AIStoryBoundDB extends Dexie {
       [STORE_BOOK_SEGMENTS]: '[id+seq], id',
       [STORE_BOOK_CHARACTERS]: '[id+name], id',
       [STORE_BOOK_WORLD]: 'id'
+    })
+    // v12:saves 加 gameId 索引——存档点按局查询/清理(capGamePoints 每回合调用)不再全表扫描
+    this.version(12).stores({
+      ...this.version(11).stores,
+      [STORE_SAVES]: 'key, gameId'
     })
   }
 }

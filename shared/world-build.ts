@@ -135,9 +135,10 @@ export function buildExtractMessages(title: string, unit: ExtractUnit, eco = fal
         + '规则:\n'
         + `1. quote 必须逐字摘录原文原句,最多 ${quoteMax} 字;${eco ? 'characters 与 relationships 必须带 quote,其余尽量带' : 'world_rules / timeline_events / foreshadowing / items / relationships 必须带 quote,其余字段尽量带'}。\n`
         + '2. 只输出有新信息量的条目:仅一闪而过、没有任何可证实信息的角色不要列入;已有信息不要重复罗列。\n'
-        + '3. 不确定的字段填 null 或省略,不要编造;人物名用原文用名,别名填 alias。\n'
-        + '4. plot_beat 只写本段原文能证实的情节,按时间顺序完整保留本段情节细节(起因、经过、关键转折、结局),不要压缩省略;不要预告后文、不要编造未出现的转折。\n'
-        + '5. 控制输出篇幅:避免冗余与重复罗列,保持整体输出精简;确保 JSON 完整闭合,不要中途截断。\n'
+        + '3. 本段开头可能与上一段结尾部分重叠(为承接上下文而保留):重叠区只用于衔接理解,其中已出现过的情节/事件不要重复上报,只提取本段新推进的内容。\n'
+        + '4. 不确定的字段填 null 或省略,不要编造;人物名用原文用名,别名填 alias。\n'
+        + '5. plot_beat 只写本段原文能证实的情节,按时间顺序完整保留本段情节细节(起因、经过、关键转折、结局),不要压缩省略;不要预告后文、不要编造未出现的转折;与上一段重叠的部分一句话带过即可。\n'
+        + '6. 控制输出篇幅:避免冗余与重复罗列,保持整体输出精简;确保 JSON 完整闭合,不要中途截断。\n'
         + `<chapter>${unit.content}</chapter>`
     }
   ]
@@ -859,12 +860,26 @@ export function assembleStoryline(
 ): { storyline: StoryBeat[], gaps: number[] } {
   const storyline: StoryBeat[] = []
   const gaps: number[] = []
+  // 相邻摘要去重:切段重叠区会让相邻两单元对同一段情节各报一条几乎相同的细纲;
+  // 归一化后互相包含(≥16 字)即视为重复,并入前一拍(cast 并集,更完整的版本优先),
+  // 该单元不单独成拍(其正文仍随 startChar 切片进入剧情段,不丢内容,与缺口处理同构)
+  const dedup = (s: string) => s.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '')
   for (let i = 0; i < units.length; i++) {
     const unit = units[i]
     const beat = extracts[i]?.plot_beat
     if (!unit || !beat?.summary?.trim()) {
       gaps.push(i)
       continue
+    }
+    const prev = storyline[storyline.length - 1]
+    if (prev) {
+      const a = dedup(prev.summary)
+      const b = dedup(beat.summary)
+      if (a.length >= 16 && b.length >= 16 && (a.includes(b) || b.includes(a))) {
+        prev.cast = [...new Set([...prev.cast, ...(beat.cast ?? [])])]
+        if (b.length > a.length) prev.summary = beat.summary.trim()
+        continue
+      }
     }
     storyline.push({
       index: i,

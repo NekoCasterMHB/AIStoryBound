@@ -99,8 +99,17 @@ export async function loadAllAdapters(): Promise<ToyAdapter[]> {
   return adapters
 }
 
-/** 全部已加载插件的 PluginSpec(游戏页能力注入用) */
+/** PluginSpec 分析结果缓存(游戏回合逐次调用 loadAllPluginSpecs;导入/删除插件时失效,详见各写入口) */
+let specsCache: PluginSpec[] | null = null
+
+/** 使 PluginSpec 缓存失效(插件导入/删除后调用) */
+export function invalidatePluginSpecsCache(): void {
+  specsCache = null
+}
+
+/** 全部已加载插件的 PluginSpec(游戏页能力注入用;命中缓存零 IDB 读) */
 export async function loadAllPluginSpecs(): Promise<PluginSpec[]> {
+  if (specsCache) return specsCache
   const imported = await listImportedAdapters()
   const specs: PluginSpec[] = []
   for (const d of getBuiltinPlugins()) {
@@ -111,12 +120,14 @@ export async function loadAllPluginSpecs(): Promise<PluginSpec[]> {
     const v = analyzePluginDescriptor(rec.descriptor)
     if (v.ok) specs.push(v.spec)
   }
+  specsCache = specs
   return specs
 }
 
 /** 删除已导入插件 */
 export async function removeImportedAdapter(id: string): Promise<void> {
   await deleteImportedAdapter(id)
+  invalidatePluginSpecsCache()
 }
 
 /**
@@ -180,6 +191,7 @@ export async function importAdapterFiles(files: File[]): Promise<ToyAdapter> {
     importedAt: new Date().toISOString()
   }
   await saveImportedAdapter(record)
+  invalidatePluginSpecsCache()
   const adapter = buildAdapterFromSpec(spec, codeText)
   if (!adapter) throw new Error('插件加载失败,请检查配置(执行后端不支持)')
   return adapter

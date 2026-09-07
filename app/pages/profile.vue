@@ -184,6 +184,12 @@ function toggleAdapter(a: ToyAdapter, on: boolean) {
   void saveToySettings(adapterSettings.value)
 }
 
+/** AI 自主控制总开关(全局,作用于所有插件的剧情联动;放在插件列表层,与测试能力同级) */
+function toggleAiMaster(on: boolean) {
+  adapterSettings.value.aiEnabled = on
+  void saveToySettings(adapterSettings.value)
+}
+
 async function onRemoveAdapter(id: string) {
   if (toyController.slotOf(id)?.connected) {
     await toyController.disconnect(id)
@@ -1809,7 +1815,20 @@ watch(narrLength, v => saveNarrLength(v))
               >创意工坊 → 功能插件</NuxtLink>
               解锁(限时免费中)。
             </p>
-            <div class="flex gap-2">
+            <div class="flex items-center gap-2">
+              <!-- AI 自主控制总开关(全局):放在插件列表层,游戏内 AI 是否可以操作设备由此决定 -->
+              <div class="flex items-center gap-2 rounded-lg border border-gray-200 px-2.5 py-1 dark:border-gray-700">
+                <UIcon
+                  name="i-lucide-bot"
+                  class="size-4 text-neutral-500"
+                />
+                <span class="text-xs font-medium">AI 自主控制</span>
+                <USwitch
+                  size="sm"
+                  :model-value="adapterSettings.aiEnabled"
+                  @update:model-value="toggleAiMaster"
+                />
+              </div>
               <UButton
                 size="xs"
                 color="primary"

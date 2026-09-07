@@ -193,6 +193,20 @@ export async function updateBook2(id: string, mutate: (doc: BookDoc) => boolean 
   if (changed !== false) await saveBookDoc(id, loaded.doc)
 }
 
+/** 只写引擎派生数据(books.updatedAt + book-world 单行;arcs 写回等专用,不触碰段/卡/正文)。
+ *  world 为空/无有效字段时删除 world 行;作品不存在时抛错。 */
+export async function updateBook2World(id: string, world: BookDoc['world']): Promise<void> {
+  await db.transaction('rw', db.books, db['book-world'], async () => {
+    const meta = await db.books.get(id)
+    if (!meta) throw new Error('本地未找到该 v2 作品')
+    meta.updatedAt = nowIso()
+    await db.books.put(meta)
+    const has = !!(world && (world.entities || world.conflicts?.length || world.characterArcs?.length))
+    if (has) await db['book-world'].put({ id, world: world! })
+    else await db['book-world'].delete(id)
+  })
+}
+
 /** 写回世界概览元数据(overview 编辑;只动 books 行的 manifest,段落与角色层不受影响) */
 export async function saveBook2Meta(
   id: string,

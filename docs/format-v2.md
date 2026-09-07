@@ -241,8 +241,8 @@
 
 ### 6.2 生成流程 v2 化(现状 → v2 阶段映射, P4 blueprint)
 
-**现状流程(云端 Workflows)**:
-上传 txt → R2 → `parse`(编码/清洗) → `author`(AI 提作者/书名) → `splitUnits`(按字数+段落边界切段,≈5.9K tokens/段) → `extract×N`(每段 AI 提取: plot_beat + characters[](每个 cast 全套基础字段+status) + 其他实体) → `merge`(合并 entities + 拼 storyline) → `check`(补漏/纠矛盾) → `synthesize`(成书 overlay.characters/tags…) → `arcs`(配角弧线 characterArcs[]) → `finalize`(落一个 work: entities+overlay+storyline+characterArcs)。
+**现状流程(云端 Workflows,2026-09-06 起 merge 后并行收尾 + 实体消歧)**:
+上传 txt → R2 → `parse-plan`(编码/清洗/作者正则/切段) → `author`(AI 提作者,可跳过) → `extract×N`(每粗段 AI 提取: plot_beat + characters[](每个 cast 全套基础字段+status+plot) + 其他实体) → `merge`(合并 entities + 逐字引用校验 + 拼 storyline + 本地聚合;含相邻重叠摘要去重) → **`disambiguate`(实体消歧:名字模式预聚类 → 逐簇 AI 裁决 → 归并别名裂开条目,簇级检查点,全模式)** → `check`(补漏/纠矛盾) → **并行三分支**(成书 `synthesize` ∥ 弧线 `arcs` ∥ 标转折 `annotate`(分块带上一块末段衔接上下文)) → `finalize`(弧线坐标粗段→剧情段换算后 buildBookDoc 落 aisb-book zip)。
 
 **v2 优化点(按段,信息不重复)**:
 

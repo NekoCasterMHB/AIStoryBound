@@ -152,13 +152,21 @@ export async function resumeWorldGenTask(id: string): Promise<WorldGenTaskDTO> {
   return res.task
 }
 
-/** 轮询任务直至终态(completed/failed/cancelled/paused);onUpdate 每次快照回调,signal 可中断 */
+/** 轮询任务直至终态(completed/failed/cancelled/paused);onUpdate 每次快照回调,signal 可中断。
+ *  区间退避:首分钟 3s,之后 6s,10 分钟后 12s 封顶(长任务不刷接口;状态变更感知延迟对 UX 无感)。 */
 export async function pollWorldGenTask(
   id: string,
   onUpdate: (task: WorldGenTaskDTO) => void,
   signal?: AbortSignal,
   intervalMs = 3000
 ): Promise<WorldGenTaskDTO> {
+  const startedAt = Date.now()
+  const currentInterval = () => {
+    const elapsed = Date.now() - startedAt
+    if (elapsed > 10 * 60_000) return intervalMs * 4
+    if (elapsed > 60_000) return intervalMs * 2
+    return intervalMs
+  }
   for (;;) {
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
     const task = await fetchWorldGenTask(id)
@@ -167,7 +175,7 @@ export async function pollWorldGenTask(
       return task
     }
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, intervalMs)
+      const timer = setTimeout(resolve, currentInterval())
       signal?.addEventListener('abort', () => {
         clearTimeout(timer)
         reject(new DOMException('已取消', 'AbortError'))

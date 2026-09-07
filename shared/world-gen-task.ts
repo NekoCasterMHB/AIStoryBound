@@ -206,7 +206,10 @@ export function estimateWorldGenTokens(
   const arcs = arcsOn
     ? arcsCandidateCount(totalChars) * (ARCS_UNIT_INPUT_TOKENS + ARCS_UNIT_OUTPUT_TOKENS)
     : 0
-  return Math.max(1, Math.round((extract + check + synth + author + arcs) * SAFETY_FACTOR))
+  // 实体消歧(全模式,merge 后逐簇裁决;簇数有上限,成本极低):预聚类簇 × 单簇来回
+  const unitsForLink = Math.max(1, Math.ceil(totalChars / unitMax))
+  const link = unitsForLink > 2 ? Math.min(8, Math.ceil(unitsForLink / 6)) * 2000 : 0
+  return Math.max(1, Math.round((extract + check + synth + author + arcs + link) * SAFETY_FACTOR))
 }
 
 /** 拉取共享缓存的价格:记录消耗的一半(向下取整;0 消耗的缓存免费) */

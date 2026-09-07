@@ -167,75 +167,59 @@ const batteryNow = computed(() => {
           <!-- 配置:安全设置 + 连接 -->
           <template #config>
             <div class="space-y-4">
-              <!-- 安全设置 -->
+              <!-- AI 能力设置(按能力单独设置;全局总开关在插件列表层/游戏内设备面板) -->
               <div class="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
-                <div class="mb-3 text-sm font-semibold">
-                  安全设置
+                <div class="mb-2 text-sm font-semibold">
+                  AI 能力设置
                 </div>
-                <div class="flex items-center justify-between">
-                  <div>
-                    <div class="text-sm font-medium">
-                      AI 自主控制
-                    </div>
-                    <div class="text-xs text-neutral-500">
-                      关闭时游戏内 AI 输出的设备事件一律拒绝
-                    </div>
-                  </div>
-                  <USwitch v-model="settings.aiEnabled" />
-                </div>
-                <!-- 能力设置:总开关关闭时全部隐藏;每项卡片含 AI 开关 + 限制设置 -->
-                <template v-if="settings.aiEnabled">
+                <p class="mb-3 text-xs text-neutral-500">
+                  「AI 自主控制」总开关在功能插件列表右上角(或游戏内设备面板);总开关关闭时游戏内 AI 输出的设备事件一律拒绝,此处按能力细化可控范围与上限。
+                </p>
+                <div
+                  v-if="capabilities.length"
+                  class="space-y-2"
+                >
                   <div
-                    v-if="capabilities.length"
-                    class="mt-3"
+                    v-for="fn in capabilities"
+                    :key="fn.id"
+                    class="rounded-lg border border-gray-200 p-2 dark:border-gray-700"
                   >
-                    <div class="mb-2 text-xs text-neutral-500">
-                      能力设置(按能力单独设置)
-                    </div>
-                    <div class="space-y-2">
-                      <div
-                        v-for="fn in capabilities"
-                        :key="fn.id"
-                        class="rounded-lg border border-gray-200 p-2 dark:border-gray-700"
-                      >
-                        <div class="flex items-center justify-between">
-                          <span class="text-sm font-medium">{{ fn.name }}</span>
-                          <div class="flex items-center gap-2">
-                            <span class="text-xs text-neutral-500">AI 控制</span>
-                            <USwitch
-                              size="sm"
-                              :model-value="isAiFunctionEnabled(settings, fn.id, props.pluginId)"
-                              @update:model-value="(v: boolean) => {
-                                settings.aiEnabledFunctions = toggleAiFunctionEnabled(settings, fn.id, v, props.pluginId)
-                              }"
-                            />
-                          </div>
-                        </div>
-                        <!-- AI 控制未开启:参数部分显示提示,不渲染设置项 -->
-                        <p
-                          v-if="!isAiFunctionEnabled(settings, fn.id, props.pluginId)"
-                          class="mt-2 text-xs text-neutral-500"
-                        >
-                          启用 AI 控制后可设置参数
-                        </p>
-                        <template v-else>
-                          <div class="mt-1">
-                            <div class="mb-1 flex justify-between text-[11px] text-neutral-500">
-                              <span>最大强度</span>
-                              <span class="tabular-nums">{{ fnLimitOf(fn.id).maxIntensity }}</span>
-                            </div>
-                            <USlider
-                              :model-value="fnLimitOf(fn.id).maxIntensity"
-                              :min="0"
-                              :max="100"
-                              @update:model-value="(v: number | undefined) => setFnLimit(fn.id, { maxIntensity: v ?? 0 })"
-                            />
-                          </div>
-                        </template>
+                    <div class="flex items-center justify-between">
+                      <span class="text-sm font-medium">{{ fn.name }}</span>
+                      <div class="flex items-center gap-2">
+                        <span class="text-xs text-neutral-500">AI 控制</span>
+                        <USwitch
+                          size="sm"
+                          :model-value="isAiFunctionEnabled(settings, fn.id, props.pluginId)"
+                          @update:model-value="(v: boolean) => {
+                            settings.aiEnabledFunctions = toggleAiFunctionEnabled(settings, fn.id, v, props.pluginId)
+                          }"
+                        />
                       </div>
                     </div>
+                    <!-- AI 控制未开启:参数部分显示提示,不渲染设置项 -->
+                    <p
+                      v-if="!isAiFunctionEnabled(settings, fn.id, props.pluginId)"
+                      class="mt-2 text-xs text-neutral-500"
+                    >
+                      启用 AI 控制后可设置参数
+                    </p>
+                    <template v-else>
+                      <div class="mt-1">
+                        <div class="mb-1 flex justify-between text-[11px] text-neutral-500">
+                          <span>最大强度</span>
+                          <span class="tabular-nums">{{ fnLimitOf(fn.id).maxIntensity }}</span>
+                        </div>
+                        <USlider
+                          :model-value="fnLimitOf(fn.id).maxIntensity"
+                          :min="0"
+                          :max="100"
+                          @update:model-value="(v: number | undefined) => setFnLimit(fn.id, { maxIntensity: v ?? 0 })"
+                        />
+                      </div>
+                    </template>
                   </div>
-                </template>
+                </div>
               </div>
 
               <!-- 连接 -->

@@ -15,7 +15,7 @@ import type { BookView } from '#shared/book-view'
 import { getLocalGame, saveLocalGame } from '../../utils/gameStore'
 import { addWorkTokensSmart, touchWorkSmart, loadWorkView } from '../../utils/bookStoreV2'
 import type { AiSkill } from '#shared/ai-skills'
-import { saveGamePoint, listGamePoints, pruneGamePoints, capGamePoints } from '../../utils/gameSaveStore'
+import { saveGamePoint, listGamePoints, pruneGamePoints, capGamePoints, hasGamePoint } from '../../utils/gameSaveStore'
 import { toyController } from '../../toy/api'
 import { loadToySettings } from '../../toy/store'
 import { loadAllPluginSpecs } from '../../toy/runtime/adapter-loader'
@@ -171,11 +171,14 @@ const skillsLoadPromise = loadEnabledAiSkillObjects()
     // 本地注册表异常时保持空列表,不阻塞开局
   })
 
-/** 玩具控制:设备设置(硬限制/总开关,IndexedDB);AI 开关打开且有已启用插件时,叙事提示词注入内联指令语法 */
+/** 玩具控制:设备设置(硬限制/总开关,IndexedDB);AI 开关打开且有已启用插件时,叙事提示词注入内联指令语法。
+ *  每回合 sendTurn 前重新读取(玩家可能在对局中经控制条 → 详细配置改动开关,setup 快照会过期) */
 const toySettings = ref<ToySettings | null>(null)
 void loadToySettings().then((s) => {
   toySettings.value = s
 })
+/** 「设备已连接但 AI 总开关未开」的一次性提示(每页面会话只提示一次,避免刷屏) */
+let toyAiOffHintShown = false
 
 /** 页面生命周期内的清理钩子(挂载时注册,卸载时统一执行) */
 let pageCleanup: (() => void)[] = []
@@ -237,8 +240,11 @@ onMounted(async () => {
     options.value = []
     toast.add({ title: '上次回合进度保存不完整,剧情摘要已保留,请直接输入行动继续', color: 'neutral' })
   }
-  // 初始存档点:保证第一轮行动也有回滚目标
-  await savePointNow()
+  // 初始存档点:保证第一轮行动也有回滚目标(同 key 已有快照则跳过,避免每次进页重复全量写)
+  {
+    const last = messages.value.at(-1)
+    if (!(await hasGamePoint(`${gameId}:${last?.idx ?? -1}`))) await savePointNow()
+  }
 })
 
 const playerName = computed(() => game.value?.playerName ?? '玩家')
@@ -323,6 +329,17 @@ function stopTurn() {
 }
 
 const lastMessage = computed(() => messages.value.at(-1) ?? null)
+
+// ---- 剧情流窗口化渲染:长局只渲染最近 N 条,「加载更早剧情」向前翻页,避免数百回合后 DOM 过重 ----
+const HISTORY_PAGE = 40
+const historyShown = ref(HISTORY_PAGE)
+const visibleMessages = computed(() =>
+  messages.value.length > historyShown.value ? messages.value.slice(-historyShown.value) : messages.value
+)
+const hiddenHistoryCount = computed(() => Math.max(0, messages.value.length - visibleMessages.value.length))
+function showMoreHistory() {
+  historyShown.value += HISTORY_PAGE
+}
 /** 上一回合旁白已上屏但选项缺失/为空:提供「重新生成选项」入口 */
 const needsOptionsRetry = computed(() =>
   !streaming.value && lastMessage.value?.role === 'narrator' && options.value.length === 0)
@@ -728,24 +745,48 @@ function onStartStory() {
 
 const started = computed(() => messages.value.length > 0 || streaming.value)
 
-function persist() {
-  if (!game.value) return
-  game.value.state = JSON.parse(JSON.stringify(state.value))
-  game.value.messages = JSON.parse(JSON.stringify(messages.value))
-  game.value.currentBeat = plotBeat.value
-  game.value.syncStatus = game.value.syncStatus === 'synced' ? 'dirty' : game.value.syncStatus
-  void saveLocalGame(game.value)
+/** 全量快照(剥离 Vue 响应式代理;persist 与存档点共用同一份,避免每回合双份深拷贝) */
+function snapshotGame(): { state: typeof state.value, messages: typeof messages.value } {
+  return {
+    state: JSON.parse(JSON.stringify(state.value)),
+    messages: JSON.parse(JSON.stringify(messages.value))
+  }
 }
 
-async function savePointNow() {
+/** optionsByMessage 只保留最近 N 条旁白的选项:回滚依赖最近存档点(50 个),窗口对齐即可,防 game 行无限膨胀 */
+const MAX_OPTION_KEYS = 60
+function pruneOptionKeys() {
+  const byMsg = game.value?.optionsByMessage
+  if (!byMsg) return
+  const keep = new Set(
+    messages.value.filter(m => m.role === 'narrator').slice(-MAX_OPTION_KEYS).map(m => m.id)
+  )
+  game.value!.optionsByMessage = Object.fromEntries(
+    Object.entries(byMsg).filter(([k]) => keep.has(k))
+  )
+}
+
+function persist() {
+  if (!game.value) return null
+  const snap = snapshotGame()
+  game.value.state = snap.state
+  game.value.messages = snap.messages
+  game.value.currentBeat = plotBeat.value
+  game.value.syncStatus = game.value.syncStatus === 'synced' ? 'dirty' : game.value.syncStatus
+  pruneOptionKeys()
+  void saveLocalGame(game.value)
+  return snap
+}
+
+async function savePointNow(snap = snapshotGame()) {
   const last = messages.value.at(-1)
   await saveGamePoint({
     key: `${gameId}:${last?.idx ?? -1}`,
     gameId,
     idx: last?.idx ?? -1,
-    state: JSON.parse(JSON.stringify(state.value)),
+    state: snap.state,
     currentBeat: plotBeat.value,
-    messages: JSON.parse(JSON.stringify(messages.value)),
+    messages: snap.messages,
     summary: game.value?.summary ?? null,
     savedAt: new Date().toISOString()
   }).catch(() => {})
@@ -870,9 +911,8 @@ async function retryOptionsPhase() {
   liveSpeed.value = 0
   try {
     await runOptionsPhase(narratorMsg, narratorMsg.content, 0)
-    // 收尾补跑成功:旁白已在消息尾部,与 sendTurn 同语义闭环落盘(重进/回滚点完整)
-    persist()
-    await savePointNow()
+    // 收尾补跑成功:旁白已在消息尾部,与 sendTurn 同语义闭环落盘(重进/回滚点完整;快照复用省一次克隆)
+    await savePointNow(persist() ?? undefined)
   } catch (e) {
     if (e instanceof CancelledError) {
       turnAbort = null
@@ -983,13 +1023,26 @@ async function sendTurn(choice?: string) {
     }
     // 设备联动提示词:AI 开关打开且有已启用插件时,叙事提示词注入内联指令语法与能力清单
     // (逐条标注清单声明的强度范围;指令数量由 AI 按情节判断,不设上限)
-    const settingsNow = toySettings.value
+    // 设置每回合重读:开关可能在上一回合后才被改动(控制条 → 详细配置),旧快照会让联动静默失效
+    const settingsNow = toySettings.value = await loadToySettings()
     const enabledBriefs = settingsNow
       ? (await loadAllPluginSpecs())
           .filter(s => isAdapterEnabled(settingsNow, s.descriptor.id))
           .map(s => describePlugin(s, !!toyController.slotOf(s.descriptor.id)))
       : []
     const deviceEnabled = !!settingsNow?.aiEnabled && enabledBriefs.length > 0
+    // 静默门控提示:设备已连接但 AI 总开关未开 → 本轮不注入联动,玩家会以为「AI 无视设备」;
+    // 指明原因与开启位置,每会话只提示一次
+    if (settingsNow && !settingsNow.aiEnabled
+      && enabledBriefs.some(s => toyController.slotOf(s.id)?.connected)
+      && !toyAiOffHintShown) {
+      toyAiOffHintShown = true
+      toast.add({
+        title: '设备联动未启用',
+        description: '玩具已连接,但 AI 设备控制总开关未开启,剧情中 AI 不会操作设备(玩具控制条 → 详细配置中开启)',
+        color: 'warning'
+      })
+    }
     const deviceSpec = deviceEnabled ? narratorDeviceSpec(enabledBriefs) : ''
     // 段回注:每 reinjectEvery 回合,取当前段情节 + 段起始原文窗口 + 后段走向(有细纲即启用,不依赖开局方式)
     const turnIndex = messages.value.filter(m => m.role === 'narrator').length
@@ -1139,9 +1192,10 @@ async function sendTurn(choice?: string) {
     await optionsTask
     // 回合闭环落盘:旁白已入列、收尾(状态/摘要/选项/段位)已结算,此刻写盘才是
     // 「叙事 + 结算」对齐的完整快照。收尾器内部落盘已移除(见 runOptionsPhase),统一在这里落。
-    persist()
+    // persist 返回的快照直接复用给存档点(同一份深拷贝,省一次全量克隆)。
+    const snap = persist()
     if (optionsErr) throw optionsErr
-    await savePointNow()
+    await savePointNow(snap ?? undefined)
   } catch (e) {
     if (e instanceof CancelledError) {
       // 玩家停止/页面卸载:不当作失败。未获回应的行动弹出撤销,恢复上一决策点选项
@@ -2093,8 +2147,18 @@ watch([messages, streamDisplay], async () => {
         </div>
 
         <template v-else>
+          <UButton
+            v-if="hiddenHistoryCount > 0"
+            label="加载更早剧情"
+            icon="i-lucide-chevron-up"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            block
+            @click="showMoreHistory"
+          />
           <div
-            v-for="m in messages"
+            v-for="m in visibleMessages"
             :key="m.id"
             class="text-sm"
             :class="m.role === 'user' ? 'flex justify-end' : ''"

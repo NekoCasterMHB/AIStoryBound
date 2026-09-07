@@ -2,7 +2,7 @@
 // /works — 我的书架(登录后):推荐书架(预置小说,可直接生成)+ 个人书架(本地作品 + 云端作品 + 继续游戏)
 import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments, isLegacyChapteredWork } from '../utils/worldGen'
-import { listBook2, loadBook2AsWork, deleteBook2, loadBook2RawZip, importBook2Zip, loadWorkView, updateBook2 } from '../utils/bookStoreV2'
+import { listBook2, loadBook2AsWork, deleteBook2, loadBook2RawZip, importBook2Zip, loadWorkView, updateBook2World } from '../utils/bookStoreV2'
 import { NOVEL_ENCODING_LABELS } from '#shared/novel-encoding'
 import { characterArcCandidates } from '#shared/world-build'
 import { listLocalGames, deleteLocalGame } from '../utils/gameStore'
@@ -647,11 +647,8 @@ async function applyArcsResult(t: WorldGenTaskDTO) {
     const work = await loadWorkView(t.sourceWorkId)
     if (!work) throw new Error('本地未找到对应作品,可能已被删除')
     if (work.source === 'book2') {
-      // v2 真源:弧线写回 world.json 随包派生数据(loadWorkView 读回后弧线驱动游玩)
-      await updateBook2(work.id, (doc) => {
-        doc.world = { ...doc.world, characterArcs: arcs }
-        return true
-      })
+      // v2 真源:弧线写回 world.json 随包派生数据(loadWorkView 读回后弧线驱动游玩);单行写,不触碰段/卡
+      await updateBook2World(work.id, { ...work.world, characterArcs: arcs })
     } else {
       const raw = await getWork(work.id)
       if (!raw) throw new Error('本地未找到对应作品,可能已被删除')

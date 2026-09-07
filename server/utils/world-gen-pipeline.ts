@@ -22,7 +22,7 @@ import { AI_PURPOSE_ROUTING_KEY } from './ai'
 import { isAiApiFormat, AI_ROUTE_ENV } from '../../shared/ai-config'
 import { extractFrontMatter, detectAuthorFromFrontMatter, uuid } from '../../shared/novel'
 import type {
-  ChapterExtraction, CharacterArc, EntityConflict, StoryBeat, TokenUsage, WorldEntities, WorldOverlay
+  ChapterExtraction, CharacterArc, EntityConflict, MergedCharacter, StoryBeat, TokenUsage, WorldEntities, WorldOverlay
 } from '../../shared/novel'
 import {
   assembleStoryline, buildCharacterArcMessages, buildCheckMessages, buildEcoSynthMessages,
@@ -35,9 +35,11 @@ import type { ExtractUnit, WorldLocalSummary } from '../../shared/world-build'
 import type { WorldGenMode, WorldGenStageDetail } from '../../shared/world-gen-task'
 import { parseWorldGenSteps } from '../../shared/world-gen-task'
 import { billedTokens } from '../../shared/token-estimate'
+import { buildEntityLinkMessages, clusterCharacterCandidates, parseEntityLinkGroups, applyEntityMerges } from '../../shared/entity-link'
 import { parseNovelBytes } from './novel-parser'
 import {
-  ANNOTATE_CHUNK_BEATS, buildAnnotateMessages, buildBookDoc, normalizeSegmentAnnotations
+  ANNOTATE_CHUNK_BEATS, buildAnnotateMessages, buildBookDoc, groupBeats, normalizeSegmentAnnotations,
+  remapArcsToSegments
 } from '../../shared/book-build'
 import type { AnnotateBeat, ChapterExtractStatuses, SegmentAnnotation } from '../../shared/book-build'
 import { bookDocToZip } from '../../shared/novel-v2'
@@ -207,19 +209,21 @@ export async function recordTaskUsage(ctx: TaskRef, task: WorldGenTaskRow, usage
   const tokens = billedTokens(usage)
   if (tokens <= 0) return
   try {
-    await ctx.db.insert(aiUsage).values({
-      id: uuid(),
-      userId: task.userId,
-      taskId: ctx.taskId,
-      tokens,
-      promptTokens: usage.promptTokens ?? 0,
-      completionTokens: usage.completionTokens ?? 0,
-      createdAt: new Date()
-    }).run()
-    await ctx.db.update(worldGenTasks)
-      .set({ tokensUsed: sql`${worldGenTasks.tokensUsed} + ${tokens}`, updatedAt: new Date() })
-      .where(eq(worldGenTasks.id, ctx.taskId))
-      .run()
+    // 明细 + 增量同一 batch(单次 D1 往返);批内一条失败整批回滚,语义与逐条一致
+    await ctx.db.batch([
+      ctx.db.insert(aiUsage).values({
+        id: uuid(),
+        userId: task.userId,
+        taskId: ctx.taskId,
+        tokens,
+        promptTokens: usage.promptTokens ?? 0,
+        completionTokens: usage.completionTokens ?? 0,
+        createdAt: new Date()
+      }),
+      ctx.db.update(worldGenTasks)
+        .set({ tokensUsed: sql`${worldGenTasks.tokensUsed} + ${tokens}`, updatedAt: new Date() })
+        .where(eq(worldGenTasks.id, ctx.taskId))
+    ])
   } catch (e) {
     console.error('[world-gen] 用量记账失败', { taskId: ctx.taskId, tokens }, e)
   }
@@ -269,12 +273,18 @@ export async function markTaskPaused(ctx: TaskRef, message: string): Promise<voi
   await clearTaskKey(ctx)
 }
 
+/** 失败/取消任务 scratch 垃圾回收:终态超过该天数的前缀整删(completed 的 arcs 任务 scratch 保留
+ *  arcs.json 供结果端点读取,不在此列;world 任务 completed 时已自行清理)。单次清扫限额防放大。 */
+const SCRATCH_GC_DAYS = 3
+const SCRATCH_GC_LIMIT = 20
+
 /**
  * 孤儿任务兜底(状态查询接口周期调用):
  *  - running 超时(STALE_RUNNING_MS)→ 判失败(运行中不扣费,失败即免费;旧预扣退款已移除);
- *  - 终态仍带 key 暂存 → 清空(强杀残留)。
+ *  - 终态仍带 key 暂存 → 清空(强杀残留);
+ *  - failed/cancelled 任务过期 scratch 前缀 → R2 回收(传 bucket 时启用)。
  */
-export async function sweepStaleWorldGenTasks(db: WorldGenDb): Promise<void> {
+export async function sweepStaleWorldGenTasks(db: WorldGenDb, bucket?: R2Bucket): Promise<void> {
   const staleBefore = new Date(Date.now() - STALE_RUNNING_MS)
   const now = new Date()
   try {
@@ -296,6 +306,30 @@ export async function sweepStaleWorldGenTasks(db: WorldGenDb): Promise<void> {
         or(isNotNull(worldGenTasks.keyCiphertext), isNotNull(worldGenTasks.keyIv))
       ))
       .run()
+    // 失败/取消任务的 scratch 回收(merged/overlay/检查点等中间产物,任务已终态无再利用价值)
+    if (bucket) {
+      const gcBefore = new Date(now.getTime() - SCRATCH_GC_DAYS * 24 * 60 * 60 * 1000)
+      const doomed = await db.select({ id: worldGenTasks.id })
+        .from(worldGenTasks)
+        .where(and(
+          inArray(worldGenTasks.status, ['failed', 'cancelled']),
+          lt(worldGenTasks.updatedAt, gcBefore)
+        ))
+        .limit(SCRATCH_GC_LIMIT)
+        .all()
+      for (const t of doomed) {
+        try {
+          let cursor: string | undefined
+          do {
+            const list = await bucket.list({ prefix: scratchPrefix(t.id), cursor })
+            for (const obj of list.objects) await bucket.delete(obj.key)
+            cursor = list.truncated ? list.cursor : undefined
+          } while (cursor)
+        } catch (e) {
+          console.error('[world-gen] 终态任务 scratch 回收失败', { taskId: t.id }, e)
+        }
+      }
+    }
   } catch (e) {
     console.error('[world-gen] 孤儿任务清扫失败', e)
   }
@@ -513,8 +547,13 @@ export async function stepParseAndPlan(ctx: WorldGenCtx): Promise<{ parsed: Pars
   return { parsed, plan }
 }
 
-/** 提取完成数刷新(stage_detail.doneUnits;必须保留 plan 等既有字段,进度更新会穿插在提取期间) */
+/** 提取完成数刷新(stage_detail.doneUnits;保留 plan 等既有字段)。
+ *  2s 节流:同一 isolate 内并发的多个单元完成只触发一次写(跨 isolate 至多各一次,无正确性影响)。 */
+let lastExtractBumpAt = 0
 async function bumpExtractProgress(ctx: TaskRef, totalUnits: number): Promise<void> {
+  const now = Date.now()
+  if (now - lastExtractBumpAt < 2000) return
+  lastExtractBumpAt = now
   const task = await requireTask(ctx)
   const detail = parseStageDetail(task.stageDetail)
   const c = await ctx.db.select({ n: count() }).from(worldGenUnits).where(eq(worldGenUnits.taskId, ctx.taskId)).get()
@@ -691,6 +730,59 @@ export async function stepMerge(ctx: WorldGenCtx, planOverride?: UnitPlan): Prom
   // 下一阶段:节约/自定义关 check 时直接进入成书,避免进度停在被跳过的检查阶段
   await markTask(ctx, { stage: stepEnabled(task, 'check') ? 'check' : 'synthesize' })
   return { okUnits, totalUnits: plan.length, characters: entities.characters.length, storyline: storyline.length, warnings }
+}
+
+/** 步骤 4.5(全模式,成本极低):实体消歧。
+ *  跨单元提取会把同一角色按不同称呼裂成多个条目(「林凡」/「凡哥」/「小凡」),merge 的名字键去重
+ *  只能处理完全同名/已提取 alias 的映射。这里代码预聚类(名字模式相似)后逐簇 AI 裁决、
+ *  应用合并——实体库干净后,check/synthesize/arcs 的输入自动瘦身,人物卡/弧线候选不再摊薄。
+ *  簇级检查点(link-unit-<i>)与总检查点(link-done)保证重跑/续跑不重复扣费;单簇失败降级保留原条目。 */
+export async function stepDisambiguate(ctx: WorldGenCtx): Promise<{ clusters: number, mergedAway: number, warnings: string[] }> {
+  const task = await requireTask(ctx)
+  await assertNotCancelled(task)
+  if (await getScratch<{ ok: true }>(ctx, 'link-done')) return { clusters: 0, mergedAway: 0, warnings: [] }
+  const merged = await getScratch<MergedState>(ctx, 'merged')
+  if (!merged) throw new Error('合并结果缺失,无法实体消歧')
+  const chars = merged.entities.characters as MergedCharacter[]
+  const clusters = clusterCharacterCandidates(chars)
+  if (clusters.length === 0) {
+    await putScratch(ctx, 'link-done', { ok: true })
+    return { clusters: 0, mergedAway: 0, warnings: [] }
+  }
+  const title = task.title || '未命名小说'
+  const warnings: string[] = []
+  const groups: number[][] = []
+  const relay = await relayOf(ctx, task)
+  await pool(clusters.map((_, i) => i), 3, async (ci) => {
+    const key = `link-unit-${ci}`
+    const done = await getScratch<{ groups: number[][] }>(ctx, key)
+    if (done) {
+      groups.push(...done.groups)
+      return
+    }
+    try {
+      const { system, user } = buildEntityLinkMessages(title, chars, clusters[ci]!)
+      const { data, usage } = await callAiJson(relay, {
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        temperature: 0
+      })
+      // 先扣费再落结果:余额不足抛出时该簇不落库,续跑重跑并重新扣费,不漏账
+      await recordTaskUsage(ctx, task, usage)
+      const gs = parseEntityLinkGroups(data, clusters[ci]!)
+      await putScratch(ctx, key, { groups: gs })
+      groups.push(...gs)
+    } catch (e) {
+      if (e instanceof InsufficientTokensError) throw e
+      warnings.push(`实体消歧第 ${ci + 1}/${clusters.length} 簇失败(保留各条目):${e instanceof Error ? e.message : String(e)}`)
+    }
+  })
+  const before = chars.length
+  if (groups.length > 0) {
+    merged.entities.characters = applyEntityMerges(chars, groups).characters
+    await putScratch(ctx, 'merged', merged)
+  }
+  await putScratch(ctx, 'link-done', { ok: true })
+  return { clusters: clusters.length, mergedAway: before - merged.entities.characters.length, warnings }
 }
 
 /** 步骤 5(仅完整模式):AI 一致性检查;失败降级为告警,不中止 */
@@ -1058,8 +1150,11 @@ export async function stepAnnotate(ctx: WorldGenCtx): Promise<{ groups: number, 
       return
     }
     const slice = beats.slice(ci * ANNOTATE_CHUNK_BEATS, (ci + 1) * ANNOTATE_CHUNK_BEATS)
+    // 跨块衔接:把上一块末粗段给模型作背景,使其从新剧情段干净起步(块间仍不合并)
+    const prevBeat = ci > 0 ? beats[ci * ANNOTATE_CHUNK_BEATS - 1] : undefined
+    const prevTail = prevBeat ? { title: prevBeat.label, summary: prevBeat.summary } : undefined
     try {
-      const { system, user } = buildAnnotateMessages(task.title || '小说', slice)
+      const { system, user } = buildAnnotateMessages(task.title || '小说', slice, prevTail)
       const { data, usage } = await callAiJson(relay, { messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.2 })
       // 先扣费再落结果:余额不足抛出时该块不落库,续跑重跑并重新扣费,不漏账
       await recordTaskUsage(ctx, task, usage)
@@ -1130,6 +1225,9 @@ export async function stepFinalize(ctx: WorldGenCtx, postWarnings: string[] = []
     const annotations = await getScratch<SegmentAnnotation[]>(ctx, 'annotations') ?? []
     const { units: extractUnits, text: fulltext } = await deriveUnits(ctx, task)
     const extracts = await loadUnitStatuses(ctx, extractUnits.length)
+    // 弧线坐标系统一(§11.1):arcs 按粗段细纲生成(与 annotate 并行),游玩端按剧情段消费,
+    // 落盘前用与 buildBookDoc 相同的分组把 beatIndex 换算到剧情段序(同段合并,每段至多一条)
+    const groups = groupBeats(merged.storyline, annotations)
     const doc = buildBookDoc({
       title,
       author: task.author,
@@ -1138,7 +1236,7 @@ export async function stepFinalize(ctx: WorldGenCtx, postWarnings: string[] = []
       extracts,
       overlay,
       annotations,
-      world: { entities: merged.entities, conflicts: merged.conflicts, characterArcs }
+      world: { entities: merged.entities, conflicts: merged.conflicts, characterArcs: remapArcsToSegments(characterArcs, groups) }
     })
     await ctx.bucket.put(resultKey, bookDocToZip(doc))
   } catch (e) {
@@ -1185,14 +1283,8 @@ export async function stepFinalize(ctx: WorldGenCtx, postWarnings: string[] = []
   })
   await clearTaskKey(ctx)
   await cleanupScratch(ctx)
-  // 自定义模式不参与共享缓存,直接返回 null
-  let cacheIdOut: string | null = cacheId
-  if (task.mode !== 'custom') {
-    const hit = await ctx.db.select({ id: worldCache.id }).from(worldCache)
-      .where(and(eq(worldCache.sourceHash, task.sourceHash), eq(worldCache.mode, mode))).get()
-    cacheIdOut = hit?.id ?? cacheId
-  }
-  return { resultKey, cacheId: cacheIdOut }
+  // 自定义模式不参与共享缓存,直接返回 null(返回值当前无消费方;冲突时 cacheId 非库内 id,无影响)
+  return { resultKey, cacheId: task.mode !== 'custom' ? cacheId : null }
 }
 
 // ---- inline 兜底执行(本地 dev 无 Workflow binding 时,waitUntil 内顺序跑同一套步骤) ----
@@ -1233,6 +1325,7 @@ export async function runWorldGenPipelineInline(ctx: WorldGenCtx): Promise<void>
       await extractUnitAt(ctx, plan, i)
     })
     await stepMerge(ctx, plan)
+    await stepDisambiguate(ctx)
     if (stepEnabled(task, 'check')) await stepCheck(ctx)
     // 成书/弧线/标转折只依赖 merge 产物,并行执行(与 Workflow 编排一致);告警聚合交 finalize
     const [, annRes, arcsRes] = await Promise.all([
