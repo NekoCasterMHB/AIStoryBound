@@ -1119,16 +1119,29 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
           v-if="cloudTasks.length > 0"
           class="relative me-2"
         >
-          <UButton
-            color="neutral"
-            variant="outline"
-            size="sm"
-            icon="i-lucide-cloud-cog"
-            :loading="cloudTaskBusy"
-            @click="openCloudTasks"
-          >
-            云端生成任务
-          </UButton>
+          <!-- 字段组:加载指示与主按钮拆开,任务运行中主按钮仍可点击打开任务面板 -->
+          <UFieldGroup>
+            <UButton
+              color="neutral"
+              variant="outline"
+              size="sm"
+              icon="i-lucide-cloud-cog"
+              @click="openCloudTasks"
+            >
+              云端生成任务
+            </UButton>
+            <UTooltip v-if="cloudTaskBusy" text="云端任务执行中">
+              <UButton
+                color="neutral"
+                variant="outline"
+                size="sm"
+                loading
+                disabled
+                tabindex="-1"
+                aria-label="云端任务执行中"
+              />
+            </UTooltip>
+          </UFieldGroup>
           <UBadge
             v-if="completedCloudTaskCount > 0"
             color="error"
