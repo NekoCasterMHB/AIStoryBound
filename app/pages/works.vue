@@ -346,28 +346,26 @@ function workCardTags(w: BookView): string[] {
 
 /** 每部本地作品的「更多操作」菜单:世界详情 / 分段·正文 / 编辑角色卡 / 重新生成世界 / 同步云端 / 删除
  *  v1 作品的正文走 /edit 章节编辑器;v2(book2 真源)作品的正文按段编辑(SegmentsModal,§3 段即真相)。
- *  v2 的重新生成/云端同步依赖 works 行与 v1 产物,属 P4/P5,仍禁用 */
+ *  「重新生成世界」对 v2 开放:generate?from=work 经 loadWorkView 统一读正文(book2 fulltext),生成产物以新任务落库,不覆盖原作。 */
 function workMenuItems(w: BookView): DropdownMenuItem[][] {
-  const isBook2 = w.source === 'book2'
   const firstGroup: DropdownMenuItem[] = [
     { label: '世界详情', icon: 'i-lucide-globe', onSelect: () => openWorldDetail(w.id) },
-    isBook2
+    w.source === 'book2'
       ? { label: '分段 / 正文', icon: 'i-lucide-list-tree', onSelect: () => openSegments(w.id) }
       : { label: !w.fulltext ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
     { label: '编辑角色卡', icon: 'i-lucide-users', onSelect: () => openCharEditor(w.id) },
-    { label: '重新生成世界', icon: 'i-lucide-refresh-cw', disabled: isBook2, onSelect: () => navigateTo(`/generate?from=work&id=${w.id}`) },
+    { label: '重新生成世界', icon: 'i-lucide-refresh-cw', onSelect: () => navigateTo(`/generate?from=work&id=${w.id}`) },
     { label: '同步云端', icon: 'i-lucide-cloud-upload', disabled: syncingWorkId.value === w.id, onSelect: () => syncWorkToCloudZip(w) }
   ]
-  // 仅当真正缺少配角故事线且有候选角色(登场≥2次)时才展示增量补生成入口;
-  // 缺 arcs 但无候选角色时点击只会提示"无需生成",不再浪费菜单位置
+  // v1→v2 质量提升补充生成:迁移/存量作品按新管线(事实底稿精写、坐标统一)刷新配角故事线。
+  // 已有弧线也允许重跑(写回覆盖);仅要求有故事线+实体库+候选角色(登场≥2),否则点了只会提示无需生成
   if (
-    !(w.world.characterArcs ?? []).length
-    && (w.storyline?.length ?? 0) > 0
+    (w.storyline?.length ?? 0) > 0
     && !!w.world.entities
     && characterArcCandidates(w.world.entities, w.storyline).length > 0
   ) {
     firstGroup.push({
-      label: '补充生成配角故事线',
+      label: 'v1→v2 质量提升补充生成',
       icon: 'i-lucide-route',
       disabled: supplementingArcsId.value === w.id || !!activeArcsTask(w.id),
       onSelect: () => supplementWorkArcs(w)
@@ -504,7 +502,7 @@ async function supplementWorkArcs(w: BookView) {
     await loadCloudTasks()
     toast.add({
       title: '已创建云端任务,正在生成配角故事线…',
-      description: `共 ${task.stageDetail.totalUnits} 条故事线,生成中可离开页面;完成后在任务卡片点「更新世界情报」写回作品`,
+      description: `共 ${task.stageDetail.totalUnits} 条故事线,生成中可离开页面;完成后在任务卡片点「更新世界情报」写回作品${(w.world.characterArcs ?? []).length ? '(将覆盖现有弧线)' : ''}`,
       color: 'info'
     })
   } catch (e) {
