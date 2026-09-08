@@ -41,7 +41,9 @@ export default defineEventHandler(async (event) => {
   let world: {
     title?: string
     author?: string | null
-    overlay?: { title?: string, summary?: string }
+    /** 旧版 json 的角色卡在顶层 characters,overlay 仅元数据(见下方归一) */
+    characters?: unknown
+    overlay?: { title?: string, summary?: string, characters?: unknown[] }
     entities?: unknown
     conflicts?: unknown
     storyline?: unknown
@@ -75,6 +77,11 @@ export default defineEventHandler(async (event) => {
     } catch {
       throw createError({ statusCode: 410, statusMessage: '成书缓存损坏,请重新生成' })
     }
+    // 旧版 world json 的角色卡在顶层 characters(overlay 只含元数据):归一映射进 overlay,
+    // 否则下载出的作品没有人物卡(迁移 v2 后编辑角色卡为空)
+    const legacyCards = Array.isArray(world.characters) ? world.characters : []
+    if (legacyCards.length > 0 && !world.overlay) world.overlay = { characters: legacyCards }
+    else if (legacyCards.length > 0 && !(world.overlay!.characters ?? []).length) world.overlay!.characters = legacyCards
   }
 
   // 原文(拉取的任务同样可下;源文件按 hash 全站共享存储)
