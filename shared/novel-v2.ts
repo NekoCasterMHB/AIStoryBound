@@ -86,6 +86,7 @@ export interface BookCharacter {
   玩法喜好?: { 主题: string, 态度?: string | null, 角色?: string | null, 细节?: string | null }[]
   成人属性?: Record<string, unknown>
   首次出场?: string | null
+  /** 旧卡遗留键:基础卡不再写入/读取(一律视为生);死亡在段角色文件「状态」里表达(见 format-v2 §4.2) */
   已死亡?: boolean | null
   弧线?: { summary?: string, detail?: string }
   /** 自由区:任意键任意值(渲染器通用展示 + 进 AI 补充设定) */

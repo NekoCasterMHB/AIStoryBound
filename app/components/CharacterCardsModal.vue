@@ -3,10 +3,11 @@
 // v1 作品保存回 IndexedDB works,v2(book2)作品写回 book2 zip 的 characters/ 层
 // 入口:书架「本地作品」卡片上的「角色卡」按钮;保存后由父组件刷新列表
 import { saveWork, getWork } from '../utils/worldGen'
-import { loadWorkView, saveBook2Characters } from '../utils/bookStoreV2'
+import { loadWorkView, saveBook2Characters, updateBook2, updateBook2World } from '../utils/bookStoreV2'
 import { listLocalGames, saveLocalGame } from '../utils/gameStore'
 import { desireTierName, DESIRE_TIERS, SEX_TEXT_KEYS } from '#shared/novel'
 import type { CharacterArc, CharacterCard, SexAttrs, SexTextField } from '#shared/novel'
+import type { BookDoc } from '#shared/novel-v2'
 
 const props = defineProps<{ workId: string }>()
 const emit = defineEmits<{ saved: [] }>()
@@ -17,12 +18,30 @@ const toast = useToast()
 const workTitle = ref('')
 const draft = ref<CharacterCard[]>([])
 const characterArcs = ref<CharacterArc[]>([])
+/** 当前作品真源(book2 才有可持久化的段文件;聚合分段编辑只对它开放) */
+const workSource = ref<'book2' | 'works'>('book2')
+/** book2 打开时的全量段文档深拷贝:分段编辑的中间态,保存时与最新数据 diff 后合并 */
+const segDocWork = ref<BookDoc | null>(null)
 const selIdx = ref(0)
 const saving = ref(false)
 const loaded = ref(false)
 const loadErr = ref('')
 
 const sel = computed(() => draft.value[selIdx.value])
+
+/** 左侧角色列表顺序:主角置前,其余保持原相对顺序(仅展示排序,不改 draft) */
+const orderedCardIndexes = computed<number[]>(() => {
+  const idx = draft.value.map((_, i) => i)
+  idx.sort((a, b) => {
+    const ra = draft.value[a]?.role
+    const rb = draft.value[b]?.role
+    if (ra === rb) return a - b
+    if (ra === '主角') return -1
+    if (rb === '主角') return 1
+    return a - b
+  })
+  return idx
+})
 
 /** 选项不足时把当前值并入候选(避免 AI 生成的非标准值在选择器里丢失) */
 function withCurrent(current: string | null | undefined, base: string[]): string[] {
@@ -33,11 +52,6 @@ function withCurrent(current: string | null | undefined, base: string[]): string
 const roleSel = computed({
   get: () => sel.value?.role ?? '配角',
   set: (v: string) => { if (sel.value) sel.value.role = v }
-})
-
-const genderSel = computed({
-  get: () => sel.value?.gender ?? '未知',
-  set: (v: string) => { if (sel.value) sel.value.gender = v }
 })
 
 watch(open, async (v) => {
@@ -55,20 +69,32 @@ watch(open, async (v) => {
   }
   workTitle.value = view.title
   draft.value = JSON.parse(JSON.stringify(view.characters))
-  characterArcs.value = view.world.characterArcs ?? []
-  rebuildProfileEntries()
+  characterArcs.value = JSON.parse(JSON.stringify(view.world.characterArcs ?? []))
+  // book2 真源:拷贝段文档供分段剧情/状态聚合编辑;v1(works 源)没有可持久化的段,跳过
+  workSource.value = view.source
+  segDocWork.value = view.source === 'book2'
+    ? JSON.parse(JSON.stringify(view.doc)) as BookDoc
+    : null
+  expandedSegs.value.clear()
+  rebuildAttrRows()
+  rebuildArcDraft()
+  rebuildSegDrafts()
   loaded.value = true
 })
 
-// 切换角色时重建自由区编辑副本
-watch(selIdx, () => rebuildProfileEntries())
+// 切换角色时重建属性行与分段草稿(弧线草稿先建,段草稿要挂它的 beat 引用)
+watch(selIdx, () => {
+  rebuildAttrRows()
+  rebuildArcDraft()
+  rebuildSegDrafts()
+})
 
 /** 名字归一化(去空白;弧线按角色名对齐用) */
 function arcKey(s: string | null | undefined): string {
   return (s ?? '').replace(/\s+/g, '').trim()
 }
 
-/** 角色对应的独立故事线(只读;不随人物卡保存) */
+/** 角色对应的独立故事线(工作副本,弹窗内可编辑,保存时整层写回) */
 function arcOfCard(name: string | undefined): CharacterArc | undefined {
   if (!name || !characterArcs.value.length) return undefined
   const key = arcKey(name)
@@ -167,36 +193,31 @@ function relNum(v: string | number | null | undefined): number {
   return Math.min(100, Math.max(-100, Math.round(Number(v))))
 }
 
-/** 可空字符串字段 ↔ 空串(模板 v-model 用,避免 null 与输入框类型冲突) */
-type StrKey = 'age' | 'identity' | 'appearance' | 'background' | 'first_appearance'
-function strField(key: StrKey) {
-  return computed({
-    // 旧数据 age 可能是数字,统一转字符串再绑定输入框
-    get: () => (sel.value?.[key] == null ? '' : String(sel.value[key])),
-    set: (v: string) => { if (sel.value) sel.value[key] = v }
-  })
-}
+// ---- 属性(键:值)自由编辑 ----
+// A 类描述字段注册表:命中这些保留中文键 → 写回 CharacterCard 英文语义字段(引擎结构化消费,落库仍为保留键);
+// 其余任意新键 → profile 自由区(引擎以「补充设定」注入,见 docs/format-v2.md §8)。「未知」等同空,不写、不占行。
+// 机械/结构化字段(姓名/角色/关系/耐心/心软/性欲强度/玩法喜好/成人属性)仍走下方专用编辑区,不进本表;
+// 「已死亡」不在基础卡编辑(死亡以段状态键表达,见下方「分段剧情 / 状态」)。
+const DESC_FIELDS: { cn: string, prop: string, type: 'text' | 'longtext' | 'tags' }[] = [
+  { cn: '别名', prop: 'alias', type: 'text' },
+  { cn: '性别', prop: 'gender', type: 'text' },
+  { cn: '年龄', prop: 'age', type: 'text' },
+  { cn: '身份', prop: 'identity', type: 'text' },
+  { cn: '首次出场', prop: 'first_appearance', type: 'text' },
+  { cn: '外貌', prop: 'appearance', type: 'longtext' },
+  { cn: '性格', prop: 'personality', type: 'tags' },
+  { cn: '说话风格', prop: 'speech_style', type: 'tags' },
+  { cn: '背景', prop: 'background', type: 'longtext' },
+  { cn: '能力', prop: 'abilities', type: 'tags' },
+  { cn: '目标', prop: 'goals', type: 'tags' },
+  { cn: '恐惧', prop: 'fears', type: 'tags' },
+  { cn: '秘密', prop: 'secrets', type: 'tags' }
+]
+const DESC_BY_CN = new Map(DESC_FIELDS.map(f => [f.cn, f]))
 
-// 别名标签编辑:v2「别名」是数组;引擎卡内以「;」连接串表示(解释器读侧同款分隔),存回时拆分为数组
-const aliasTags = computed<string[]>({
-  get: () => (sel.value?.alias ?? '').split(/[；;]/).map(s => s.trim()).filter(Boolean),
-  set: (tags: string[]) => {
-    if (!sel.value) return
-    // 清洗:去空白、剔除内嵌分隔符,防止与数组往返冲突
-    const clean = tags.map(t => t.replace(/[；;]/g, '').trim()).filter(Boolean)
-    sel.value.alias = clean.length ? clean.join('；') : undefined
-  }
-})
-
-const ageModel = strField('age')
-const identityModel = strField('identity')
-const appearanceModel = strField('appearance')
-const backgroundModel = strField('background')
-const firstAppearanceModel = strField('first_appearance')
-
-// ---- 自由区(profile):v2 自由键名 + 显式类型 + 增删改 ----
-type ProfileType = 'text' | 'text-multi' | 'list' | 'number' | 'boolean' | 'object'
-const PROFILE_TYPES: { value: ProfileType, label: string }[] = [
+type AttrType = 'text' | 'text-multi' | 'tags' | 'list' | 'number' | 'boolean' | 'object'
+/** 自由键值类型(任意键;键名命中注册表自动转语义行) */
+const FREE_TYPES: { value: AttrType, label: string }[] = [
   { value: 'text', label: '文本' },
   { value: 'text-multi', label: '多行' },
   { value: 'list', label: '列表' },
@@ -205,80 +226,498 @@ const PROFILE_TYPES: { value: ProfileType, label: string }[] = [
   { value: 'object', label: '对象' }
 ]
 
-/** profile 键值(编辑视图;值转可编辑文本/结构化) */
-interface ProfileEntry { key: string, type: ProfileType, text: string, object: unknown }
-
-/** 当前卡的 profile 编辑副本(响应式,保证输入光标;随 sel 切换重建) */
-const profileEntries = ref<ProfileEntry[]>([])
-
-/** 用 sel 的 profile 重建 entries(切换角色/打开时调用) */
-function rebuildProfileEntries() {
-  const p = sel.value?.profile ?? {}
-  profileEntries.value = Object.entries(p).map(([key, v]) => {
-    let type: ProfileType = 'text'
-    let text = ''
-    const object = v
-    if (Array.isArray(v)) {
-      type = 'list'
-      text = (v as unknown[]).map(x => String(x)).join('\n')
-    } else if (typeof v === 'number') {
-      type = 'number'
-      text = String(v)
-    } else if (typeof v === 'boolean') {
-      type = 'boolean'
-      text = v ? '是' : '否'
-    } else if (v && typeof v === 'object') {
-      type = 'object'
-      text = JSON.stringify(v)
-    } else {
-      type = 'text'
-      text = v == null ? '' : String(v)
-    }
-    return { key, type, text, object }
-  })
+interface AttrRow {
+  /** desc:命中保留中文键(键名只读,按注册形态编辑);free:自由键(键名/类型可改,进 profile) */
+  scope: 'desc' | 'free'
+  key: string
+  type: AttrType
+  /** text/text-multi/object 为整段缓冲,list 每行/逗号一项,object 为 JSON 文本 */
+  text: string
+  /** tags 字段(性格/能力等)标签缓冲 */
+  tags: string[]
 }
 
-/** 条目 → 值(按类型转换) */
-function profileValueOf(entry: ProfileEntry): unknown {
-  const s = entry.text.trim()
-  switch (entry.type) {
+/** 当前选中卡的属性行(随 sel 切换重建;输入即写回,保证光标不丢) */
+const attrRows = ref<AttrRow[]>([])
+
+/** 自由键条目(类型按值推断,兼容旧自由区数据) */
+function freeRowOf(key: string, v: unknown): AttrRow {
+  let type: AttrType = 'text'
+  let text = ''
+  if (Array.isArray(v)) {
+    type = 'list'
+    text = (v as unknown[]).map(x => String(x)).join('\n')
+  } else if (typeof v === 'number') {
+    type = 'number'
+    text = String(v)
+  } else if (typeof v === 'boolean') {
+    type = 'boolean'
+    text = v ? '是' : '否'
+  } else if (v && typeof v === 'object') {
+    type = 'object'
+    text = JSON.stringify(v)
+  } else {
+    type = 'text'
+    text = v == null ? '' : String(v)
+  }
+  return { scope: 'free', key, type, text, tags: [] }
+}
+
+function rebuildAttrRows() {
+  const c = sel.value
+  const rows: AttrRow[] = []
+  if (c) {
+    const card = c as unknown as Record<string, unknown>
+    for (const f of DESC_FIELDS) {
+      const raw = card[f.prop]
+      if (f.type === 'tags') {
+        const tags = Array.isArray(raw) ? raw.map(t => String(t).trim()).filter(t => t && t !== '未知') : []
+        if (tags.length) rows.push({ scope: 'desc', key: f.cn, type: f.type, text: '', tags })
+      } else {
+        const s = raw == null ? '' : String(raw).trim()
+        if (s && s !== '未知') rows.push({ scope: 'desc', key: f.cn, type: f.type, text: s, tags: [] })
+      }
+    }
+    for (const [k, v] of Object.entries(c.profile ?? {})) {
+      if (DESC_BY_CN.has(k)) continue // 防御:保留键不会出现在 profile
+      rows.push(freeRowOf(k, v))
+    }
+  }
+  attrRows.value = rows
+}
+
+/** 自由行缓冲 → 值(空/解析失败 → undefined,即该键不写入) */
+function freeValueOf(row: AttrRow): unknown {
+  const s = row.text.trim()
+  switch (row.type) {
     case 'text': return s || undefined
     case 'text-multi': return s || undefined
-    case 'list': return s ? s.split('\n').map(x => x.trim()).filter(Boolean) : undefined
+    case 'list': return s ? s.split(/[、，,;；\n]/).map(x => x.trim()).filter(Boolean) : undefined
     case 'number': return s === '' ? undefined : (Number.isNaN(Number(s)) ? s : Number(s))
     case 'boolean': return s === '是'
     case 'object': {
       try {
-        return entry.text.trim() ? JSON.parse(entry.text) : undefined
+        return row.text.trim() ? JSON.parse(row.text) : undefined
       } catch {
         return undefined
       }
     }
+    case 'tags': return row.tags.length ? row.tags.map(t => t.trim()).filter(Boolean) : undefined
   }
 }
 
-/** 提交 entries 到 sel.profile */
-function applyProfile() {
-  if (!sel.value) return
+/** 注册语义行缓冲 → 值(空/「未知」 → 空,由 commit 决定是否清除) */
+function descValueOf(row: AttrRow): string | string[] | undefined {
+  if (row.type === 'tags') {
+    const tags = row.tags.map(t => t.trim()).filter(t => t && t !== '未知')
+    return tags.length ? tags : undefined
+  }
+  const s = row.text.trim()
+  return s && s !== '未知' ? s : undefined
+}
+
+/** 把行列表写回 sel(以行为准:删除行 = 清除该属性);每次输入即调用 */
+function commitAttr() {
+  const c = sel.value
+  if (!c) return
+  const card = c as unknown as Record<string, unknown>
+  for (const f of DESC_FIELDS) {
+    const row = attrRows.value.find(r => r.scope === 'desc' && r.key === f.cn)
+    if (f.type === 'tags') {
+      // personality 等类型要求数组,空数组等同未填
+      card[f.prop] = row ? descValueOf(row) ?? [] : []
+    } else {
+      card[f.prop] = row ? descValueOf(row) : undefined
+    }
+  }
   const p: Record<string, unknown> = {}
-  for (const e of profileEntries.value) {
-    const k = e.key.trim()
-    const v = profileValueOf(e)
+  for (const row of attrRows.value) {
+    if (row.scope !== 'free') continue
+    const k = row.key.trim()
+    const v = freeValueOf(row)
     if (k && v !== undefined) p[k] = v
   }
-  if (Object.keys(p).length) sel.value.profile = p
-  else delete sel.value.profile
+  card.profile = Object.keys(p).length ? p : undefined
 }
 
-/** 新增一条空自由区字段(默认文本类型) */
-function addProfileField() {
-  profileEntries.value.push({ key: `自由字段${profileEntries.value.length + 1}`, type: 'text', text: '', object: undefined })
+// ---- 属性编辑模态框(统一"添加已知字段/自定义键/修改已有属性",不再行内直改) ----
+const editAttrOpen = ref(false)
+
+interface AttrEditState {
+  mode: 'add' | 'edit'
+  /** 被编辑行在 attrRows 中的下标;add 时为 null */
+  rowIndex: number | null
+  scope: 'desc' | 'free'
+  /** 值的编辑形态:desc 按注册类型,fre 由类型选择决定 */
+  type: AttrType
+  key: string
+  /** 内容缓冲(多行;desc tags 以"每行一项"文本表示) */
+  text: string
+}
+const editAttr = ref<AttrEditState | null>(null)
+
+function openAttrEditor(state: AttrEditState) {
+  editAttr.value = { ...state }
+  editAttrOpen.value = true
 }
 
-/** 删除一条自由区字段 */
-function removeProfileField(i: number) {
-  profileEntries.value.splice(i, 1)
-  applyProfile()
+/** 添加已知字段:已有同键 → 直接编辑该行;否则按该键开一个待填内容的弹窗 */
+function addDescField(i: number) {
+  if (!sel.value) return
+  const f = DESC_FIELDS[i]
+  if (!f) return
+  const existing = attrRows.value.findIndex(r => r.scope === 'desc' && r.key === f.cn)
+  if (existing >= 0) {
+    openEditAttrRow(existing)
+    return
+  }
+  openAttrEditor({ mode: 'add', rowIndex: null, scope: 'desc', type: f.type, key: f.cn, text: '' })
+}
+
+/** 已知字段下拉项 */
+const knownFieldItems = DESC_FIELDS.map((f, i) => ({ label: f.cn, onSelect: () => addDescField(i) }))
+
+/** 添加自定义键(自由区):空键、文本类型,弹窗内填 属性名 + 内容 */
+function addFreeField() {
+  if (!sel.value) return
+  openAttrEditor({ mode: 'add', rowIndex: null, scope: 'free', type: 'text', key: '', text: '' })
+}
+
+/** 编辑已有属性:载入内容缓冲(desc tags 以每行一项文本表示) */
+function openEditAttrRow(i: number) {
+  const row = attrRows.value[i]
+  if (!row) return
+  const text = row.type === 'tags' ? (row.tags ?? []).join('\n') : row.text
+  openAttrEditor({ mode: 'edit', rowIndex: i, scope: row.scope, type: row.type, key: row.key, text })
+}
+
+/** 行内容是否为空(空 → 弹窗保存视为删除该属性) */
+function editHasValue(state: AttrEditState, type: AttrType): boolean {
+  const s = state.text.trim()
+  if (type === 'tags') return s.split(/[\n、，,;；]/).map(t => t.trim()).filter(t => t && t !== '未知').length > 0
+  if (type === 'boolean') return s === '是' || s === '否'
+  if (type === 'object') {
+    if (!s) return false
+    try {
+      JSON.parse(s)
+      return true
+    } catch {
+      return false
+    }
+  }
+  return !!s
+}
+
+/** 弹窗保存:键名必填;与其它行重名拦截;内容为空 → 删除该属性;命中约定键自动归语义行 */
+function saveAttrEdit() {
+  const e = editAttr.value
+  if (!e || !sel.value) return
+  const rows = attrRows.value
+  const key = e.key.trim()
+  if (!key) {
+    toast.add({ title: '请填写属性名', color: 'warning' })
+    return
+  }
+  const f = DESC_BY_CN.get(key)
+  const scope: 'desc' | 'free' = f ? 'desc' : 'free'
+  const type: AttrType = scope === 'desc' ? f!.type : e.type
+  const dupIdx = rows.findIndex((r, idx) => idx !== e.rowIndex && r.key === key)
+  if (dupIdx >= 0) {
+    toast.add({ title: `已存在属性「${key}」`, description: '请换一个键名或直接编辑原属性', color: 'warning' })
+    return
+  }
+  // 约定键的文本内容填「未知」等同空(与落库清洗口径一致,不写入不占行)
+  const unknownDrop = scope === 'desc' && type !== 'tags' && (e.text ?? '').trim() === '未知'
+  if (!editHasValue(e, type) || unknownDrop) {
+    // 清空即删除
+    if (e.rowIndex != null) rows.splice(e.rowIndex, 1)
+    editAttrOpen.value = false
+    editAttr.value = null
+    commitAttr()
+    toast.add({ title: `已移除属性「${key}」`, color: 'neutral' })
+    return
+  }
+  const content = e.text ?? ''
+  const row: AttrRow = type === 'tags'
+    ? { scope, key, type: 'tags', text: '', tags: content.split(/[\n、，,;；]/).map(t => t.trim()).filter(t => t && t !== '未知') }
+    : { scope, key, type, text: content, tags: [] }
+  if (e.rowIndex != null) rows[e.rowIndex] = row
+  else rows.push(row)
+  editAttrOpen.value = false
+  editAttr.value = null
+  commitAttr()
+}
+
+/** 属性卡片预览文本(tags 以顿号连接;其余原样,空返回空串) */
+function attrPreview(row: AttrRow): string {
+  if (row.type === 'tags') return (row.tags ?? []).join('、')
+  return row.text ?? ''
+}
+
+/** 弹窗内容占位提示(desc 走注册表,free 按类型兜底) */
+function modalPlaceholder(scope: 'desc' | 'free', key: string, type: AttrType): string {
+  if (scope === 'desc') return DESC_PLACEHOLDER[key] ?? '内容'
+  switch (type) {
+    case 'list': return '多项用 顿号/逗号/换行 分隔'
+    case 'number': return '数字'
+    case 'boolean': return '是 / 否'
+    case 'object': return 'JSON 对象'
+    default: return '内容…'
+  }
+}
+
+/** 编辑弹窗内的「删除」:仅编辑已有行时可用(desc → 清除属性;free → 从 profile 摘除) */
+function deleteAttrFromModal() {
+  const e = editAttr.value
+  if (!e || e.rowIndex == null) return
+  attrRows.value.splice(e.rowIndex, 1)
+  editAttrOpen.value = false
+  editAttr.value = null
+  commitAttr()
+  toast.add({ title: `已移除属性「${e.key.trim()}」`, color: 'neutral' })
+}
+
+/** 注册字段的输入占位提示 */
+const DESC_PLACEHOLDER: Record<string, string> = {
+  别名: '如 学习委员(多个用；分隔)',
+  性别: '如 男 / 女',
+  年龄: '如 约40岁',
+  身份: '如 警察、天文学家',
+  首次出场: '如 第3章',
+  外貌: '外貌特征…',
+  性格: '如 冷静、毒舌(每行一项或顿号分隔)',
+  说话风格: '如 低沉、爱用比喻(每行一项或顿号分隔)',
+  背景: '人物过往经历…',
+  能力: '每行一项,如 剑术',
+  目标: '每行一项,如 复仇',
+  恐惧: '每行一项,如 黑暗',
+  秘密: '每行一项,如 身世之谜'
+}
+
+// ---- 分段剧情 / 状态(仅 book2 段角色文件:segments/NNN/角色.json 的 剧情/状态 聚合编辑) ----
+interface SegStateRow { key: string, value: string, kind: 'text' | 'number' | 'boolean' | 'object' }
+/** 弧线单拍编辑缓冲(segIndex=段下标;与 CharacterArcBeat 对应,存回时转换) */
+interface ArcBeatDraft { segIndex: number, summary: string, status: string }
+/** 当前角色弧线编辑缓冲 */
+interface ArcDraft { summary: string, ending: string, beats: ArcBeatDraft[] }
+interface SegDraft {
+  /** segments 目录键,如 '000' */
+  segKey: string
+  index: number
+  title: string
+  /** 该角色是否在本段出场名单(即使无文件也可填内容创建) */
+  inCast: boolean
+  plot: string
+  stateRows: SegStateRow[]
+  /** 本段弧线单拍编辑缓冲(引用 arcDraft.beats 内的同一对象;无则显示「添加本段故事线」) */
+  arcBeat?: ArcBeatDraft
+}
+const segDrafts = ref<SegDraft[]>([])
+/** 展开中的折叠栏(按 角色名::段key 记,切换角色不串台) */
+const expandedSegs = ref(new Set<string>())
+
+/** 当前角色的弧线编辑草稿(从工作副本拷贝;null=该角色无弧线,可经分段面板添加创建) */
+const arcDraft = ref<ArcDraft | null>(null)
+
+/** 从工作副本当前角色的弧线重建编辑草稿(须先于 rebuildSegDrafts 调用) */
+function rebuildArcDraft() {
+  const a = selArc.value
+  arcDraft.value = a
+    ? { summary: a.summary ?? '', ending: a.ending ?? '', beats: a.beats.map(b => ({ segIndex: b.beatIndex, summary: b.summary, status: b.status ?? '' })) }
+    : null
+}
+
+/** 草稿写回工作副本(每次输入即提交,切角色/保存不丢;概述/结局/所有单拍全空 = 移除该角色弧线) */
+function commitArcDraft() {
+  if (!arcDraft.value || !sel.value) return
+  const key = arcKey(sel.value.name)
+  const beats = arcDraft.value.beats
+    .filter(b => b.summary.trim() || b.status.trim())
+    .map(b => ({ beatIndex: b.segIndex, summary: b.summary.trim(), status: b.status.trim() || null }))
+  const summary = arcDraft.value.summary.trim()
+  const ending = arcDraft.value.ending.trim()
+  const rest = characterArcs.value.filter(a => arcKey(a.character) !== key)
+  characterArcs.value = !summary && !ending && !beats.length
+    ? rest
+    : [...rest, { character: sel.value.name, summary, beats, ending }]
+}
+
+/** 无弧线角色在分段面板添加本段故事线(创建草稿单拍并挂到段上) */
+function addSegArcBeat(d: SegDraft) {
+  if (!arcDraft.value) arcDraft.value = { summary: '', ending: '', beats: [] }
+  if (!arcDraft.value.beats.some(b => b.segIndex === d.index)) {
+    arcDraft.value.beats.push({ segIndex: d.index, summary: '', status: '' })
+  }
+  d.arcBeat = arcDraft.value.beats.find(b => b.segIndex === d.index)
+  commitArcDraft()
+}
+
+/** 状态原值 → 编辑缓冲(保类型,存回时按 kind 还原) */
+function segValText(v: unknown): { kind: SegStateRow['kind'], text: string } {
+  if (typeof v === 'number') return { kind: 'number', text: String(v) }
+  if (typeof v === 'boolean') return { kind: 'boolean', text: v ? '是' : '否' }
+  if (v && typeof v === 'object') {
+    try {
+      return { kind: 'object', text: JSON.stringify(v) }
+    } catch {
+      return { kind: 'text', text: String(v) }
+    }
+  }
+  return { kind: 'text', text: v == null ? '' : String(v) }
+}
+
+/** 编辑缓冲 → 状态值(空 → null 剔除;解析失败回退文本,引擎对段状态值本身类型容忍) */
+function segValFrom(row: SegStateRow): string | number | boolean | Record<string, unknown> | null {
+  const s = row.value.trim()
+  if (!s) return null
+  switch (row.kind) {
+    case 'number': {
+      const n = Number(s)
+      return Number.isFinite(n) ? n : s
+    }
+    case 'boolean': {
+      if (s === '是') return true
+      if (s === '否') return false
+      return s
+    }
+    case 'object': {
+      try {
+        return JSON.parse(s) as Record<string, unknown>
+      } catch {
+        return s
+      }
+    }
+    default: return s
+  }
+}
+
+function rebuildSegDrafts() {
+  segDrafts.value = []
+  const c = sel.value
+  const doc = segDocWork.value
+  if (!c || !doc) return
+  const name = c.name
+  const drafts: SegDraft[] = []
+  const segEntries = Object.entries(doc.segments).sort((a, b) => a[1].canon.index - b[1].canon.index)
+  for (const [segKey, seg] of segEntries) {
+    const cast = seg.canon.cast ?? []
+    const file = seg.characters[name]
+    if (!file && !cast.includes(name)) continue
+    const plot = typeof file?.['剧情'] === 'string' ? file['剧情'] : ''
+    const status = file?.['状态'] && typeof file['状态'] === 'object' && !Array.isArray(file['状态'])
+      ? file['状态'] as Record<string, unknown>
+      : undefined
+    const stateRows: SegStateRow[] = []
+    if (status) {
+      for (const [k, v] of Object.entries(status)) {
+        const t = segValText(v)
+        stateRows.push({ key: k, value: t.text, kind: t.kind })
+      }
+    }
+    drafts.push({
+      segKey,
+      index: seg.canon.index,
+      title: seg.canon.title?.trim() || `第${seg.canon.index + 1}段`,
+      inCast: cast.includes(name),
+      plot,
+      stateRows,
+      arcBeat: arcDraft.value?.beats.find(b => b.segIndex === seg.canon.index)
+    })
+  }
+  segDrafts.value = drafts
+}
+
+function segExpKey(d: SegDraft): string {
+  return `${sel.value?.name ?? ''}::${d.segKey}`
+}
+
+function toggleSeg(d: SegDraft) {
+  const k = segExpKey(d)
+  const next = new Set(expandedSegs.value)
+  if (next.has(k)) next.delete(k)
+  else next.add(k)
+  expandedSegs.value = next
+}
+
+function segExpanded(d: SegDraft): boolean {
+  return expandedSegs.value.has(segExpKey(d))
+}
+
+/** 该折叠栏是否有实际内容(剧情或状态行) */
+function segHasContent(d: SegDraft): boolean {
+  return !!d.plot.trim() || d.stateRows.some(r => r.key.trim() && r.value.trim())
+}
+
+/** 以草稿重建该段角色文件并写回 segDocWork(剧情与状态皆空 → 删除文件,与生成管线口径一致) */
+function commitSegDraft(d: SegDraft) {
+  const doc = segDocWork.value
+  const c = sel.value
+  if (!doc || !c) return
+  const seg = doc.segments[d.segKey]
+  if (!seg) return
+  const name = c.name
+  const status: Record<string, unknown> = {}
+  for (const row of d.stateRows) {
+    const k = row.key.trim()
+    const v = segValFrom(row)
+    if (k && v != null) status[k] = v
+  }
+  const plot = d.plot.trim()
+  if (plot || Object.keys(status).length) {
+    const file: Record<string, unknown> = { 姓名: name }
+    if (plot) file['剧情'] = plot
+    if (Object.keys(status).length) file['状态'] = status
+    seg.characters[name] = file as never
+  } else {
+    Reflect.deleteProperty(seg.characters, name)
+  }
+}
+
+/** 折叠栏内新增/删除一条状态行(键/值输入由 v-model 触发 commit) */
+function addSegStateRow(d: SegDraft) {
+  d.stateRows.push({ key: '', value: '', kind: 'text' })
+}
+
+function removeSegStateRow(d: SegDraft, i: number) {
+  d.stateRows.splice(i, 1)
+  commitSegDraft(d)
+}
+
+/** 两段角色文件是否等价(null 视为同一) */
+function sameSegFile(a: unknown, b: unknown): boolean {
+  const na = a == null ? undefined : a
+  const nb = b == null ? undefined : b
+  if (!na && !nb) return true
+  return JSON.stringify(na ?? null) === JSON.stringify(nb ?? null)
+}
+
+/** 保存时把 segDocWork 中相对最新 book2 数据有差异的 (段,角色) 文件写回/删除,避免覆盖打开期间的并发改动 */
+async function flushSegEdits(): Promise<void> {
+  const doc = segDocWork.value
+  if (!doc) return
+  await updateBook2(props.workId, (live) => {
+    let changed = false
+    const segKeys = new Set([...Object.keys(live.segments), ...Object.keys(doc.segments)])
+    for (const key of segKeys) {
+      const liveSeg = live.segments[key]
+      const workSeg = doc.segments[key]
+      if (!liveSeg || !workSeg) continue
+      const names = new Set([...Object.keys(liveSeg.characters), ...Object.keys(workSeg.characters)])
+      for (const name of names) {
+        const lf = liveSeg.characters[name]
+        const wf = workSeg.characters[name]
+        if (sameSegFile(lf, wf)) continue
+        if (!wf || Object.keys(wf).length <= 1) {
+          // 只有姓名键(空档):移除该段文件
+          Reflect.deleteProperty(liveSeg.characters, name)
+        } else {
+          liveSeg.characters[name] = JSON.parse(JSON.stringify(wf)) as never
+        }
+        changed = true
+      }
+    }
+    return changed
+  })
 }
 
 const patienceModel = computed({
@@ -326,7 +765,6 @@ function normalizeCards(): CharacterCard[] {
       .filter(r => (r.name ?? '').trim())
       .map(r => ({ name: r.name.trim(), type: (r.type ?? '').trim() || '未知', value: relNum(r.value) }))
     if (rels.length) patch.relationships = rels
-    if (c.dead) patch.dead = true
     if (c.patience != null) patch.patience = numOrNull(c.patience)
     if (c.softness != null) patch.softness = numOrNull(c.softness)
     if (c.desire != null) patch.desire = numOrNull(c.desire)
@@ -362,18 +800,30 @@ async function onSave() {
   }
   saving.value = true
   try {
+    // 弧线草稿可能有最后一次输入未落副本,先统一提交
+    commitArcDraft()
     // 重新读取最新数据,避免覆盖弹窗打开期间的其它改动(如游玩累计 tokens)
     const view = await loadWorkView(props.workId)
     if (!view) throw new Error('本地未找到该作品')
     if (view.source === 'book2') {
       // v2 真源在 book2 zip:人物卡写回 characters/ 基础层
       await saveBook2Characters(props.workId, cards)
+      // 分段剧情 / 状态:把弹窗内改动的段角色文件按差异合并回段数据
+      await flushSegEdits()
+      // 独立故事线:整层写回 world(保留实体库/冲突,只替换 characterArcs)。
+      // reactive 代理进不了 IndexedDB(structured clone 抛 DataCloneError),先深拷为普通对象
+      await updateBook2World(props.workId, {
+        ...view.world,
+        characterArcs: JSON.parse(JSON.stringify(characterArcs.value)) as CharacterArc[]
+      })
     } else {
       const work = await getWork(props.workId)
       if (!work) throw new Error('本地未找到该作品')
       await saveWork({
         ...work,
         overlay: { ...work.overlay, characters: cards },
+        // 同弧线写回:reactive 代理深拷为普通对象再落库
+        characterArcs: JSON.parse(JSON.stringify(characterArcs.value)) as CharacterArc[],
         // 云端已有对应作品时标记待同步,书架卡片会显示「待同步」徽章
         syncStatus: work.syncStatus === 'synced' ? 'dirty' : work.syncStatus,
         updatedAt: new Date().toISOString()
@@ -489,7 +939,7 @@ function confirmRemoveCard() {
           <!-- 角色列表:移动端横向滚动,桌面端左侧列表 -->
           <div class="flex shrink-0 gap-1.5 overflow-x-auto pb-1 sm:w-48 sm:flex-col sm:overflow-y-auto sm:pb-0 sm:pr-1 sm:max-h-[60vh]">
             <button
-              v-for="(c, i) in draft"
+              v-for="i in orderedCardIndexes"
               :key="i"
               type="button"
               class="flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-sm transition"
@@ -498,15 +948,15 @@ function confirmRemoveCard() {
                 : 'border-(--ui-border) text-(--ui-text) hover:border-primary-400/50'"
               @click="selIdx = i"
             >
-              <span class="max-w-24 truncate">{{ c.name || '未命名' }}</span>
+              <span class="max-w-24 truncate">{{ draft[i]?.name || '未命名' }}</span>
               <span
                 class="shrink-0 rounded-full px-1.5 text-[10px]"
-                :class="c.role === '主角' ? 'bg-primary-500/15 text-primary-600 dark:text-primary-400' : c.role === '反派' ? 'bg-red-500/15 text-red-600 dark:text-red-400' : 'bg-neutral-500/10 text-neutral-500'"
+                :class="draft[i]?.role === '主角' ? 'bg-primary-500/15 text-primary-600 dark:text-primary-400' : draft[i]?.role === '反派' ? 'bg-red-500/15 text-red-600 dark:text-red-400' : 'bg-neutral-500/10 text-neutral-500'"
               >
-                {{ c.role || '配角' }}
+                {{ draft[i]?.role || '配角' }}
               </span>
               <span
-                v-if="arcOfCard(c.name)"
+                v-if="arcOfCard(draft[i]?.name)"
                 class="shrink-0 text-[10px] text-primary-600 dark:text-primary-400"
                 title="有独立故事线"
               >线</span>
@@ -528,7 +978,7 @@ function confirmRemoveCard() {
             v-if="sel"
             class="min-w-0 flex-1 space-y-5 sm:max-h-[60vh] sm:overflow-y-auto sm:pr-1"
           >
-            <!-- 基本信息 -->
+            <!-- 基本信息:姓名/角色 为结构化锚点,固定显示;其余描述属性走下方「属性(键:值)」 -->
             <section class="space-y-3">
               <h4 class="flex items-center justify-between text-xs font-semibold text-neutral-500">
                 基本信息
@@ -560,251 +1010,279 @@ function confirmRemoveCard() {
                     class="w-full"
                   />
                 </UFormField>
-                <UFormField label="性别">
-                  <USelectMenu
-                    v-model="genderSel"
-                    :items="withCurrent(sel.gender, ['男', '女', '未知'])"
-                    :search-input="false"
-                    class="w-full"
-                  />
-                </UFormField>
-                <UFormField label="别名">
-                  <UInputTags
-                    v-model="aliasTags"
-                    placeholder="输入别名后回车添加,如 学习委员"
-                    class="w-full"
-                    add-on-blur
-                    :delimiter="/[；;]/"
-                    add-on-paste
-                  />
-                </UFormField>
-                <UFormField label="年龄">
-                  <UInput
-                    v-model="ageModel"
-                    placeholder="如 约40岁 / 未知"
-                    class="w-full"
-                  />
-                </UFormField>
-                <UFormField label="身份 / 职业">
-                  <UInput
-                    v-model="identityModel"
-                    placeholder="如 警察、天文学家"
-                    class="w-full"
-                  />
-                </UFormField>
-                <UFormField label="首次出场">
-                  <UInput
-                    v-model="firstAppearanceModel"
-                    placeholder="如 第3章"
-                    class="w-full"
-                  />
-                </UFormField>
-                <UFormField
-                  label="状态"
-                  class="col-span-2 sm:col-span-1"
-                >
-                  <div class="flex h-9 items-center">
-                    <UCheckbox
-                      v-model="sel.dead"
-                      label="该角色已死亡"
-                    />
-                  </div>
-                </UFormField>
               </div>
+              <p
+                v-if="workSource === 'book2'"
+                class="text-xs text-neutral-400"
+              >
+                生死、身份转变等随剧情发展的状态不在基础卡固定填写:请在下方「分段剧情 / 状态」定位到发生变化的段落,用状态键表达(如 已死亡 = 是)。
+              </p>
             </section>
 
-            <!-- 形象与性格 -->
-            <section class="space-y-3">
-              <h4 class="text-xs font-semibold text-neutral-500">
-                形象与性格
-              </h4>
-              <UFormField label="外貌描写">
-                <UTextarea
-                  v-model="appearanceModel"
-                  :rows="2"
-                  placeholder="外貌特征…"
-                  class="w-full"
-                />
-              </UFormField>
-              <UFormField label="性格特征">
-                <TagListInput
-                  v-model="sel.personality"
-                  placeholder="回车添加,如 冷静、毒舌"
-                />
-              </UFormField>
-              <UFormField label="说话风格">
-                <TagListInput
-                  v-model="sel.speech_style"
-                  placeholder="回车添加,如 低沉、爱用比喻"
-                />
-              </UFormField>
-            </section>
-
-            <!-- 背景与动机 -->
-            <section class="space-y-3">
-              <h4 class="text-xs font-semibold text-neutral-500">
-                背景与动机
-              </h4>
-              <UFormField label="背景故事">
-                <UTextarea
-                  v-model="backgroundModel"
-                  :rows="3"
-                  placeholder="人物过往经历…"
-                  class="w-full"
-                />
-              </UFormField>
-              <UFormField label="能力 / 特殊技能">
-                <TagListInput
-                  v-model="sel.abilities"
-                  placeholder="回车添加"
-                />
-              </UFormField>
-              <UFormField label="目标 / 动机">
-                <TagListInput
-                  v-model="sel.goals"
-                  placeholder="回车添加"
-                />
-              </UFormField>
-              <UFormField label="恐惧 / 弱点">
-                <TagListInput
-                  v-model="sel.fears"
-                  placeholder="回车添加"
-                />
-              </UFormField>
-              <UFormField label="秘密">
-                <TagListInput
-                  v-model="sel.secrets"
-                  placeholder="回车添加"
-                />
-              </UFormField>
-            </section>
-
-            <!-- 自由区:任意键值(动态渲染,见 docs/format-v2.md §6) -->
+            <!-- 属性(键:值):描述属性自由化——保留中文键语义,任意新键进自由区 -->
             <section class="space-y-2">
               <div class="flex items-center justify-between">
                 <h4 class="text-xs font-semibold text-neutral-500">
-                  自由区(任意属性)
+                  属性(键:值)
                 </h4>
-                <UButton
-                  size="xs"
-                  color="primary"
-                  variant="soft"
-                  icon="i-lucide-plus"
-                  @click="addProfileField"
-                >
-                  添加字段
-                </UButton>
+                <div class="flex items-center gap-1">
+                  <UDropdownMenu
+                    :items="knownFieldItems"
+                    :content="{ align: 'end' }"
+                  >
+                    <UButton
+                      size="xs"
+                      color="neutral"
+                      variant="soft"
+                      icon="i-lucide-list-plus"
+                    >
+                      添加已知字段
+                    </UButton>
+                  </UDropdownMenu>
+                  <UButton
+                    size="xs"
+                    color="primary"
+                    variant="soft"
+                    icon="i-lucide-plus"
+                    @click="addFreeField"
+                  >
+                    自定义键
+                  </UButton>
+                </div>
               </div>
               <p class="text-xs text-neutral-400">
-                自由键名与值,AI 会作为「补充设定」参与演绎;类型自动识别
+                属性以「中文键 + 内容」保存;键名命中 性别/外貌/性格… 等约定键时按引擎语义参与演绎,其余自定义键作为「补充设定」交给 AI。修改与删除都点标题行右侧「编辑」,在弹窗中操作。
               </p>
               <div
-                v-for="(entry, i) in profileEntries"
-                :key="i"
-                class="flex items-start gap-2 rounded-lg border border-neutral-200 p-2 dark:border-neutral-700"
+                v-if="!attrRows.length"
+                class="rounded-lg border border-dashed border-neutral-300 p-4 text-center text-xs text-neutral-400 dark:border-neutral-700"
               >
-                <div class="min-w-0 flex-1 space-y-1">
-                  <div class="flex items-center gap-2">
-                    <UInput
-                      v-model="entry.key"
-                      size="xs"
-                      placeholder="键名(如 家庭背景)"
-                      class="w-32"
-                      @update:model-value="applyProfile"
-                    />
-                    <USelect
-                      v-model="entry.type"
-                      :items="PROFILE_TYPES"
-                      value-key="value"
-                      label-key="label"
-                      size="xs"
-                      class="w-24"
-                      @update:model-value="applyProfile"
-                    />
-                  </div>
-                  <UTextarea
-                    v-if="entry.type === 'text' || entry.type === 'text-multi' || entry.type === 'object'"
-                    v-model="entry.text"
-                    :rows="entry.type === 'object' ? 3 : 1"
-                    size="xs"
-                    :placeholder="entry.type === 'object' ? 'JSON 对象' : '值'"
-                    class="w-full"
-                    @update:model-value="applyProfile"
-                  />
-                  <UInput
-                    v-else-if="entry.type === 'list'"
-                    v-model="entry.text"
-                    size="xs"
-                    placeholder="每行一项"
-                    class="w-full"
-                    @update:model-value="applyProfile"
-                  />
-                  <UInput
-                    v-else-if="entry.type === 'number'"
-                    v-model="entry.text"
-                    size="xs"
-                    type="number"
-                    class="w-full"
-                    @update:model-value="applyProfile"
-                  />
-                  <USelect
-                    v-else-if="entry.type === 'boolean'"
-                    v-model="entry.text"
-                    :items="[{ value: '是', label: '是' }, { value: '否', label: '否' }]"
-                    value-key="value"
-                    label-key="label"
-                    size="xs"
-                    class="w-24"
-                    @update:model-value="applyProfile"
-                  />
+                还没有属性,点右上角「添加已知字段」或「自定义键」添加
+              </div>
+              <div
+                v-for="(row, i) in attrRows"
+                :key="i"
+                class="flex items-start justify-between gap-3"
+              >
+                <div class="min-w-0 flex-1">
+                  <p
+                    v-if="row.scope === 'desc'"
+                    class="text-xs font-semibold text-primary-600 dark:text-primary-400"
+                    title="约定键:按引擎语义参与演绎"
+                  >
+                    {{ row.key }}
+                  </p>
+                  <p
+                    v-else
+                    class="text-xs font-semibold text-neutral-500 dark:text-neutral-400"
+                    title="自定义键:作为「补充设定」交给 AI"
+                  >
+                    {{ row.key }}
+                  </p>
+                  <p
+                    v-if="attrPreview(row)"
+                    class="mt-0.5 break-words whitespace-pre-wrap text-sm text-neutral-700 dark:text-neutral-300"
+                  >
+                    {{ attrPreview(row) }}
+                  </p>
+                  <p
+                    v-else
+                    class="mt-0.5 text-xs text-neutral-400"
+                  >
+                    未填写内容,点标题行右侧「编辑」填写
+                  </p>
                 </div>
                 <UButton
                   size="xs"
-                  color="error"
-                  variant="soft"
-                  icon="i-lucide-trash-2"
-                  aria-label="删除字段"
-                  @click="removeProfileField(i)"
+                  color="neutral"
+                  variant="ghost"
+                  icon="i-lucide-pencil"
+                  aria-label="编辑属性"
+                  class="-mt-0.5 shrink-0"
+                  @click="openEditAttrRow(i)"
                 />
               </div>
             </section>
 
-            <!-- 独立故事线(生成产物只读;扮演该角色时作为主叙事线) -->
+            <!-- 独立故事线(world 层弧线,弹窗内可编辑;扮演该角色时作为主叙事线) -->
             <section
-              v-if="selArc"
+              v-if="arcDraft && selArc"
               class="space-y-3"
             >
               <h4 class="text-xs font-semibold text-neutral-500">
                 独立故事线
-                <span class="ml-1 font-normal">{{ selArc.beats.length }} 段戏份</span>
+                <span class="ml-1 font-normal">{{ arcDraft.beats.length }} 段戏份</span>
               </h4>
-              <p
-                v-if="selArc.summary"
-                class="text-sm text-neutral-600 dark:text-neutral-300"
-              >
-                {{ selArc.summary }}
-              </p>
+              <UFormField label="弧线概述">
+                <UTextarea
+                  v-model="arcDraft.summary"
+                  :rows="2"
+                  placeholder="该角色全书的弧线概述(目标 / 宿命 / 处境演变)…"
+                  class="w-full"
+                  @update:model-value="commitArcDraft()"
+                />
+              </UFormField>
               <ul
-                v-if="selArc.beats.length"
+                v-if="arcDraft.beats.length"
                 class="max-h-56 space-y-1.5 overflow-y-auto text-xs text-neutral-600 dark:text-neutral-400"
               >
                 <li
-                  v-for="b in selArc.beats"
-                  :key="b.beatIndex"
+                  v-for="b in arcDraft.beats"
+                  :key="b.segIndex"
                 >
-                  <span class="font-medium text-highlighted">段{{ b.beatIndex + 1 }}</span>
+                  <span class="font-medium text-highlighted">段{{ b.segIndex + 1 }}</span>
                   {{ b.summary }}<template v-if="b.status">
-                    （{{ b.status }}）
+                    ({{ b.status }})
                   </template>
                 </li>
               </ul>
-              <p
-                v-if="selArc.ending"
-                class="text-xs text-neutral-500"
-              >
-                <span class="font-medium">结局:</span>
-                {{ selArc.ending }}
+              <UFormField label="结局走向">
+                <UInput
+                  v-model="arcDraft.ending"
+                  placeholder="该角色在全书终局的状态,可空"
+                  class="w-full"
+                  @update:model-value="commitArcDraft()"
+                />
+              </UFormField>
+              <p class="text-xs text-neutral-400">
+                扮演该角色时以此为主叙事线;各段戏份在下方「分段剧情 / 状态」里按段编辑。重跑「质量提升补充生成」并「更新世界情报」会覆盖手改内容。
               </p>
+            </section>
+
+            <!-- 分段剧情 / 状态(book2 段角色文件聚合编辑;每段一个折叠栏,存回段文件) -->
+            <section
+              v-if="workSource === 'book2' && segDrafts.length"
+              class="space-y-2"
+            >
+              <h4 class="text-xs font-semibold text-neutral-500">
+                分段剧情 / 状态
+                <span class="ml-1 font-normal">{{ segDrafts.length }} 段</span>
+              </h4>
+              <p class="text-xs text-neutral-400">
+                每段三块:「独立故事线」存 world 层弧线(仅扮演该角色时生效,重跑质量提升生成会覆盖;留空保存即删除该单拍);「本段剧情」与「属性状态」存于段文件,进入该段时生效,属性状态命中 身份/外貌/性格/背景/目标/别名/性欲强度/耐心/心软/已死亡 键会临时覆盖基础卡,其它键作本段补充设定。剧情/状态留空即清除。
+              </p>
+              <div
+                v-for="d in segDrafts"
+                :key="d.segKey"
+                class="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700"
+              >
+                <button
+                  type="button"
+                  class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
+                  @click="toggleSeg(d)"
+                >
+                  <UIcon
+                    name="i-lucide-chevron-right"
+                    class="size-4 shrink-0 transition-transform"
+                    :class="segExpanded(d) ? 'rotate-90' : ''"
+                  />
+                  <span class="min-w-0 flex-1 truncate">
+                    <span class="font-medium text-highlighted">段{{ d.index + 1 }}</span>
+                    <span class="text-neutral-600 dark:text-neutral-300"> · {{ d.title }}</span>
+                  </span>
+                  <span
+                    v-if="segHasContent(d)"
+                    class="shrink-0 rounded-full bg-primary-500/10 px-1.5 py-0.5 text-[10px] text-primary-600 dark:bg-primary-400/10 dark:text-primary-400"
+                  >有内容</span>
+                  <span
+                    v-else
+                    class="shrink-0 text-[10px] text-neutral-400"
+                  >空</span>
+                </button>
+                <div
+                  v-if="segExpanded(d)"
+                  class="space-y-2.5 border-t border-neutral-200 px-3 py-2.5 dark:border-neutral-700"
+                >
+                  <!-- 本段独立故事线:world 层弧线的本段单拍,可编辑保存;扮演该角色时生效;不落段文件 -->
+                  <div
+                    v-if="d.arcBeat"
+                    class="space-y-1.5 rounded-md bg-primary-500/5 px-2.5 py-2 dark:bg-primary-400/5"
+                  >
+                    <p class="flex items-center gap-1 text-xs font-medium text-primary-600 dark:text-primary-400">
+                      <UIcon
+                        name="i-lucide-route"
+                        class="size-3.5 shrink-0"
+                      />
+                      本段独立故事线(扮演生效)
+                    </p>
+                    <UTextarea
+                      v-model="d.arcBeat.summary"
+                      :rows="2"
+                      placeholder="该角色在本段的行动 / 处境 / 目标推进…"
+                      class="w-full"
+                      @update:model-value="commitArcDraft()"
+                    />
+                    <UInput
+                      v-model="d.arcBeat.status"
+                      size="xs"
+                      placeholder="本段处境变化(如 受伤/身份转变),可空"
+                      class="w-full"
+                      @update:model-value="commitArcDraft()"
+                    />
+                  </div>
+                  <UButton
+                    v-else
+                    label="添加本段故事线"
+                    icon="i-lucide-route"
+                    color="neutral"
+                    variant="soft"
+                    size="xs"
+                    class="self-start"
+                    @click="addSegArcBeat(d)"
+                  />
+                  <UFormField label="本段剧情">
+                    <UTextarea
+                      v-model="d.plot"
+                      :rows="2"
+                      placeholder="该角色在本段的行动 / 处境 / 目标推进…"
+                      class="w-full"
+                      @update:model-value="commitSegDraft(d)"
+                    />
+                  </UFormField>
+                  <div class="space-y-1.5">
+                    <p class="text-xs font-medium text-neutral-500">
+                      属性状态
+                    </p>
+                    <div
+                      v-for="(row, i) in d.stateRows"
+                      :key="i"
+                      class="flex items-center gap-2"
+                    >
+                      <UInput
+                        v-model="row.key"
+                        size="xs"
+                        placeholder="键(如 处境/外貌/已死亡)"
+                        class="w-36 shrink-0"
+                        @update:model-value="commitSegDraft(d)"
+                      />
+                      <UInput
+                        v-model="row.value"
+                        size="xs"
+                        placeholder="值(清空键名即移除该行)"
+                        class="min-w-0 flex-1"
+                        @update:model-value="commitSegDraft(d)"
+                      />
+                      <UButton
+                        icon="i-lucide-x"
+                        color="error"
+                        variant="ghost"
+                        size="xs"
+                        aria-label="删除状态行"
+                        @click="removeSegStateRow(d, i)"
+                      />
+                    </div>
+                    <UButton
+                      v-if="!d.stateRows.length || d.stateRows[d.stateRows.length - 1].key"
+                      label="添加状态"
+                      icon="i-lucide-plus"
+                      color="neutral"
+                      variant="soft"
+                      size="xs"
+                      @click="addSegStateRow(d)"
+                    />
+                  </div>
+                </div>
+              </div>
             </section>
 
             <!-- 关系与人设数值 -->
@@ -1093,20 +1571,104 @@ function confirmRemoveCard() {
     </template>
 
     <template #footer>
-      <div class="flex justify-end gap-2">
+      <UButton
+        label="取消"
+        color="neutral"
+        variant="outline"
+        class="shrink-0"
+        @click="open = false"
+      />
+      <UButton
+        label="保存"
+        icon="i-lucide-save"
+        color="primary"
+        class="flex-1"
+        :loading="saving"
+        @click="onSave"
+      />
+    </template>
+  </UModal>
+
+  <!-- 属性(键:值)编辑弹窗:添加自定义键 / 修改已有属性共用 -->
+  <UModal
+    v-model:open="editAttrOpen"
+    :title="editAttr?.mode === 'edit' ? '编辑属性' : '添加属性'"
+    :description="editAttr?.scope === 'desc' ? `「${editAttr.key}」为约定键,按引擎语义参与演绎` : '自定义键会作为「补充设定」交给 AI'"
+  >
+    <template #body>
+      <div
+        v-if="editAttr"
+        class="space-y-3"
+      >
+        <UFormField label="属性名">
+          <UInput
+            v-if="editAttr.scope === 'desc'"
+            :model-value="editAttr.key"
+            disabled
+            class="w-full"
+          />
+          <UInput
+            v-else
+            v-model="editAttr.key"
+            placeholder="如 家庭背景 / 口头禅(填 性别/外貌/性格… 等约定键会自动归为语义键)"
+            class="w-full"
+          />
+        </UFormField>
+        <UFormField
+          v-if="editAttr.scope === 'free'"
+          label="类型"
+        >
+          <USelect
+            v-model="editAttr.type"
+            :items="FREE_TYPES"
+            value-key="value"
+            label-key="label"
+            class="w-full"
+          />
+        </UFormField>
+        <UFormField label="内容">
+          <UTextarea
+            v-model="editAttr.text"
+            autoresize
+            :rows="4"
+            :placeholder="modalPlaceholder(editAttr.scope, editAttr.key, editAttr.type)"
+            class="w-full"
+          />
+          <p class="mt-1 text-xs text-neutral-400">
+            <template v-if="editAttr.type === 'tags'">
+              每行一项;也可用 顿号/逗号 分隔后一次输入(多个值以列表保存)
+            </template>
+            <template v-else>
+              留空保存也会移除该属性
+            </template>
+          </p>
+        </UFormField>
+      </div>
+    </template>
+    <template #footer>
+      <div class="flex items-center justify-between gap-2">
         <UButton
-          label="取消"
-          color="neutral"
-          variant="outline"
-          @click="open = false"
+          v-if="editAttr?.rowIndex != null"
+          label="删除此属性"
+          icon="i-lucide-trash-2"
+          color="error"
+          variant="soft"
+          @click="deleteAttrFromModal"
         />
-        <UButton
-          label="保存"
-          icon="i-lucide-check"
-          color="primary"
-          :loading="saving"
-          @click="onSave"
-        />
+        <div class="ml-auto flex items-center gap-2">
+          <UButton
+            label="取消"
+            color="neutral"
+            variant="outline"
+            @click="editAttrOpen = false"
+          />
+          <UButton
+            label="保存"
+            icon="i-lucide-check"
+            color="primary"
+            @click="saveAttrEdit"
+          />
+        </div>
       </div>
     </template>
   </UModal>

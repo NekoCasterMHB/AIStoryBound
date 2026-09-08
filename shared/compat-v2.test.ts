@@ -175,6 +175,25 @@ test('兼容矩阵:人物卡编辑写回(性别/年龄/多别名)不丢失', () 
   assert.equal(bare['别名'], undefined)
 })
 
+test('兼容矩阵:基础卡「已死亡」废弃(一律视为生,死亡只以段状态/局内动态状态表达)', () => {
+  // 旧导出卡带 dead:true → 落库不写「已死亡」键;解释器读旧卡忽略该键(且不漏进自由区)
+  const bc = characterCardToBook({
+    name: '亡者', role: '配角', dead: true, personality: []
+  } as CharacterCard)
+  assert.ok(bc)
+  assert.equal(bc['已死亡'], undefined)
+  // 旧卡存量数据:解释器恒返回未死,键被消费、不进 profile
+  const legacy = interpretCharacter({ 姓名: '亡者', 已死亡: true, 口头禅: '好的' })
+  assert.ok(legacy)
+  assert.equal(legacy.card.dead, null)
+  assert.equal(legacy.profile['已死亡'], undefined)
+  assert.equal(legacy.profile['口头禅'], '好的')
+  // 落库同样剥离(编辑旧卡并保存即清除)
+  const resaved = characterCardToBook(legacy.card)
+  assert.ok(resaved)
+  assert.equal(resaved['已死亡'], undefined)
+})
+
 test('兼容矩阵:空字段作品(v2 空段/空角色/v1 无产物)不崩、结构完整', () => {
   // v2 空作品
   const back = v2ToWork(bookZipToDoc(bookDocToZip({

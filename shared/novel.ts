@@ -118,6 +118,7 @@ export interface CharacterCard {
   relationships?: { name: string, type: string, value: number }[]
   /** 首次出现章节 */
   first_appearance?: string | null
+  /** 死亡标记:基础卡恒为 null(一律视为生);仅局内动态状态/段状态覆盖时临时写入(见 game.ts),不落基础卡 */
   dead?: boolean | null
   /** 耐心程度,0-100 整数(数值越小越急躁,影响 AI 演绎的对话风格) */
   patience?: number | null
@@ -203,7 +204,8 @@ export function normalizeCharacterCard(raw: unknown): CharacterCard | undefined 
     goals: coerceCardList(c.goals),
     fears: coerceCardList(c.fears),
     secrets: coerceCardList(c.secrets),
-    dead: typeof c.dead === 'boolean' ? c.dead : null,
+    // 基础卡一律视为生:归一不读入 dead(旧导出残留值丢弃),死亡只以段状态/局内动态状态生效
+    dead: null,
     patience: typeof c.patience === 'number' ? c.patience : null,
     softness: typeof c.softness === 'number' ? c.softness : null,
     desire: typeof c.desire === 'number' ? c.desire : null
@@ -246,6 +248,15 @@ export function normalizeCharacterCard(raw: unknown): CharacterCard | undefined 
     const variants = c.chapterVariants.filter((v): v is CharacterChapterVariant =>
       !!v && typeof v === 'object' && typeof (v as { patch?: unknown }).patch === 'object' && (v as { patch?: unknown }).patch !== null)
     if (variants.length) out.chapterVariants = variants
+  }
+  // 自由区(profile):白名单外的任意键一并透传保留(与 v2 解释器口径一致;否则 v1 读回自由键会丢)
+  if (c.profile && typeof c.profile === 'object') {
+    const entries = Object.entries(c.profile as Record<string, unknown>)
+    if (entries.length) {
+      const p: Record<string, unknown> = {}
+      for (const [k, v] of entries) if (v !== undefined) p[k] = v
+      if (Object.keys(p).length) out.profile = p
+    }
   }
   return out
 }

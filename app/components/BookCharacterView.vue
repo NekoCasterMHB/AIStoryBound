@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// v2 人物卡富展示(docs/format-v2.md §7.1):中文保留键 → 富展示,自由键/外来未知结构 → 通用"键:值"渲染
-// (KeyValueView)。消费端不假设字段存在与类型正确——值形状容忍,异版本怪字段按通用渲染展开、不崩。
+// v2 人物卡富展示(docs/format-v2.md §7.1):中文保留键 → 富展示(仅实际有值的属性,空槽位/「未知」不占行),
+// 自由键/外来未知结构 → 通用"键:值"渲染(KeyValueView)。
+// 消费端不假设字段存在与类型正确——值形状容忍,异版本怪字段按通用渲染展开、不崩。
 const props = withDefaults(defineProps<{
   /** BookCharacter / SegmentCharacterFile 等中文键卡(保留键 + 自由区) */
   char: Record<string, unknown>
@@ -32,6 +33,21 @@ const RESERVED: { key: string, label: string }[] = [
   { key: '成人属性', label: '成人属性' }
 ]
 const RESERVED_KEYS = new Set([...RESERVED.map(r => r.key), '姓名', '角色', '已死亡', '弧线'])
+
+/** 值是否实际有内容:空串/空数组/空对象/「未知」都算无(落卡时「未知」已剔除,这里兜底旧数据) */
+function hasRealValue(v: unknown): boolean {
+  if (v == null) return false
+  if (typeof v === 'string') {
+    const s = v.trim()
+    return !!s && s !== '未知'
+  }
+  if (Array.isArray(v)) return v.length > 0
+  if (typeof v === 'object') return Object.keys(v as Record<string, unknown>).length > 0
+  return true
+}
+
+/** 保留键只展示实际有值的属性(自由属性形式:有内容才占一行,不再渲染固定空槽位) */
+const visibleReserved = computed(() => RESERVED.filter(r => hasRealValue(props.char[r.key])))
 
 const name = computed(() => (typeof props.char['姓名'] === 'string' ? props.char['姓名'].trim() : '') || '未命名')
 const role = computed(() => (typeof props.char['角色'] === 'string' ? props.char['角色'].trim() : ''))
@@ -95,9 +111,9 @@ function roleColor(r: string) {
       </UBadge>
     </div>
 
-    <!-- 保留键富展示 -->
+    <!-- 保留键富展示(仅实际有值的属性) -->
     <KeyValueView
-      v-for="r in RESERVED"
+      v-for="r in visibleReserved"
       :key="r.key"
       :label="r.label"
       :value="char[r.key]"

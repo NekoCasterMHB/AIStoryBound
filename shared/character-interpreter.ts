@@ -97,7 +97,8 @@ export function interpretCharacter(raw: BookCharacter): InterpretedCard | undefi
     fears: toList(raw['恐惧'] ?? raw['弱点']),
     secrets: toList(raw['秘密']),
     first_appearance: toText(raw['首次出场']) ?? undefined,
-    dead: toBool(raw['已死亡']) ?? null,
+    // 基础卡一律视为生:旧卡「已死亡」不再读取(死亡只以段状态/局内动态状态生效);键仍留在 consumed,防止旧数据漏进自由区
+    dead: null,
     patience: toNumber(raw['耐心']) ?? null,
     softness: toNumber(raw['心软']) ?? null,
     desire: toNumber(raw['性欲强度']) ?? null

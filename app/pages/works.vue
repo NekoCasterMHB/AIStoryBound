@@ -344,15 +344,14 @@ function workCardTags(w: BookView): string[] {
   return tags
 }
 
-/** 每部本地作品的「更多操作」菜单:世界详情 / 分段·正文 / 编辑角色卡 / 重新生成世界 / 同步云端 / 删除
- *  v1 作品的正文走 /edit 章节编辑器;v2(book2 真源)作品的正文按段编辑(SegmentsModal,§3 段即真相)。
+/** 每部本地作品的「更多操作」菜单:世界详情 / 编辑正文 / 编辑角色卡 / 重新生成世界 / 同步云端 / 删除
+ *  「编辑正文」统一走 /edit 全文编辑:v1 作品按章节切分保存;v2(book2)作品编辑归档全文 txt(books.fulltext,作品包内全文)。
+ *  每段剧情/状态等分段数据在「编辑角色卡」内按段编辑。
  *  「重新生成世界」对 v2 开放:generate?from=work 经 loadWorkView 统一读正文(book2 fulltext),生成产物以新任务落库,不覆盖原作。 */
 function workMenuItems(w: BookView): DropdownMenuItem[][] {
   const firstGroup: DropdownMenuItem[] = [
     { label: '世界详情', icon: 'i-lucide-globe', onSelect: () => openWorldDetail(w.id) },
-    w.source === 'book2'
-      ? { label: '分段 / 正文', icon: 'i-lucide-list-tree', onSelect: () => openSegments(w.id) }
-      : { label: !w.fulltext ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
+    { label: !w.fulltext ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
     { label: '编辑角色卡', icon: 'i-lucide-users', onSelect: () => openCharEditor(w.id) },
     { label: '重新生成世界', icon: 'i-lucide-refresh-cw', onSelect: () => navigateTo(`/generate?from=work&id=${w.id}`) },
     { label: '同步云端', icon: 'i-lucide-cloud-upload', disabled: syncingWorkId.value === w.id, onSelect: () => syncWorkToCloudZip(w) }
@@ -528,15 +527,6 @@ const charEditorOpen = ref(false)
 function openCharEditor(id: string) {
   charEditWorkId.value = id
   charEditorOpen.value = true
-}
-
-// ---- 分段 / 正文弹窗(v2 作品专属:正典浏览 + 段文本编辑 + 各角色本段文件) ----
-const segmentsOpen = ref(false)
-const segmentsWorkId = ref('')
-
-function openSegments(id: string) {
-  segmentsWorkId.value = id
-  segmentsOpen.value = true
 }
 
 async function onCardsSaved() {
@@ -1128,7 +1118,10 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
             >
               云端生成任务
             </UButton>
-            <UTooltip v-if="cloudTaskBusy" text="云端任务执行中">
+            <UTooltip
+              v-if="cloudTaskBusy"
+              text="云端任务执行中"
+            >
               <UButton
                 color="neutral"
                 variant="outline"
@@ -1816,12 +1809,6 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
       v-model:open="worldDetailOpen"
       :work-id="worldDetailWorkId"
       @saved="refreshLocal"
-    />
-
-    <!-- 分段 / 正文(v2 作品专属) -->
-    <SegmentsModal
-      v-model:open="segmentsOpen"
-      :work-id="segmentsWorkId"
     />
 
     <!-- 删除作品确认(同时清理该作品的本地游戏存档) -->

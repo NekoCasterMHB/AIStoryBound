@@ -258,7 +258,6 @@ export function buildSynthesizeMessages(
     "secrets": ["秘密(string)"],
     "relationships": [{"name":"对方姓名","type":"关系类型","value":"亲密度 -100~100 整数,依原文关系定"}],
     "first_appearance": "首次出现段落,如 第3段(string|null)",
-    "dead": true,
     "patience": "耐心 0-100,越小越急躁,null=信息不足",
     "softness": "心软 0-100,越大越心软,null=信息不足",
     "desire": "性欲强度 0-100,越大欲望越强理智越弱,null=信息不足",
@@ -378,7 +377,6 @@ export function buildLocalCards(entities: WorldEntities, roles?: { name?: string
         secrets: c.secrets ?? [],
         relationships: (c.relationships ?? []).map(rel => ({ name: rel.name, type: rel.type, value: 0 })),
         first_appearance: firstChapter ? `第${firstChapter}段` : null,
-        dead: c.dead ?? null,
         desire: c.desire ?? null,
         kinks: (c.kinks ?? []).slice(0, 8).map(k => ({
           theme: k.theme,

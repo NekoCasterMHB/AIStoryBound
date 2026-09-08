@@ -1,8 +1,10 @@
 <script setup lang="ts">
 // /edit/[id] — 本地作品编辑页(与阅读页同款全屏布局与主题)
 // 书名 / 作者 / 正文可直接打字修改;每次改动 1s 防抖后自动保存到本机 IndexedDB。
-// 正文为整本连排文本,保存时按章节标题重新切分,章节结构随原文保留。
+// v1 作品:正文为整本连排文本,保存时按章节标题重新切分,章节结构随原文保留。
+// v2(book2)作品:正文即随包归档全文(zip 里的全文 txt,books.fulltext),直接整段读写、不按段拼装。
 import { getWork, saveWork, toContentSegments } from '../../utils/worldGen'
+import { loadBook2, updateBook2 } from '../../utils/bookStoreV2'
 import { getReadingProgress } from '../../utils/readingStore'
 import { readingKey, DEFAULT_READER_SETTINGS, CHAPTER_REGEX } from '#shared/novel'
 import type { LocalWork, ReaderSettings, ChapterSegment } from '#shared/novel'
@@ -15,6 +17,8 @@ const id = String(route.params.id)
 
 // ---- 加载 ----
 const original = ref<LocalWork | null>(null)
+/** book2 真源:正文即归档全文 txt(books.fulltext),与 v1 的章节切分保存不同 */
+const isBook2 = ref(false)
 const loadError = ref('')
 const title = ref('')
 const author = ref('')
@@ -61,14 +65,25 @@ async function loadSettings() {
 
 async function loadBook() {
   try {
-    const work = await getWork(id)
-    if (!work) throw new Error('本地未找到该作品')
-    original.value = work
-    title.value = work.title
-    author.value = work.author ?? ''
-    // 云端恢复的作品可能没有正文(chapters 为空):允许进入并提示粘贴全文补全,不再直接报错
-    cloudRestored.value = work.chapters.length === 0
-    text.value = joinChapters(work.chapters)
+    // 优先 book2 真源:正文 = 归档全文 txt(books.fulltext),不按段拼接
+    const b2 = await loadBook2(id)
+    if (b2) {
+      isBook2.value = true
+      title.value = b2.manifest.title
+      author.value = b2.manifest.author ?? ''
+      cloudRestored.value = !b2.fulltext
+      text.value = b2.fulltext ?? ''
+    } else {
+      isBook2.value = false
+      const work = await getWork(id)
+      if (!work) throw new Error('本地未找到该作品')
+      original.value = work
+      title.value = work.title
+      author.value = work.author ?? ''
+      // 云端恢复的作品可能没有正文(chapters 为空):允许进入并提示粘贴全文补全,不再直接报错
+      cloudRestored.value = work.chapters.length === 0
+      text.value = joinChapters(work.chapters)
+    }
     dirty.value = false
     saveState.value = 'saved'
     lastSavedAt.value = null
@@ -209,7 +224,7 @@ let queued = false
 let saveWatchReady = false
 
 function scheduleSave() {
-  if (!original.value) return
+  if (!original.value && !isBook2.value) return
   dirty.value = true
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
@@ -224,24 +239,51 @@ async function flushSave() {
     saveTimer = undefined
   }
   const base = original.value
-  if (!base || saving) {
-    if (base) queued = true
+  if (!base && !isBook2.value) return
+  if (saving) {
+    queued = true
     return
   }
   saving = true
   saveState.value = 'saving'
   try {
-    const parsed = toContentSegments(text.value)
-    await saveWork({
-      ...base,
-      title: title.value.trim() || '未命名作品',
-      author: author.value.trim() || undefined,
-      chapters: parsed,
-      // 内容有实际改动:云端已有对应作品时标记待同步,书架卡片会显示「待同步」徽章
-      syncStatus: base.syncStatus === 'synced' ? 'dirty' : base.syncStatus,
-      createdAt: base.createdAt,
-      updatedAt: new Date().toISOString()
-    })
+    if (isBook2.value) {
+      // v2 真源:正文 = 归档全文 txt;书名/作者写回 manifest(books 行 title 随 manifest)
+      const t = title.value.trim() || '未命名作品'
+      const a = author.value.trim()
+      const body = text.value
+      await updateBook2(id, (d) => {
+        let changed = false
+        if (d.manifest.title !== t) {
+          d.manifest.title = t
+          changed = true
+        }
+        const curAuthor = d.manifest.author ?? ''
+        if (curAuthor !== a) {
+          if (a) d.manifest.author = a
+          else if (d.manifest.author) delete d.manifest.author
+          changed = true
+        }
+        if (d.fulltext !== body) {
+          d.fulltext = body
+          changed = true
+        }
+        return changed
+      })
+    } else {
+      if (!base) throw new Error('本地未找到该作品')
+      const parsed = toContentSegments(text.value)
+      await saveWork({
+        ...base,
+        title: title.value.trim() || '未命名作品',
+        author: author.value.trim() || undefined,
+        chapters: parsed,
+        // 内容有实际改动:云端已有对应作品时标记待同步,书架卡片会显示「待同步」徽章
+        syncStatus: base.syncStatus === 'synced' ? 'dirty' : base.syncStatus,
+        createdAt: base.createdAt,
+        updatedAt: new Date().toISOString()
+      })
+    }
     dirty.value = false
     saveState.value = 'saved'
     lastSavedAt.value = Date.now()
@@ -357,7 +399,7 @@ useSeoMeta({ title: computed(() => `${title.value.trim() || '编辑'} · AI Word
       @scroll.passive="onScroll"
     >
       <div
-        v-if="!original && !loadError"
+        v-if="!original && !isBook2 && !loadError"
         class="flex h-full items-center justify-center gap-2 text-sm opacity-70"
       >
         <UIcon
@@ -394,10 +436,16 @@ useSeoMeta({ title: computed(() => `${title.value.trim() || '编辑'} · AI Word
         class="reader-pane mx-auto max-w-3xl px-6 pb-44 pt-28 sm:px-10"
       >
         <div
-          v-if="cloudRestored"
+          v-if="cloudRestored && !isBook2"
           class="mb-6 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300"
         >
           该作品为云端恢复,本机暂无正文。在下方粘贴小说全文后会自动按章节切分保存,之后可回书架「重新生成世界」或直接阅读。
+        </div>
+        <div
+          v-else-if="cloudRestored && isBook2"
+          class="mb-6 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300"
+        >
+          该 v2 作品暂无正文全文。粘贴整本小说后保存,会作为归档全文(作品包内的全文 txt)写入;游玩所用分段正文如需调整,请回书架用「编辑角色卡」按段编辑。
         </div>
         <input
           v-model="title"
