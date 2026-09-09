@@ -66,6 +66,7 @@ function storylineToSegments(storyline: StoryBeat[], work: LocalWork): BookDoc['
   const segments: BookDoc['segments'] = {}
   const fulltext = chaptersToText(work.chapters)
   storyline.forEach((beat, i) => {
+    const segStart = Math.max(0, beat.startChar ?? 0)
     const canon: SegmentCanon = {
       index: i,
       ...(beat.label ? { title: beat.label } : {}),
@@ -74,6 +75,7 @@ function storylineToSegments(storyline: StoryBeat[], work: LocalWork): BookDoc['
       ...(beat.place ? { place: beat.place } : {}),
       ...(beat.turn ? { turn: beat.turn } : {}),
       ...(beat.hook ? { hook: beat.hook } : {}),
+      start: segStart,
       text: sliceAt(fulltext, beat.startChar ?? 0, beat.startChar != null ? (storyline[i + 1]?.startChar ?? fulltext.length) - beat.startChar : fulltext.length - (beat.startChar ?? 0))
     }
     const chars: Record<string, SegmentCharacterFile> = {}
@@ -99,11 +101,11 @@ function splitToSegments(chapters: ChapterSegment[]): BookDoc['segments'] {
   for (let start = 0; start < fulltext.length; start = start + MAX, idx++) {
     const segText = fulltext.slice(start, start + MAX)
     segments[String(idx).padStart(3, '0')] = {
-      canon: { index: idx, cast: [], beat: '', text: segText },
+      canon: { index: idx, cast: [], beat: '', start, text: segText },
       characters: {}
     }
   }
-  if (idx === 0) segments['000'] = { canon: { index: 0, cast: [], beat: '', text: '' }, characters: {} }
+  if (idx === 0) segments['000'] = { canon: { index: 0, cast: [], beat: '', start: 0, text: '' }, characters: {} }
   return segments
 }
 
@@ -122,14 +124,15 @@ export function v2ToWork(doc: BookDoc, base: { id: string, createdAt?: string, u
   // overlay.characters:从 characters/ 中文键映射回 CharacterCard(简化地用 BookCharacter 直接透传,但转成英文键)
   const characters: CharacterCard[] = Object.values(doc.characters).map(bc => bookCharacterToCard(bc)).filter((c): c is CharacterCard => !!c)
 
-  // storyline:从 segments 正典还原
+  // storyline:从 segments 正典还原。startChar 取 canon.start(段起点)——否则置 0 会让
+  // v1 消费端(原文窗口/再迁移切段)全部落在书首;旧文档无 start 时保持 0 兜底
   const storyline: StoryBeat[] = Object.values(doc.segments)
     .sort((a, b) => a.canon.index - b.canon.index)
     .map((seg, i) => {
       const c = seg.canon
       return {
         index: i,
-        startChar: 0, // 无法从 v2 精确还原 startChar;由读取层按需重算
+        startChar: typeof c.start === 'number' ? c.start : 0,
         label: c.title ?? `第${i + 1}段`,
         summary: c.beat,
         cast: c.cast ?? [],

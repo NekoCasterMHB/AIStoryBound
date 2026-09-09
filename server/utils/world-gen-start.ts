@@ -35,12 +35,21 @@ function getEnv(event: H3Event): StartEnv | undefined {
 /**
  * 启动(或重启)一次任务执行。幂等:实例 id 默认 = 任务 id,重复 create 报 exist 视为已在跑;
  * 续跑(pause→resume)传新 instanceId(如 `${taskId}-r<时间戳>`)另起实例,单元明细按 taskId 复用断点。
+ * 实例 id 记入任务行 stage_detail.instanceId:取消端点据此终止 `-r*` 续跑实例(否则只有首个实例被终止)。
  */
 export async function startWorldGenTask(event: H3Event, taskId: string, instanceId = taskId): Promise<'workflow' | 'inline'> {
   const env = getEnv(event)
   if (env?.WORLD_GEN) {
     try {
       await env.WORLD_GEN.create({ id: instanceId, params: { taskId } })
+      // 记录当前实例 id(merge 进 stage_detail,保留 plan/进度槽位;失败不影响启动)
+      try {
+        const row = await env.DB.prepare('SELECT stage_detail FROM world_gen_tasks WHERE id = ?').bind(taskId).first<{ stage_detail: string | null }>()
+        const detail = row?.stage_detail ? { ...JSON.parse(row.stage_detail), instanceId } : { instanceId }
+        await env.DB.prepare('UPDATE world_gen_tasks SET stage_detail = ? WHERE id = ?').bind(JSON.stringify(detail), taskId).run()
+      } catch {
+        // 记录失败不影响启动
+      }
       return 'workflow'
     } catch (e) {
       const msg = (e as Error)?.message ?? ''

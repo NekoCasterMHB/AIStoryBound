@@ -239,7 +239,9 @@
   - `剧情`(plot) = 该角色本段做了什么(行动线,80~150字),`状态`(status) = 本段处境,均进该段 `角色名.json`;token 预估已随之上调(EXTRACT_OUTPUT 2200→2700,eco 900→1200)。
   - **事实层**:段角色文件的 剧情/状态 是逐段事实的**唯一真源**,全员覆盖(不论登场次数),供分线注入、档案展示与事实对账。
 - **配角弧线 = 按底稿精写(修订,原"纯总结"方案否决)**:arcs 请求输入包含该角色各段的 `剧情+状态` 底稿,任务是把客观记录**精化为以该角色为中心的叙事**(逐段 beats 补动机/情绪/目标推进)+ 整线概述与结局——beats 的事实必须与底稿一致。原"纯总结 + 现拼"方案会使扮演配角的逐段戏份质量降级,故否决(详见 §11.1 裁决)。
+- **独立 arcs 创建入口已下线(2026-09-09)**:实测弧线步骤是全管线最贵一段(每候选 ≈ 2 万 token,《巴掌印》10 候选 ≈ 20~23 万,≈ 完整生成的一半),单独补跑性价比不足,书架「v1→v2 质量提升补充生成」菜单移除;服务端 `arcs.post.ts` 任务类型与「更新世界情报」写回保留(历史任务仍可写回;完整生成内的 arcs 分支不受影响)。后续若恢复独立入口,先做输入瘦身(只注入登场段±1、缩原文窗口、共享故事线前缀)再放开。
 - **职责与权威**:逐段事实 = 段角色文件;整线叙事 = `world.json.characterArcs`(唯一权威,`characters/<名>` 的「弧线」字段已废除)。矛盾裁决:叙事冲突时事实层为准;扮演体验以叙事层为准。
+- **处境双写废除(2026-09-09)**:弧线 beat 的 `status`(本段处境变化)停止存储——它与段文件 `状态.处境` 语义重复(两处 AI 各总结一次),且只覆盖弧线候选角色。现状约定:**本段处境唯一真源 = 段文件 `状态.处境`**;弧线 schema/归一化不再产出 status(`CharacterArcBeat.status` 标记废弃,旧数据遗留值由读取端忽略),游玩注入与编辑器在需要处境时当场读段文件。编辑器「分段剧情 / 状态」折叠栏相应收敛为两块:本段独立故事线(纯叙事)+ 本段剧情;处境在「属性状态」行编辑。
 
 ### 6.2 生成流程 v2 化(现状 → v2 阶段映射, P4 blueprint)
 
@@ -304,17 +306,44 @@
   旧 `loadWorkSmart`/`loadBook2AsWork`(LocalWork)的 UI/引擎接口已退役(LocalWork 仅存于服务端 v1 分享打包与 works 遗留行兼容)。
 
 ```
-导入/生成下载:aisb-book zip ──bookZipToDoc──▶ BookDoc ──拆行(事务)──▶ IndexedDB 结构化四表(v11,库内真源)
-                                                                  books(meta/manifest/fulltext)
-                                                                  book-segments(正典+段角色文件)
+导入/生成下载:aisb-book zip ──bookZipToDoc──▶ BookDoc ──拆行(事务)──▶ IndexedDB 结构化表族(v14,库内真源)
+                                                                  books(meta/manifest,小行)
+                                                                  book-texts(归档全文+段正文,大字段单行)
+                                                                  book-segments(正典,无正文)
+                                                                  book-seg-chars(段角色文件,一段一角色一行)
                                                                   book-characters(基础卡,每角色一行)
                                                                   book-world(entities/conflicts/characterArcs)
+                                                                  book-stats(游玩消耗累计,高频小行)
                                                                         │ 查表拼装(纯内存,不解压)
                                                                         ▼
                                                             BookDoc ──buildBookView──▶ BookView ──▶ 引擎(game.ts)/界面
                                                                         ▲
 导出/备份/分享:loadBook2RawZip ──loadBookDoc──▶ BookDoc ──bookDocToZip──┘(zip 只在边界序列化)
 ```
+
+- **大字段原子化(v14,2026-09-09)**:IndexedDB 无部分更新,"动一处重写一片"的根因是大字段与
+  高频小字段同行。v14 三拆:① `books.fulltext` → `book-texts` 单行(touch/charCount/概览编辑变
+  KB 级写入);② 段行三拆——canon.text → `book-texts`、角色文件 map → `book-seg-chars`
+  (改一个角色的一份段文件 = 单行 put),段行只留正典;③ 游戏消息 → `game-messages`
+  (append-only 一消息一行,games 行只存 state/summary/选项等有界字段 + msgCount),
+  每回合 persist 从 O(局史) 降为 O(1) 增量;存档点不再复制整局消息(只存水位线,回滚 =
+  恢复 state + 截断消息表),50 个存档点 = 50 份消息拷贝的历史结束。
+  同批:`saveBook2Edits` 单事务原子写回;正文/段正文编辑走 `saveBook2Fulltext`/
+  `saveBook2SegmentText` 单行入口;备份组装消息、恢复剥旧快照,旧备份包容错兼容;
+  角色改名时弧线条目与段角色文件跟随迁移(不再残留旧名孤儿)。
+  v14 迁移为一次性全库重写(单事务,失败整体回滚);零引用死表 worlds/extract-cache 一并删除。
+- **zip 正文去重(v14 同批)**:`manifest.segStarts`(段起点数组)+ 正典 `start` 字段。
+  打包时若全部段的 text 与 slice(fulltext, start, nextStart) 逐字节一致 → 正典文件剥除正文、
+  manifest 写 segStarts(包体约省一半);任一段被单独编辑过则整包回退内嵌旧格式(往返无损)。
+  读取端按段名排序与 segStarts 对位、canon.start 校验通过才切片,否则回退内嵌。
+- **其余优化(2026-09-09 同批)**:提取状态瘦身快照(merge 落 scratch,arcs/finalize 免二次全量
+  读 units);源文缓存统一(parse/author 不再整书双下载,失败自动重置可重试);merge-done 检查点
+  (续跑不再用未消歧的 merged 覆盖已裁决结果);孤儿清扫节流 60s、轮询热路径免二次查询、
+  任务行多次写合并;历史消息窗口按 4 条量化对齐(供应商前缀缓存命中率提升);state 注入剔除
+  UI 履历;人物卡往返保留扩展键(玩法喜好/成人属性)与「身份下性别」并入性别;
+  角色卡编辑保存单事务五表原子。
+- **book-stats 拆分(v13,2026-09-08)**:游玩消耗累计 `tokensUsed` 每回合 AI 调用 +1 次,
+  拆到独立小行表(仅几十字节);存量 books.tokensUsed 由 v13 迁移复制,books 行内旧字段自然脱落。
 
 - **存储原生化(v11,2026-09-06)**:库内不再存 zip 字节——读取按需查表拼装 `BookDoc`(消除反复解包/重打包),
   修改按行粒度落库(改人物卡 = 重写 `book-characters` 该作品行,改概览 = 只动 `books.manifest`),
@@ -382,7 +411,7 @@
 | P2 引擎读取层 | ✅ P2-A + P2-B 完成(2026-09-05) | **P2-A**:v2(book2)作品可开局——书架 selectRole → `play` 经 `loadWorkSmart` 直读 book2,不再落 works 副本;`shared/game.ts` `cardBrief` 追加 profile「补充设定」(§8 规则 3:自由键不丢给 AI)。**P2-B**:`v2ToWork` 把段数据按 `work.v2Segments` 随 LocalWork 透传(下标对齐 storyline);`game.ts` `applySegmentCharacter` 段角色文件 `状态` 浅覆盖(接 `character-interpreter` 值容忍,未识别键并入 profile)叠在阶段变体之后、动态补丁之前;`effectiveCard(s)`/`buildTurnPromptParts` 新增 segFile/v2Segment 参数;段级 `主角` 锚优先、回退 `role==='主角'`(§11.6);回合 prompt 剧情轨道注入「本段剧情里程碑(已达摘要+下一未触发)」与「各角色分线(剧情)」(§7.4/§3.2);`turnOptionsSchema` 新增 `current_nodes` 回报 + `GameState.nodeProgress`(`applyNodeProgress` 换段重置/停滞计数);卡住引导 `nodeStallGuidance`(连续 5 回合且进度<40% → 选项混入「【推进剧情】」,仅建议);play 页 v2 作品「先选角色 → 再选时间点(段)」弹窗(按段角色文件过滤,展示转折标题/主角/beat/状态摘要;开局方式可叠加 ai/custom 细化首回合);games 页作品读取改 `loadWorkSmart`(修复 v2 无 works 行取不到数据),段回注窗口对 v2 取正典 text;v2 无节点数据(v1 转换作品)全链路自动降级为原 beat 行为 | `节点[]`/转折标注的生成链路已由 P4 落地(云端 Workflows);游戏开局未叠加"AI 生成开场"与该段原文的组合注入(现按 opening.mode 单选) |
 | P3 动态渲染 / 编辑器 | ✅ 完成(2026-09-05) | `CharacterCardsModal.vue`:自由区编辑器(自由键名 + 显式类型 + 添加/删除 + profile 透传保存);角色卡编辑对 v2 写回 book2。**P3 收尾**:通用渲染组件 `KeyValueView.vue`(自由键"键:值"渲染:字符串/数组标签/数字/布尔/对象递归缩进展开,超长折叠)+ `BookCharacterView.vue`(中文保留键富展示 + 自由键通用渲染,无「角色」键不显示徽章)——消费端不假设字段存在与类型正确(§7.1);`SegmentsModal.vue` 分段/正文弹窗(v2 专属:段列表 + 正典[标题/主角/cast/场景/细纲/钩子/`节点[]`/正文] + 段文本编辑写回 + 各角色本段文件浏览[BookCharacterView]),入口 = 书架 v2 卡菜单「分段 / 正文」;世界详情概览编辑对 v2 开放并写回 manifest(`saveBook2Meta`,manifest 新增可选 `summary/genre/contentWarnings/tropes` 扩展字段,`workToV2`/`v2ToWork` 双向映射);`bookStoreV2.updateBook2` 读取-修改-写回通用助手;`works.vue` v2 卡菜单「编辑正文」替换为「分段 / 正文」;`profile.vue` 新增「数据管理」页签:迁移工具 UI(dry-run 扫描 + 迁移前备份 zip 下载 + 一键迁移,失败项跳过保留旧数据) | 分段正文编辑为纯文本(无富文本/字数视图);v2 重新生成世界未接(依赖 v2 原生重生成方案) |
 | P4 生成管线 v2 化 | ✅ 代码落地(2026-09-05,端到端待云端验证) | `shared/book-build.ts`:AI 标转折(`buildAnnotateMessages` + `normalizeSegmentAnnotations`,分块 `ANNOTATE_CHUNK_BEATS=30`、块内合并、非法/越界/不连续降级单粗段)+ `buildBookDoc`(剧情段正典:标题/`主角`/`节点[]`/cast/跨粗段正文切片;段角色文件`状态`/`剧情`取段内最后一条非空提取 status/plot,空壳不落盘;成书卡经 `characterCardToBook` 代码翻译;弧线入「弧线」字段;manifest 含扩展 meta)。管线 `stepAnnotate` 新阶段(arcs 后、finalize 前;分块检查点 `annotate-unit-<i>`,失败降级不中止;新增 `WorldGenStage='annotate'` + 进度映射「标注剧情转折 96%」);**`stepFinalize` v2 单轨:只落 aisb-book zip → R2 `world-cache/<hash>-<mode>.book2.zip`(resultKey 与 worldCache.worldKey 均指向它,免改表;打包失败即任务失败可续跑),`world.json` 随包携带 entities/conflicts/characterArcs 保证功能不回退**;workflow/inline 均接线。服务端消费方现场转换:任务下载/管理员下载按 PK 魔数嗅探 v2 zip → `v2ToWork` 转 v1 结构打包(旧任务遗留 json 回退兼容);管理员 promote 把 v2 转为 world JSON 入预置区(下游预置接口不变)。客户端:`download-v2.get.ts`(404=无 v2 产物);`downloadAndInstallWorldTask` v2 优先(book2 真源落库,id=任务 id,重复安装幂等;v1 回退兼容旧任务) | 端到端跑真实云端任务未验证(需部署后实际生成一本);成书卡仍用 synthesize AI 产物翻译(§6.2 原计划的"彻底去 AI 二次汇总"为质量妥协,见实施要点) |
-| P5 云端 / 同步 / 工坊 | 🟡 核心项落地(2026-09-05) | **云端备份接 v2**:`backupStore.buildWorkBackupZip` 对 v2 作品打包 book2.zip 条目(原始 aisb-book zip 整包入备份,`BackupManifest.book2: true` 标记)+ games/saves 共用;`parseWorkBackupZip`/`importBackupData` 按条目双还原(book2 按原 id 落库,游戏按 workId 关联不丢);works.vue v2 卡「同步云端」启用(服务端备份通道内容无关,零改动)。**分享导出/导入接 v2**:v2 卡「导出全部 ZIP」直接导出原始 book2 zip;「导入 ZIP 分享包」双格式嗅探(aisb-book 优先、失败回退 aisb-share v1),`importBook2Zip` 落 book2 新鲜 id | 预置世界(preset-worlds JSON→R2 zip)、工坊商店包、D1 novels.world_state 迁移:评估后缓行(见 §11.2 缓行结论) |
+| P5 云端 / 同步 / 工坊 | 🟡 核心项落地(2026-09-05) | **云端备份接 v2**:`backupStore.buildWorkBackupZip` 对 v2 作品打包 book2.zip 条目(原始 aisb-book zip 整包入备份,`BackupManifest.book2: true` 标记)+ games/saves 共用;`parseWorkBackupZip`/`importBackupData` 按条目双还原(book2 按原 id 落库,游戏按 workId 关联不丢);works.vue v2 卡「同步云端」启用(服务端备份通道内容无关,零改动)。**分享导出/导入接 v2**:v2 卡「导出全部 ZIP」直接导出原始 book2 zip;「导入 ZIP 分享包」双格式嗅探(aisb-book 优先、失败回退 aisb-share v1),`importBook2Zip` 落 book2 新鲜 id | 工坊商店包、D1 novels.world_state 迁移:评估后缓行(见 §11.2 缓行结论);预置世界已下线(2026-09-09,预置只提供小说) |
 | P6 回归 + 兼容矩阵 | 🟡 本地完成(2026-09-05) | `shared/compat-v2.test.ts` 兼容矩阵 4 项:v1→v2→v1 往返保真(人物卡/故事线/元数据)、book2 zip 字节级往返(节点/主角/自由键/段文件)、异版本怪字段容忍(结构化对象外貌/字符串性格经解释器归一)、空字段作品(空 v2/无产物 v1 退路切段);`tsconfig.test.json` + tsx 别名解析(测试可 import app/utils);迁移工具 UI(P3 已交付)+ 浏览器走查(v2 菜单/导出下载事件/分段弹窗/夹具清理) | 端到端云端验证(真实生成任务→v2 下载→安装→游玩全链)待部署后执行 |
 
 **现状总结(2026-09-05 收官;P0-P6 全部实施完毕,云端端到端验证待部署后执行)**:
@@ -405,7 +434,7 @@
 3. **开局"AI 生成开场"与段原文的组合注入未做**(现按 opening.mode 单选);v2 重新生成世界未接(依赖 v1 产物,待 v2 原生重生成方案)。
 4. **本地/浏览器生成路径未 v2 化**(inline dev 兜底已接线;浏览器 `generateWorld` 仍产 v1,与"云端 Workflows 产 v2"的 P4 范围一致)。
 
-*缓行项(评估结论,详见 §11.2)*:预置世界 JSON→R2 zip、D1 `novels.world_state` 迁移、工坊商店包服务端改造——均为格式统一性质,无功能缺口,留待部署窗口单独执行。
+*缓行项(评估结论,详见 §11.2)*:D1 `novels.world_state` 迁移、工坊商店包服务端改造——均为格式统一性质,无功能缺口,留待部署窗口单独执行。预置世界已于 2026-09-09 直接下线(预置只提供小说)。
 
 *部署后待办(端到端验收清单)*:
 
@@ -437,13 +466,14 @@
    - **分层裁决**:逐段"该角色做了什么/处境如何"的**事实真源 = 段角色文件**(extract 产出的 剧情/状态,全员覆盖);整条弧线的**叙事真源 = world.json.characterArcs**(arcs 任务的一手 AI 产物,角色中心的逐段戏份 + 整线概述 + 结局)——它不是任何其他数据的派生,而是独立生成物,不违反单一真源原则。
    - **arcs 任务按底稿精写(§6.1 分层)**:arcs 请求输入包含该角色各段的 事实底稿(段文件 剧情/状态),beats 的事实必须与底稿一致,arcs 只负责补动机/情绪/目标推进的叙事精化——消除两次独立生成的事实矛盾,叙事质量不降。
    - **「弧线」字段废除**:characters/<名>.json 不再写「弧线」(它曾是 beats 的压缩副本,与 world.characterArcs 构成双份真源,补 arcs 写回时已实际漂移);旧文件遗留的 弧线 键由解释器静默忽略,无需数据迁移。卡片上的弧线展示由读取层从 world.characterArcs 派生。
+   - **beatIndex 段号约定(2026-09-08 修订,已修)**:beats 的 `beatIndex` 一律是 **0 起始段下标**(与 `StoryBeat.index` 一致)。提示词里粗段按 `[段1]` 1 基编号、旧文案只说"beatIndex 对应段号",模型据此把 1 基段号直接写进 beatIndex → 弧线整体落到后一段:编辑器里「段N 的本段独立故事线」显示的是段N-1 的内容(与段N-1 段文件的剧情/状态重复),游玩端注入的也是上一段戏份,末段 beat 还被越界丢弃。修复分两层:① 两处弧线提示词显式写明映射([段1] → 0);② `normalizeCharacterArcs` 用该角色登场段集合探测 1 基输出并整体减一(0 基原样通过,登场段缺失时不换算)。**已生成的旧弧线仍是错位的**;独立补生成入口已下线(§6.1),待该入口以瘦身形态恢复后重跑覆盖。
    - **原"读取层现拼"方案否决**:理由:① arc beats 需要 AI 以角色为中心的叙事,主线提取的段剧情视角不同,现拼会把弧线质量降为出场记录;② 存量作品段文件无 剧情,现拼退化。
 2. **云端 D1 / 预置 / 工坊(已定:作品与世界产物统一存 R2 zip,不经 D1 列/静态 JSON)**:
    - **决策**:用户「同步/恢复」的作品、世界的生成产物,统一序列化为 **v2 目录 zip,存 R2**(复用 `SKILL_FILES` 桶,键约定如 `works/<id>.zip`、`preset-worlds/<id>.zip`、`store/<id>.zip`)。D1 只存索引/元数据,**不再存 world_state 大 JSON**;预生成世界也改存 R2 zip(替代 `public/worlds/<id>.json` 静态)。
    - **v2 载体即 zip**:与分享包同款序列化,读写接口只做 打包/解包 + 转换器;正文按需一起入 zip(作品含正文时)。
    - **R2 现状**:已有 `SKILL_FILES` 桶 + `preset-worlds/<id>.json` 键规范,本决策是"值从 JSON 升为 zip、并覆盖作品/工坊通道"。
    - 存量:现 `novels.world_state` 大 JSON、`public/worlds/*.json` 一次迁移到 R2 zip。
-   - **缓行结论(2026-09-05,P5 收口评估)**:① 用户作品的云端同步/备份/分享回读已由 P5 核心项覆盖(备份通道本就是 R2 zip + D1 元数据,内容无关;分享包直接 aisb-book zip),目标达成;② **预置世界暂缓**:`preset-worlds/<id>.json`(静态 + R2 promote)是"预生成 world JSON"通道,消费端按 v1 模型读取,改 zip 涉及 prebuild/promote/消费端三处联动且无端到端验证条件,收益仅是格式统一——维持现状,预置书开局走 v1;③ **D1 `novels.world_state` 暂缓**:该列属旧 D1 镜像链路,迁移涉及线上 D1 一次性行动(不可逆),留待部署窗口单独执行(方案:读时归一进 v2、写时落 R2 zip,D1 只留索引);④ **工坊商店包**暂缓:商店仍以 v1 分享包分发,导入端已支持 aisb-book 嗅探,商家上传 v2 包即自动兼容,无需服务端改动。
+   - **缓行结论(2026-09-05,P5 收口评估)**:① 用户作品的云端同步/备份/分享回读已由 P5 核心项覆盖(备份通道本就是 R2 zip + D1 元数据,内容无关;分享包直接 aisb-book zip),目标达成;② **预置世界已下线(2026-09-09)**:11 本旧管线预生成 world 与 `public/worlds/`、promote 成书复制、静态/R2 读取接口、客户端「直接开始」全部移除——预置只提供小说(txt 阅读/下载 + 自定义生成入口);用户对预置书点「重新生成世界」即可用新管线自行产出 v2 世界;③ **D1 `novels.world_state` 暂缓**:该列属旧 D1 镜像链路,迁移涉及线上 D1 一次性行动(不可逆),留待部署窗口单独执行(方案:读时归一进 v2、写时落 R2 zip,D1 只留索引);④ **工坊商店包**暂缓:商店仍以 v1 分享包分发,导入端已支持 aisb-book 嗅探,商家上传 v2 包即自动兼容,无需服务端改动。
 3. **阅读器(已定:直接读归档全文)**:阅读/整本成书直接读 `<书名>.txt` 渲染,不需要分段偏移组装——段是给 AI/引擎用的,人读走归档全文。
 4. **体积上限与空壳策略(已定:只建有内容的角色文件)**:每段正典+角色文件 与归档 `<书名>.txt` 双份 → 导入/同步上限需评估(参考现有 64MB zip 上限)。
    - 每段**只建有可用内容**(本段 `状态` 或 `剧情` 非空)的角色文件;仅出场、无本段状态的角色**不建文件**,只留在 `正典.json` 的 `cast` 列表(是否在某段出场可由 cast 反查)。

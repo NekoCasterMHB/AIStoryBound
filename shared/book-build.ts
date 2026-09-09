@@ -166,7 +166,7 @@ export function groupBeats(storyline: StoryBeat[], annotations: SegmentAnnotatio
 
 /** 弧线坐标系统一(§11.1):粗段序 → 剧情段序。云端 arcs 按粗段细纲生成(与 annotate 并行),
  *  而游玩端/客户端 arcs 任务均以剧情段序消费(find(b.beatIndex === 当前段));落盘前在此换算,
- *  同一剧情段内的多条 beat 合并为一条(summary 以「;」拼接,status 取首条非空),保证每段至多一条。
+ *  同一剧情段内的多条 beat 合并为一条(summary 以「;」拼接),保证每段至多一条。
  *  groups 为 groupBeats 产物(粗段 → 所在剧情段下标);空 groups(无粗段)时原样返回,降级安全。 */
 export function remapArcsToSegments(arcs: CharacterArc[], groups: number[][]): CharacterArc[] {
   if (groups.length === 0) return arcs
@@ -175,20 +175,15 @@ export function remapArcsToSegments(arcs: CharacterArc[], groups: number[][]): C
     for (const bi of beatIdxs) segOf.set(bi, gi)
   })
   return arcs.map((arc) => {
-    const bySeg = new Map<number, { beatIndex: number, summary: string, status?: string | null }>()
+    const bySeg = new Map<number, { beatIndex: number, summary: string }>()
     for (const beat of arc.beats) {
       const seg = segOf.get(beat.beatIndex)
       if (seg == null) continue // 越界/未知粗段:丢弃(归一化已保证升序合法,防御性兜底)
       const hit = bySeg.get(seg)
       if (hit) {
         if (beat.summary?.trim()) hit.summary = hit.summary ? `${hit.summary}；${beat.summary.trim()}` : beat.summary.trim()
-        if (!hit.status && beat.status?.trim()) hit.status = beat.status.trim()
       } else {
-        bySeg.set(seg, {
-          beatIndex: seg,
-          summary: beat.summary?.trim() ?? '',
-          ...(beat.status?.trim() ? { status: beat.status.trim() } : {})
-        })
+        bySeg.set(seg, { beatIndex: seg, summary: beat.summary?.trim() ?? '' })
       }
     }
     return { ...arc, beats: [...bySeg.values()].sort((a, b) => a.beatIndex - b.beatIndex) }
@@ -224,6 +219,7 @@ export function buildBookDoc(input: BuildBookDocInput): BookDoc {
       ...(first.place ? { place: first.place } : {}),
       ...(first.turn ? { turn: first.turn } : {}),
       ...(first.hook ? { hook: first.hook } : {}),
+      start,
       text: fulltext.slice(start, end)
     }
     // 段角色文件:仅建有本段可用内容(状态或剧情非空,空壳不落盘,§11.4)的角色;

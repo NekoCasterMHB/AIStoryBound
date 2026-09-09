@@ -4,9 +4,10 @@
 // 自建 key 配置随上传表单上送云端加密暂存(任务结束即删),任务执行期间无需客户端在线。
 import type { WorldCacheHit, WorldGenMode, WorldGenStepSwitches, WorldGenTaskDTO } from '#shared/world-gen-task'
 import { postMergeRatio } from '#shared/world-gen-task'
-import { saveWork, getWorkBySourceTask } from './worldGen'
-import { loadBook2AsWork, saveBook2 } from './bookStoreV2'
+import { saveWork, getWorkBySourceTask, deleteWork } from './worldGen'
+import { hasBook2, loadBook2AsWork, saveBook2 } from './bookStoreV2'
 import { bookZipToDoc } from '#shared/novel-v2'
+import { v2ToWork } from '#shared/v2-convert'
 import { importWorkFromBytes } from './shareZip'
 import type { CharacterArc, LocalWork } from '#shared/novel'
 
@@ -196,12 +197,16 @@ export interface InstallOptions {
  * 防止生成页/书架页/多标签页对同一任务重复安装出多本一样的书。
  */
 export async function downloadAndInstallWorldTask(task: WorldGenTaskDTO, opts?: InstallOptions): Promise<LocalWork> {
-  // v2 产物存在时优先走 v2(book2 真源,id = 任务 id,重复安装幂等覆盖)
+  // v2 产物存在时优先走 v2(book2 真源,id = 任务 id,重复安装幂等覆盖)。
+  // 查重只做单行 get(hasBook2),确认已存在需返回时才做整书拼装;
+  // 新装/覆盖后的返回值直接由内存 doc 转换,不再整书读回拼装一遍
+  let saved = false
   try {
     const buf = await $fetch<ArrayBuffer>(`${WORLD_GEN_TASKS_URL}/${task.id}/download-v2`, { responseType: 'arrayBuffer' })
     const doc = bookZipToDoc(new Uint8Array(buf))
-    const existingV2 = await loadBook2AsWork(task.id)
-    if (existingV2) {
+    if (await hasBook2(task.id)) {
+      const existingV2 = await loadBook2AsWork(task.id)
+      if (!existingV2) throw new Error('v2 作品行存在但拼装失败')
       if (!opts?.onDuplicate) return existingV2
       const overwrite = await opts.onDuplicate(existingV2)
       if (!overwrite) return existingV2
@@ -211,9 +216,16 @@ export async function downloadAndInstallWorldTask(task: WorldGenTaskDTO, opts?: 
       if (existingV1 && !opts?.onDuplicate) return existingV1
     }
     await saveBook2(doc, task.id)
-    const work = await loadBook2AsWork(task.id)
-    if (work) return work
+    saved = true
+    // 覆盖安装:同任务曾以 v1 落过 works 行时删除旧行,书架不出现重复条目
+    const staleV1 = await getWorkBySourceTask(task.id)
+    if (staleV1) await deleteWork(staleV1.id)
+    const work = v2ToWork(doc, { id: task.id })
+    work.book2SourceId = task.id
+    return work
   } catch (e) {
+    // 已落库后的错误不得再走 v1 回退(否则同一本书在 book2 与 works 各落一份)
+    if (saved) throw e
     // 404/410 = 无 v2 产物(旧任务),走 v1;其余错误也回退 v1(成书不可因 v2 链路失败而不可用)
     console.warn('[world-gen] v2 下载/安装失败,回退 v1', task.id, e)
   }

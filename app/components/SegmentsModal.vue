@@ -3,7 +3,7 @@
 // 左侧段列表(时间点/主角/细纲摘要),右侧正典(标题/主角/cast/节点/正文)+ 该段角色文件(状态/剧情/自由区)。
 // 「编辑正文」直接改该段正典 text(段即真相,§2.1 归档全文不被引用不修改)。
 // 入口:书架 v2 作品「更多操作」→「分段 / 正文」。
-import { loadBook2, updateBook2 } from '../utils/bookStoreV2'
+import { loadBook2, saveBook2SegmentText } from '../utils/bookStoreV2'
 import type { BookDoc, SegmentDir } from '#shared/novel-v2'
 
 const props = defineProps<{ workId: string }>()
@@ -59,12 +59,8 @@ async function saveText() {
     const key = selKey.value
     const text = textDraft.value
     if (!key) throw new Error('段定位丢失')
-    await updateBook2(props.workId, (d) => {
-      const seg = d.segments[key]
-      if (!seg) throw new Error('本地 v2 数据中找不到该段')
-      seg.canon.text = text
-      return true
-    })
+    // v14:段正文单行写回(book-texts),段行/角色文件/其他段不受影响
+    await saveBook2SegmentText(props.workId, key, text)
     doc.value = await loadBook2(props.workId)
     editingText.value = false
     toast.add({ title: '本段正文已更新', color: 'success' })

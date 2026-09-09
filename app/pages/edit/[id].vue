@@ -4,7 +4,7 @@
 // v1 作品:正文为整本连排文本,保存时按章节标题重新切分,章节结构随原文保留。
 // v2(book2)作品:正文即随包归档全文(zip 里的全文 txt,books.fulltext),直接整段读写、不按段拼装。
 import { getWork, saveWork, toContentSegments } from '../../utils/worldGen'
-import { loadBook2, updateBook2 } from '../../utils/bookStoreV2'
+import { loadBook2, saveBook2Fulltext } from '../../utils/bookStoreV2'
 import { getReadingProgress } from '../../utils/readingStore'
 import { readingKey, DEFAULT_READER_SETTINGS, CHAPTER_REGEX } from '#shared/novel'
 import type { LocalWork, ReaderSettings, ChapterSegment } from '#shared/novel'
@@ -18,6 +18,7 @@ const id = String(route.params.id)
 // ---- 加载 ----
 const original = ref<LocalWork | null>(null)
 /** book2 真源:正文即归档全文 txt(books.fulltext),与 v1 的章节切分保存不同 */
+const toast = useToast()
 const isBook2 = ref(false)
 const loadError = ref('')
 const title = ref('')
@@ -249,27 +250,10 @@ async function flushSave() {
   try {
     if (isBook2.value) {
       // v2 真源:正文 = 归档全文 txt;书名/作者写回 manifest(books 行 title 随 manifest)
+      // v14:单行写回(book-texts + books meta 小行),不再整书四表重建
       const t = title.value.trim() || '未命名作品'
       const a = author.value.trim()
-      const body = text.value
-      await updateBook2(id, (d) => {
-        let changed = false
-        if (d.manifest.title !== t) {
-          d.manifest.title = t
-          changed = true
-        }
-        const curAuthor = d.manifest.author ?? ''
-        if (curAuthor !== a) {
-          if (a) d.manifest.author = a
-          else if (d.manifest.author) delete d.manifest.author
-          changed = true
-        }
-        if (d.fulltext !== body) {
-          d.fulltext = body
-          changed = true
-        }
-        return changed
-      })
+      await saveBook2Fulltext(id, text.value, { title: t, author: a || null })
     } else {
       if (!base) throw new Error('本地未找到该作品')
       const parsed = toContentSegments(text.value)
@@ -287,6 +271,25 @@ async function flushSave() {
     dirty.value = false
     saveState.value = 'saved'
     lastSavedAt.value = Date.now()
+    // v2 编辑的是归档全文,段正文(引擎所用)是另一份受控副本,不会随之改变:
+    // 首次保存后提示一次,告知分段正文需到「分段」视图单独调整
+    if (isBook2.value) {
+      const key = `edit-seg-hint:${id}`
+      let hinted = false
+      try {
+        hinted = sessionStorage.getItem(key) === '1'
+      } catch { /* 无痕模式等 */ }
+      if (!hinted) {
+        try {
+          sessionStorage.setItem(key, '1')
+        } catch { /* 忽略 */ }
+        toast.add({
+          title: '已保存归档全文',
+          description: '分段正文(游玩所用)是独立副本,如需同步调整请到书架「世界详情 → 分段」按段编辑',
+          color: 'info'
+        })
+      }
+    }
   } catch {
     // 正文为空时保留改动,等下一次输入再自动重试
     saveState.value = 'error'

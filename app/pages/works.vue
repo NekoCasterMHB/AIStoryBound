@@ -4,7 +4,6 @@ import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments, isLegacyChapteredWork } from '../utils/worldGen'
 import { listBook2, loadBook2AsWork, deleteBook2, loadBook2RawZip, importBook2Zip, loadWorkView, updateBook2World } from '../utils/bookStoreV2'
 import { NOVEL_ENCODING_LABELS } from '#shared/novel-encoding'
-import { characterArcCandidates } from '#shared/world-build'
 import { listLocalGames, deleteLocalGame } from '../utils/gameStore'
 import { deleteGamePoints } from '../utils/gameSaveStore'
 import { importWorkFromZip, downloadWorkAsZip } from '../utils/shareZip'
@@ -15,14 +14,10 @@ import {
   type CloudBackupMeta
 } from '../utils/backupStore'
 import { listReadingProgress } from '../utils/readingStore'
-import { fetchPrebuiltWorld, installPrebuiltWork } from '../utils/prebuiltWorld'
-import type { PrebuiltWorld } from '../utils/prebuiltWorld'
-import { setAdultModeEnabled } from '../utils/adultMode'
-import { getActiveRelayConfig } from '../utils/aiConfigStore'
 import {
   fetchWorldGenTasks, cancelWorldGenTask, downloadAndInstallWorldTask,
   resumeWorldGenTask, worldGenTaskPercent, worldGenStageLabel,
-  startSupplementArcsTask, fetchArcsResult
+  fetchArcsResult
 } from '../utils/worldGenCloud'
 import type { WorldGenTaskDTO } from '../utils/worldGenCloud'
 import { type LocalWork, type LocalGame, type PresetNovelRow, type ReadingProgress, type ChapterSegment, uuid } from '#shared/novel'
@@ -83,29 +78,6 @@ async function loadOfficialWorks() {
   }
 }
 
-// ---- 推荐书架「直接开始」:用官方预生成世界 0 token 进入选角 ----
-const directStartingId = ref<string | null>(null)
-
-async function startPrebuilt(p: PresetNovelRow) {
-  if (directStartingId.value) return
-  directStartingId.value = p.id
-  try {
-    const world: PrebuiltWorld | null = await fetchPrebuiltWorld(p.id)
-    if (!world) {
-      toast.add({ title: '本书暂无官方预生成世界', color: 'warning' })
-      return
-    }
-    const workId = await installPrebuiltWork(p, world)
-    // 预置小说进入世界默认开启成人模式(选角页可关)
-    setAdultModeEnabled(true)
-    await navigateTo(`/play/${workId}`)
-  } catch (e) {
-    toast.add({ title: '进入失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
-  } finally {
-    directStartingId.value = null
-  }
-}
-
 async function refreshLocal() {
   // v1 退役:不再静默自动迁移;检测到旧格式作品时由 V2MigrateModal 提示用户确认转换(见下方 v1Left)
   const [localWorks, v2Rows] = await Promise.all([listWorks(), listBook2()])
@@ -119,9 +91,10 @@ async function refreshLocal() {
   rawV1ById.clear()
   for (const w of keptWorks) rawV1ById.set(w.id, w)
   // 书架 = v2 视图列表(book2 真源)+ 迁移失败残留的 v1 行(works 源过渡视图)
+  // texts:false:卡片只需元数据/字数(textChars),不把全库正文拉进内存;需要正文的动作按需重读
   const views: BookView[] = []
   for (const row of v2Rows) {
-    const v = await loadWorkView(row.id)
+    const v = await loadWorkView(row.id, { texts: false })
     if (v) views.push(v)
   }
   for (const w of keptWorks) {
@@ -323,7 +296,7 @@ async function confirmDeleteWork() {
 
 /** 云端恢复且无正文:阅读不可用,可「补全正文」后重跑生成 */
 function isCloudRestored(w: BookView): boolean {
-  return !w.fulltext && w.characters.length > 0
+  return !(w.fulltext || w.textChars) && w.characters.length > 0
 }
 
 /** 实体库总数(人物/地点/势力/规则/时间线/物品/伏笔) */
@@ -351,25 +324,11 @@ function workCardTags(w: BookView): string[] {
 function workMenuItems(w: BookView): DropdownMenuItem[][] {
   const firstGroup: DropdownMenuItem[] = [
     { label: '世界详情', icon: 'i-lucide-globe', onSelect: () => openWorldDetail(w.id) },
-    { label: !w.fulltext ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
+    { label: !(w.fulltext || w.textChars) ? '补全正文' : '编辑正文', icon: 'i-lucide-pencil', onSelect: () => navigateTo(`/edit/${w.id}`) },
     { label: '编辑角色卡', icon: 'i-lucide-users', onSelect: () => openCharEditor(w.id) },
     { label: '重新生成世界', icon: 'i-lucide-refresh-cw', onSelect: () => navigateTo(`/generate?from=work&id=${w.id}`) },
     { label: '同步云端', icon: 'i-lucide-cloud-upload', disabled: syncingWorkId.value === w.id, onSelect: () => syncWorkToCloudZip(w) }
   ]
-  // v1→v2 质量提升补充生成:迁移/存量作品按新管线(事实底稿精写、坐标统一)刷新配角故事线。
-  // 已有弧线也允许重跑(写回覆盖);仅要求有故事线+实体库+候选角色(登场≥2),否则点了只会提示无需生成
-  if (
-    (w.storyline?.length ?? 0) > 0
-    && !!w.world.entities
-    && characterArcCandidates(w.world.entities, w.storyline).length > 0
-  ) {
-    firstGroup.push({
-      label: 'v1→v2 质量提升补充生成',
-      icon: 'i-lucide-route',
-      disabled: supplementingArcsId.value === w.id || !!activeArcsTask(w.id),
-      onSelect: () => supplementWorkArcs(w)
-    })
-  }
   return [
     firstGroup,
     [
@@ -384,8 +343,14 @@ function workMenuItems(w: BookView): DropdownMenuItem[][] {
 }
 
 // ---- 导出(原文 TXT / 全部 ZIP,与「导入 ZIP 分享包」配套) ----
-function onExportWorkTxt(w: BookView) {
-  const ok = downloadWorkAsTxt({ title: w.title, chapters: [{ title: '', content: w.fulltext }] })
+async function onExportWorkTxt(w: BookView) {
+  // 卡片视图 texts:false 不带正文:导出时按需重读一次
+  const full = w.fulltext || (await loadWorkView(w.id))?.fulltext || ''
+  if (!full) {
+    toast.add({ title: '该作品没有可导出的正文', color: 'warning' })
+    return
+  }
+  const ok = downloadWorkAsTxt({ title: w.title, chapters: [{ title: '', content: full }] })
   if (!ok) toast.add({ title: '作品没有正文,无法导出', color: 'warning' })
 }
 
@@ -458,57 +423,11 @@ function exportSessionTxt(g: LocalGame) {
   if (!ok) toast.add({ title: '该会话还没有可导出的剧情', description: '先产生一段旁白后再导出', color: 'warning' })
 }
 
-// ---- 增量补生成配角故事线(旧作品补齐)→ 云端任务(kind=arcs,逐单元生成,进度条 + 手动写回) ----
-const supplementingArcsId = ref<string | null>(null)
-/** 本次会话创建的 arcs 任务 id:监听其在 cloudTasks 轮询中的终态并 toast */
-const pendingArcsTaskId = ref<string | null>(null)
-
-/** 该作品是否有进行中的补充故事线任务(卡片 loading 徽章 + 菜单防重) */
+// ---- arcs 任务写回(任务卡「更新世界情报」;创建入口已下线——弧线成本 ≈ 完整生成的一半,性价比不足) ----
+/** 该作品是否有进行中的补充故事线任务(卡片 loading 徽章) */
 function activeArcsTask(workId: string): WorldGenTaskDTO | undefined {
   return cloudTasks.value.find(t => t.kind === 'arcs' && t.sourceWorkId === workId
     && (t.status === 'uploaded' || t.status === 'running' || t.status === 'paused'))
-}
-
-async function supplementWorkArcs(w: BookView) {
-  if (supplementingArcsId.value) return
-  if (activeArcsTask(w.id)) {
-    toast.add({ title: '该作品已有进行中的补充故事线任务', description: '可先取消或等待完成', color: 'warning' })
-    return
-  }
-  // 候选预检(与云端同一名单):无候选角色直接提示,不建任务
-  if (!w.world.entities || !w.storyline?.length || characterArcCandidates(w.world.entities, w.storyline).length === 0) {
-    toast.add({ title: '故事线中没有登场两次以上的角色,无需生成配角故事线', color: 'warning' })
-    return
-  }
-  supplementingArcsId.value = w.id
-  try {
-    const task = await startSupplementArcsTask({
-      workId: w.id,
-      title: w.title || '未命名小说',
-      entities: w.world.entities,
-      storyline: w.storyline,
-      // 事实底稿:段角色文件的 剧情/状态(arcs 精写的事实依据,§6.1)
-      plots: w.segments.flatMap((seg, i) => Object.entries(seg.characters).map(([name, file]) => ({
-        name,
-        beatIndex: i,
-        plot: typeof file['剧情'] === 'string' ? file['剧情'] : null,
-        status: (file['状态'] as Record<string, unknown> | undefined)?.['处境'] as string | null
-      }))),
-      text: w.fulltext,
-      config: await getActiveRelayConfig() ?? undefined
-    })
-    pendingArcsTaskId.value = task.id
-    await loadCloudTasks()
-    toast.add({
-      title: '已创建云端任务,正在生成配角故事线…',
-      description: `共 ${task.stageDetail.totalUnits} 条故事线,生成中可离开页面;完成后在任务卡片点「更新世界情报」写回作品${(w.world.characterArcs ?? []).length ? '(将覆盖现有弧线)' : ''}`,
-      color: 'info'
-    })
-  } catch (e) {
-    toast.add({ title: '创建任务失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
-  } finally {
-    supplementingArcsId.value = null
-  }
 }
 
 // ---- 世界详情弹窗(生成产物总览 + 概览元数据编辑) ----
@@ -742,24 +661,6 @@ watch(hasActiveCloudTasks, (active) => {
   }
 }, { immediate: true })
 
-/** arcs 任务终态提示(completed/failed/paused 各一次;由 cloudTasks 轮询驱动,不重复轮询) */
-watch(cloudTasks, (tasks) => {
-  const id = pendingArcsTaskId.value
-  if (!id) return
-  const t = tasks.find(x => x.id === id)
-  if (!t) return
-  if (t.status === 'completed') {
-    toast.add({ title: '配角故事线已生成', description: '在任务卡片点「更新世界情报」写回作品', color: 'success' })
-    pendingArcsTaskId.value = null
-  } else if (t.status === 'failed') {
-    toast.add({ title: '配角故事线生成失败', description: t.error ?? undefined, color: 'error' })
-    pendingArcsTaskId.value = null
-  } else if (t.status === 'paused') {
-    toast.add({ title: '任务待结算', description: '余额不足,充值后在云端任务区点「继续任务」完成结算,已生成的故事线保留', color: 'warning' })
-    pendingArcsTaskId.value = null
-  }
-})
-
 onUnmounted(() => {
   if (cloudPollTimer) clearInterval(cloudPollTimer)
 })
@@ -846,7 +747,8 @@ function workCardActions(w: BookView): WorkCardAction[] {
 /** 作品卡 meta 行:作者 · 全书字数 · 尺度(舞台单独成段,见模板 R2b) */
 function workMetaLine(w: BookView): string {
   const parts = [`作者: ${w.author || '佚名'}`]
-  parts.push(w.fulltext ? `全书约 ${fmtChars(w.fulltext.length)}` : '无正文')
+  const chars = w.textChars ?? w.fulltext.length
+  parts.push(chars ? `全书约 ${fmtChars(chars)}` : '无正文')
   if (w.manifest.heat) parts.push(`尺度:${w.manifest.heat}`)
   return parts.join(' · ')
 }
@@ -1219,15 +1121,6 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                   </UBadge>
                 </div>
                 <div class="mt-auto flex flex-wrap gap-1.5 pt-3">
-                  <UButton
-                    v-if="p.hasWorld"
-                    label="进入世界"
-                    icon="i-lucide-zap"
-                    color="primary"
-                    size="sm"
-                    :loading="directStartingId === p.id"
-                    @click="startPrebuilt(p)"
-                  />
                   <UButton
                     :label="readBtnLabel(progressFor('preset', p.id))"
                     icon="i-lucide-book-open"
@@ -2072,7 +1965,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                   你是「{{ g.playerName }}」
                 </p>
                 <p class="text-xs text-neutral-500">
-                  {{ saveProgress(g) }} · {{ g.messages.length }} 条剧情 · 最后 {{ fmtTime(g.updatedAt) }}
+                  {{ saveProgress(g) }} · {{ g.msgCount ?? 0 }} 条剧情 · 最后 {{ fmtTime(g.updatedAt) }}
                 </p>
               </div>
               <div class="flex shrink-0 items-center gap-1.5">

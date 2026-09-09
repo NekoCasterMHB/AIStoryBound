@@ -1235,12 +1235,13 @@ export function characterAppearances(storyline: StoryBeat[] | undefined): Map<st
   return map
 }
 
-/** 弧线 schema(批量与逐条共用,保证产物结构一致) */
+/** 弧线 schema(批量与逐条共用,保证产物结构一致)。
+ *  不含 status:本段处境的唯一真源是段角色文件的 状态.处境(§6.1 事实层),弧线只做角色中心的叙事。 */
 const CHARACTER_ARC_SCHEMA = `{
   "arcs": [{
     "character": "角色名(必须与上方人物卡名字一致)",
     "summary": "该角色全书的弧线概述(目标/宿命/处境演变,一两句话)",
-    "beats": [{"beatIndex": 0, "summary": "该角色在本段的行动/处境/目标推进(以该角色为中心,80~150字)", "status": "本段处境变化,无则null"}],
+    "beats": [{"beatIndex": 0, "summary": "该角色在本段的行动/处境/目标推进(以该角色为中心,80~150字)"}],
     "ending": "该角色在全书终局的状态/结局(null可)"
   }]
 }`
@@ -1298,7 +1299,7 @@ export function buildCharacterArcsMessages(
       content: `小说《${title}》的主线故事线(按段序)如下:\n${beatLines}\n\n以下角色的人物卡素材(用于生成各自的独立弧线):\n${cardLines}\n\n请为上述每个角色生成一条独立故事线(角色弧线):\n`
         + '- 只能使用上方故事线中已出现且与该角色相关的信息,不得新增原著没有的情节、不得编造该角色的独立事件;\n'
         + '- 每个角色的登场段都已在各自人物卡素材中逐段列出:必须为每一个登场段各生成一条 beat,不得合并多个段、不得省略任何登场段;\n'
-        + '- beats 按主线细纲段序对齐(beatIndex 对应段号),只列出该角色实际登场/有戏份的段(未登场段不写);\n'
+        + '- beats 按主线细纲段序对齐:beatIndex 用 0 起始的段下标(上方 [段1] 对应 0,[段2] 对应 1,依此类推),只列出该角色实际登场/有戏份的段(未登场段不写);\n'
         + '- summary 以该角色为中心叙述其行动、处境与目标推进,不要重复整段主线剧情;\n'
         + '- 出场信息不足的角色可以省略 beats 或仅给 summary+ending,不要硬凑。'
     }
@@ -1363,7 +1364,7 @@ export function buildCharacterArcMessages(
       content: `小说《${title}》的主线故事线(按段序)如下:\n${beatLines}\n\n以下为该角色的人物卡素材:\n${cardLine}${windowPart}${draftPart}\n\n请为该角色生成一条独立故事线(角色弧线):\n`
         + '- 只能使用上方故事线中已出现且与该角色相关的信息,不得新增原著没有的情节、不得编造该角色的独立事件;\n'
         + `- 该角色共登场 ${candidate.beats.length} 段(上方「登场段」已逐段列出):必须为每一个登场段各生成一条 beat(按 beatIndex 对齐),不得合并多个段、不得省略任何登场段;\n`
-        + '- beats 按主线细纲段序对齐(beatIndex 对应段号),只列出该角色实际登场/有戏份的段(未登场段不写);\n'
+        + '- beats 按主线细纲段序对齐:beatIndex 用 0 起始的段下标(上方 [段1] 对应 0,[段2] 对应 1,依此类推),只列出该角色实际登场/有戏份的段(未登场段不写);\n'
         + '- summary 以该角色为中心叙述其行动、处境与目标推进,不要重复整段主线剧情;\n'
         + (draftLines.length ? '- 有事实底稿的段:beat 的事实(做了什么、处境)必须与底稿一致,在此之上精化叙事;底稿未覆盖的段才依据故事线与原文节选推断;\n' : '')
         + '- 出场信息不足可以省略 beats 或仅给 summary+ending,不要硬凑。'
@@ -1371,7 +1372,23 @@ export function buildCharacterArcMessages(
   ]
 }
 
-/** 归一化弧线:名字对齐人物卡(normKey)、beatIndex 排序去重、裁剪、只保留有效段 */
+/** 弧线 beatIndex 段号约定探测:提示词里粗段按 [段1] 编号(1 基),模型常把这个段号直接填进 beatIndex,
+ *  而消费端(游玩注入/编辑器分段)一律按 0 基段下标读,错位一段会让弧线整体落到后一段。
+ *  判定顺序:① 首段锚点(弧线按约定从该角色首个登场段开始)——对得上即 0 基,差 1 且整体落在登场段内即 1 基;
+ *  ② 锚点对不上(模型漏首段等)时按命中数投票,1 基需明显胜出才换算。登场段信息缺失则不换算。 */
+function detectBeatIndexShift(indices: number[], appearance: number[]): 0 | 1 {
+  if (!indices.length || !appearance.length) return 0
+  const minIdx = Math.min(...indices)
+  const minApp = Math.min(...appearance)
+  if (minIdx === minApp) return 0
+  if (minIdx === minApp + 1 && indices.every(i => appearance.includes(i - 1))) return 1
+  const hit = (shift: number) => indices.filter(i => appearance.includes(i - shift)).length
+  const zeroBased = hit(0)
+  const oneBased = hit(1)
+  return oneBased > zeroBased && oneBased >= 2 ? 1 : 0
+}
+
+/** 归一化弧线:名字对齐人物卡(normKey)、beatIndex 段号约定校正、排序去重、裁剪、只保留有效段 */
 export function normalizeCharacterArcs(
   raw: unknown,
   storyline: StoryBeat[] | undefined,
@@ -1380,6 +1397,7 @@ export function normalizeCharacterArcs(
   const beats = (storyline ?? []).map(b => b.index)
   const validIndex = new Set(beats)
   const cardKeys = new Map((cards ?? []).map(c => [normKey(c.name), c.name]))
+  const appearances = characterAppearances(storyline)
   const data = (raw as { arcs?: unknown } | null)?.arcs
   if (!Array.isArray(data)) return []
   const out: CharacterArc[] = []
@@ -1390,19 +1408,24 @@ export function normalizeCharacterArcs(
     const key = normKey(rawName)
     if (!key) continue
     const name = cardKeys.get(key) ?? rawName
-    const arcBeats: CharacterArcBeat[] = []
+    // 先收原始下标(可能是 1 基段号),统一校正后再按有效段过滤,避免末段被误判越界丢弃。
+    // status 不再解析:本段处境唯一真源是段文件 状态.处境(§6.1),旧产物遗留的 status 由读取端忽略
+    const rawBeats: CharacterArcBeat[] = []
     if (Array.isArray(obj.beats)) {
       for (const b of obj.beats) {
         if (!b || typeof b !== 'object') continue
         const bo = b as Record<string, unknown>
         const bi = Number(bo.beatIndex)
-        if (!Number.isInteger(bi) || !validIndex.has(bi)) continue
+        if (!Number.isInteger(bi)) continue
         const summary = String(bo.summary ?? '').trim()
         if (!summary) continue
-        const status = typeof bo.status === 'string' && bo.status.trim() ? bo.status.trim() : undefined
-        arcBeats.push({ beatIndex: bi, summary, status })
+        rawBeats.push({ beatIndex: bi, summary })
       }
     }
+    const shift = detectBeatIndexShift(rawBeats.map(b => b.beatIndex), appearances.get(normKey(name)) ?? [])
+    const arcBeats = rawBeats
+      .map(b => (shift ? { ...b, beatIndex: b.beatIndex - shift } : b))
+      .filter(b => validIndex.has(b.beatIndex))
     arcBeats.sort((a, b) => a.beatIndex - b.beatIndex)
     const deduped = arcBeats.filter((b, i) => i === 0 || b.beatIndex !== arcBeats[i - 1]!.beatIndex)
     const summary = String(obj.summary ?? '').trim()

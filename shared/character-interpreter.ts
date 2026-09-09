@@ -129,12 +129,16 @@ export function interpretCharacter(raw: BookCharacter): InterpretedCard | undefi
       const kk = k as Record<string, unknown>
       const theme = typeof kk['主题'] === 'string' ? kk['主题'].trim() : ''
       if (!theme) return []
-      return [{
+      // 保留归一四键之外的扩展键(未来新增字段/来源方自定义),往返写回不丢
+      const { '主题': _t, '态度': _v, '角色': _r, '细节': _d, ...extras } = kk
+      const item = {
         theme,
         view: typeof kk['态度'] === 'string' && kk['态度'].trim() ? kk['态度'].trim() : null,
         role: typeof kk['角色'] === 'string' && kk['角色'].trim() ? kk['角色'].trim() : null,
-        detail: typeof kk['细节'] === 'string' && kk['细节'].trim() ? kk['细节'].trim() : null
-      }]
+        detail: typeof kk['细节'] === 'string' && kk['细节'].trim() ? kk['细节'].trim() : null,
+        ...(Object.keys(extras).length ? extras : {})
+      }
+      return [item as { theme: string, view: string | null, role: string | null, detail: string | null }]
     })
     if (kinks.length) card.kinks = kinks
   }
@@ -143,8 +147,8 @@ export function interpretCharacter(raw: BookCharacter): InterpretedCard | undefi
 
   // 「弧线」字段已废除(world.characterArcs 为唯一权威,§11.1):旧文件遗留的 弧线 键在此静默忽略,不进 profile
 
-  // 未识别键 → profile(排除已消费保留键)
-  const consumed = new Set(['姓名', '角色', '身份', '外貌', '性格', '背景', '目标', '关系', '别名', '性别', '年龄', '说话风格', '能力', '恐惧', '弱点', '秘密', '首次出场', '已死亡', '耐心', '心软', '性欲强度', '玩法喜好', '成人属性', '弧线'])
+  // 未识别键 → profile(排除已消费保留键;「身份下性别」是旧数据的性别别名键,已并入性别,不入自由区)
+  const consumed = new Set(['姓名', '角色', '身份', '外貌', '性格', '背景', '目标', '关系', '别名', '性别', '身份下性别', '年龄', '说话风格', '能力', '恐惧', '弱点', '秘密', '首次出场', '已死亡', '耐心', '心软', '性欲强度', '玩法喜好', '成人属性', '弧线'])
   const profile: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(raw)) {
     if (!consumed.has(k)) profile[k] = v

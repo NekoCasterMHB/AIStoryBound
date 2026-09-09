@@ -33,6 +33,11 @@ onMounted(async () => {
 })
 
 const cards = computed(() => work.value?.characters ?? [])
+/** 选角列表:主角置前,其余保持原相对顺序(仅展示排序;逻辑仍用 cards 原序) */
+const sortedCards = computed(() => {
+  const rank = (r?: string) => (r === '主角' ? 0 : 1)
+  return [...cards.value].sort((a, b) => rank(a.role) - rank(b.role))
+})
 const characterArcs = computed<CharacterArc[]>(() => work.value?.world.characterArcs ?? [])
 
 /** 名字归一化(去空白;cast / 弧线与人物卡名匹配共用) */
@@ -555,7 +560,7 @@ function dismissLegacyHint() {
       class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
     >
       <UCard
-        v-for="c in cards"
+        v-for="c in sortedCards"
         :key="c.name"
         class="flex h-full flex-col transition"
         :class="canPick(c)

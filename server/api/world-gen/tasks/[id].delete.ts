@@ -28,11 +28,21 @@ export default defineEventHandler(async (event) => {
     // 终止执行中的 Workflow 实例(本地 dev 内联执行靠 assertNotCancelled 自行退出)
     const env = (event.context as unknown as { cloudflare?: { env?: Env } }).cloudflare?.env
     if (env?.WORLD_GEN) {
+      // 终止首个实例 + 续跑实例(stage_detail.instanceId,如 ${id}-r<时间戳>);各自 best-effort
+      const ids = [id]
       try {
-        const instance = await env.WORLD_GEN.get(id)
-        await instance.terminate()
+        const detail = row.stageDetail ? JSON.parse(row.stageDetail) as { instanceId?: string } : null
+        if (detail?.instanceId && !ids.includes(detail.instanceId)) ids.push(detail.instanceId)
       } catch {
-        // 实例不存在/已结束:忽略
+        // stage_detail 解析失败:只终止首个实例
+      }
+      for (const instId of ids) {
+        try {
+          const instance = await env.WORLD_GEN.get(instId)
+          await instance.terminate()
+        } catch {
+          // 实例不存在/已结束:忽略
+        }
       }
     }
     return { cancelled: true }

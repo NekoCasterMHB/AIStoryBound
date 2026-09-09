@@ -10,11 +10,20 @@ import { sweepStaleWorldGenTasks } from '../../../utils/world-gen-pipeline'
 import { ensureWorldGenTaskStarted } from '../../../utils/world-gen-start'
 import { worldGenTaskToDTO } from '../../../utils/world-gen-dto'
 
+/** 孤儿清扫节流:前端轮询 3-12s 一次,清扫(全量扫描 + 可能的 R2 list/delete)至多 60s 跑一次。
+ *  节流标记在同一 isolate 内共享;跨 isolate 至多各跑一次,无正确性影响 */
+let lastSweepAt = 0
+const SWEEP_INTERVAL_MS = 60_000
+
 export default defineEventHandler(async (event) => {
   const sessUser = await requireUser(event)
   const db = useD1(event)
   const env = (event.context as unknown as { cloudflare?: { env?: { SKILL_FILES?: R2Bucket } } }).cloudflare?.env
-  await sweepStaleWorldGenTasks(db, env?.SKILL_FILES)
+  const now = Date.now()
+  if (now - lastSweepAt >= SWEEP_INTERVAL_MS) {
+    lastSweepAt = now
+    await sweepStaleWorldGenTasks(db, env?.SKILL_FILES)
+  }
   const rows = await db.select()
     .from(worldGenTasks)
     .where(eq(worldGenTasks.userId, sessUser.id))

@@ -16,11 +16,14 @@ export default defineEventHandler(async (event) => {
     .where(and(eq(worldGenTasks.id, id), eq(worldGenTasks.userId, sessUser.id)))
     .get()
   if (!row) throw createError({ statusCode: 404, statusMessage: '任务不存在' })
-  // 自愈与失败判定:停在 uploaded 的任务按停留时长重启或判失败,再返回最新状态
-  await ensureWorldGenTaskStarted(event, row, useD1(event))
-  row = (await useD1(event).select()
-    .from(worldGenTasks)
-    .where(and(eq(worldGenTasks.id, id), eq(worldGenTasks.userId, sessUser.id)))
-    .get()) ?? row
+  // 自愈与失败判定:仅 uploaded 任务可能被重启/判失败,此后才需要重读最新状态
+  // (轮询热路径 running/completed 不做第二次查询)
+  if (row.status === 'uploaded') {
+    await ensureWorldGenTaskStarted(event, row, useD1(event))
+    row = (await useD1(event).select()
+      .from(worldGenTasks)
+      .where(and(eq(worldGenTasks.id, id), eq(worldGenTasks.userId, sessUser.id)))
+      .get()) ?? row
+  }
   return { task: worldGenTaskToDTO(row) }
 })

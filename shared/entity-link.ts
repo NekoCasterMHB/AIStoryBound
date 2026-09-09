@@ -223,3 +223,25 @@ export function applyEntityMerges(
   }
   return { characters: chars.filter((_, i) => !remove.has(i)), mergedAway }
 }
+
+/** 簇内「被并条目名/别名 → 规范条目名」映射(键为 norm 归一名;别名经 norm 后碰撞则先到先得)。
+ *  规范条目选取与 applyEntityMerges 同规则:mentionCount 最高,平序取下标靠前。
+ *  供消歧后回写 storyline.cast / 段角色文件键 / arcs 事实底稿,消除消歧前用名残留。 */
+export function buildAliasNameMap(chars: MergedCharacter[], groups: number[][]): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const group of groups) {
+    if (group.length < 2 || !group.every(i => i >= 0 && i < chars.length)) continue
+    const sorted = [...group].sort((a, b) => (chars[b]!.mentionCount ?? 0) - (chars[a]!.mentionCount ?? 0) || a - b)
+    const canonName = chars[sorted[0]!]!.name
+    for (const i of sorted.slice(1)) {
+      const c = chars[i]!
+      const nameKey = norm(c.name)
+      if (nameKey && !map.has(nameKey)) map.set(nameKey, canonName)
+      for (const a of c.alias ?? []) {
+        const k = norm(a)
+        if (k && !map.has(k)) map.set(k, canonName)
+      }
+    }
+  }
+  return map
+}

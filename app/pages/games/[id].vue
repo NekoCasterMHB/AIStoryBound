@@ -8,11 +8,11 @@ import { isAdultModeEnabled, setAdultModeEnabled } from '../../utils/adultMode'
 import { loadScenePrefs, saveScenePrefs } from '../../utils/scenePrefs'
 import { loadNarrTemp, saveNarrTemp, NARR_TEMP_MIN, NARR_TEMP_MAX, NARR_TEMP_STEP } from '../../utils/narrPrefs'
 import { loadEnabledAiSkillObjects, listInstalledSkills, loadEnabledAiSkills, saveEnabledAiSkills } from '../../utils/aiSkills'
-import { ADULT_CONTENT_POLICY, buildTurnPrompt, cardBrief, effectiveCards, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, estimateTurnPromptBreakdown, REINJECT_WINDOW_CHARS, applyNodeProgress, nodeStallGuidance } from '#shared/game'
+import { ADULT_CONTENT_POLICY, buildTurnPromptWithParts, cardBrief, effectiveCards, ensureDesires, mergeState, narratorDeviceSpec, turnOptionsSchema, estimateTurnPromptBreakdown, REINJECT_WINDOW_CHARS, applyNodeProgress, nodeStallGuidance, stateForPrompt } from '#shared/game'
 import { uuid } from '#shared/novel'
 import type { CharacterDynamicState, GameState, LocalGame, TurnStructured } from '#shared/novel'
 import type { BookView } from '#shared/book-view'
-import { getLocalGame, saveLocalGame } from '../../utils/gameStore'
+import { getLocalGame, saveLocalGameRow, listGameMessages, syncGameMessages, deleteGameMessagesAfter, gameToRow } from '../../utils/gameStore'
 import { addWorkTokensSmart, touchWorkSmart, loadWorkView } from '../../utils/bookStoreV2'
 import type { AiSkill } from '#shared/ai-skills'
 import { saveGamePoint, listGamePoints, pruneGamePoints, capGamePoints, hasGamePoint } from '../../utils/gameSaveStore'
@@ -207,20 +207,26 @@ onMounted(async () => {
   // 末条为玩家行动、但 summary 已推进到该行动之后 → 该行动其实已被回应,旁白丢在磁盘外。
   // 续玩若走「重试本回合」会把它二次结算(state_delta 重复叠加)导致剧情失控;
   // 这里丢弃尾部悬空行动,以 summary 描述的情节为基线直接继续(幂等:丢完后末条为旁白即不再触发)。
+  // v14:消息本体在 game-messages 表,行内不再带 messages;悬空行动丢弃 = 删水位线以上消息行
   let healed = false
+  const rows = await listGameMessages(gameId)
+  const msgs: LocalGame['messages'] = rows.map(r => ({ id: r.msgId, idx: r.idx, role: r.role, speaker: r.speaker, content: r.content }))
   const summaryIdx = typeof g.summary?.idx === 'number' ? g.summary.idx : null
-  const healTail = g.messages.at(-1)
+  const healTail = msgs.at(-1)
   if (healTail?.role === 'user' && summaryIdx !== null && summaryIdx > healTail.idx) {
-    let cut = g.messages.length
-    for (let i = g.messages.length - 1; i >= 0; i--) {
-      const m = g.messages[i]!
+    let cut = msgs.length
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]!
       if (m.role !== 'user' || summaryIdx <= m.idx) break
       cut = i
     }
-    if (cut < g.messages.length) {
-      g.messages = g.messages.slice(0, cut)
+    if (cut < msgs.length) {
+      const keep = msgs.slice(0, cut)
+      await deleteGameMessagesAfter(gameId, keep.at(-1)?.idx ?? -1)
+      g.msgCount = keep.length
       healed = true
-      void saveLocalGame(g)
+      void saveLocalGameRow(gameToRow(g, keep.length))
+      msgs.length = cut
     }
   }
   game.value = g
@@ -228,19 +234,20 @@ onMounted(async () => {
   work.value = g.workId ? await loadWorkView(g.workId) : null
   if (g.workId) void touchWorkSmart(g.workId)
   state.value = ensureDesires(g.state, cards.value)
-  messages.value = g.messages
+  messages.value = msgs
+  persistedMsgCount = msgs.length
   // 段定位:新存档读 currentBeat,旧存档回退解析旧 currentChapter 字符串
   plotBeat.value = (typeof g.currentBeat === 'number' && g.currentBeat >= 0)
     ? g.currentBeat
     : resolveInitialBeat()
-  const last = g.messages.at(-1)
+  const last = msgs.at(-1)
   options.value = last ? (g.optionsByMessage?.[last.id] ?? []) : []
   if (healed) {
     // 悬空行动已丢弃:不展示旧决策点选项(可能已被消费过),提示直接自由输入新行动继续
     options.value = []
     toast.add({ title: '上次回合进度保存不完整,剧情摘要已保留,请直接输入行动继续', color: 'neutral' })
   }
-  // 初始存档点:保证第一轮行动也有回滚目标(同 key 已有快照则跳过,避免每次进页重复全量写)
+  // 初始存档点:保证第一轮行动也有回滚目标(同 key 已有快照则跳过,避免每次进页重复写)
   {
     const last = messages.value.at(-1)
     if (!(await hasGamePoint(`${gameId}:${last?.idx ?? -1}`))) await savePointNow()
@@ -415,9 +422,9 @@ const statKind = ref<StatKind>('relations')
 const statDraft = ref<Record<string, number>>({})
 const confirmOpen = ref(false)
 
-/** 面板展示用摘要:前两位角色 + 总数 */
+/** 面板展示用摘要:主角在前排序后取前两位 + 总数 */
 function statBrief(source: Record<string, number> | undefined): string {
-  const entries = Object.entries(source ?? {})
+  const entries = Object.entries(source ?? {}).sort((a, b) => roleRank(a[0]) - roleRank(b[0]))
   if (entries.length === 0) return '—'
   const shown = entries.slice(0, 2).map(([k, v]) => `${k} ${v > 0 ? '+' : ''}${v}`).join(' · ')
   return entries.length > 2 ? `${shown} 等${entries.length}人` : shown
@@ -426,7 +433,16 @@ function statBrief(source: Record<string, number> | undefined): string {
 const relationBrief = computed(() => statBrief(state.value.relationships))
 const desireBrief = computed(() => statBrief(state.value.desires))
 
-const statRoles = computed(() => cards.value.filter(c => c.name !== playerName.value).map(c => c.name))
+/** 角色排序:主角置前,其余保持原相对顺序(关系/性欲面板与弹窗统一按此序展示) */
+function roleRank(name: string): number {
+  return cards.value.find(c => c.name === name)?.role === '主角' ? 0 : 1
+}
+const statRoles = computed(() =>
+  cards.value
+    .filter(c => c.name !== playerName.value)
+    .map(c => c.name)
+    .sort((a, b) => roleRank(a) - roleRank(b))
+)
 const statTitle = computed(() => (statKind.value === 'relations' ? '关系状态' : '性欲状态'))
 const statFieldName = computed(() => (statKind.value === 'relations' ? '好感度' : '性欲值'))
 
@@ -745,13 +761,13 @@ function onStartStory() {
 
 const started = computed(() => messages.value.length > 0 || streaming.value)
 
-/** 全量快照(剥离 Vue 响应式代理;persist 与存档点共用同一份,避免每回合双份深拷贝) */
-function snapshotGame(): { state: typeof state.value, messages: typeof messages.value } {
-  return {
-    state: JSON.parse(JSON.stringify(state.value)),
-    messages: JSON.parse(JSON.stringify(messages.value))
-  }
+/** 状态快照(剥离 Vue 响应式代理;persist 与存档点共用) */
+function snapshotState(): typeof state.value {
+  return JSON.parse(JSON.stringify(state.value))
 }
+
+/** 已落库的消息水位线(persist 只 append 水位线之后的新消息) */
+let persistedMsgCount = 0
 
 /** optionsByMessage 只保留最近 N 条旁白的选项:回滚依赖最近存档点(50 个),窗口对齐即可,防 game 行无限膨胀 */
 const MAX_OPTION_KEYS = 60
@@ -768,25 +784,37 @@ function pruneOptionKeys() {
 
 function persist() {
   if (!game.value) return null
-  const snap = snapshotGame()
-  game.value.state = snap.state
-  game.value.messages = snap.messages
+  const snapState = snapshotState()
+  game.value.state = snapState
   game.value.currentBeat = plotBeat.value
   game.value.syncStatus = game.value.syncStatus === 'synced' ? 'dirty' : game.value.syncStatus
   pruneOptionKeys()
-  void saveLocalGame(game.value)
-  return snap
+  // opening 正文窗口只对首回合生效(game.ts 仅在无摘要/无历史时注入):首回合结束后瘦身,
+  // 不再随 games 行常驻(约 2500 字 × 每回合重写)
+  if (game.value.opening?.beatText && messages.value.length > 2) {
+    game.value.opening.beatText = undefined
+    game.value.opening.prevBeat = undefined
+    game.value.opening.nextBeat = undefined
+  }
+  // games 行(state/summary/选项,有界)+ 仅新增消息行:每回合写量 O(1),不再整局重写
+  const newMessages = messages.value.slice(persistedMsgCount)
+  persistedMsgCount = messages.value.length
+  game.value.msgCount = messages.value.length
+  void saveLocalGameRow(gameToRow(game.value, messages.value.length))
+  void syncGameMessages(gameId, newMessages)
+  return snapState
 }
 
-async function savePointNow(snap = snapshotGame()) {
+async function savePointNow(snapState = snapshotState()) {
   const last = messages.value.at(-1)
+  // v14:存档点只存 state/summary + 消息水位线;消息本体在 game-messages 表只追加,
+  // 回滚按 idx 恢复即可,不再复制整局消息(此前 50 个存档点 = 50 份消息拷贝)
   await saveGamePoint({
     key: `${gameId}:${last?.idx ?? -1}`,
     gameId,
     idx: last?.idx ?? -1,
-    state: snap.state,
+    state: snapState,
     currentBeat: plotBeat.value,
-    messages: snap.messages,
     summary: game.value?.summary ?? null,
     savedAt: new Date().toISOString()
   }).catch(() => {})
@@ -814,7 +842,7 @@ async function runOptionsPhase(
     },
     {
       role: 'user' as const,
-      content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(state.value)}\n上文剧情:\n${(
+      content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(stateForPrompt(state.value))}\n上文剧情:\n${(
         // 并行调用时旁白尚未入列(见 sendTurn),显式补入,保证上下文与串行时一致
         messages.value.at(-1)?.id === narratorMsg.id
           ? messages.value.slice(-12)
@@ -824,7 +852,9 @@ async function runOptionsPhase(
   ]
   // 不设 maxTokens:高温下收尾输出(3 个选项 + state_delta + 500 字摘要)会顶到 1200 截断,
   // 截断点在字符串中段时 tryRepairTruncated 无法修复 → 必失败;交给模型自然收尾,平台默认上限足够
-  const optionsCall = () => aiChatJson<TurnStructured>(optionsMessages, { temperature: narrTemp.value }, {
+  // 收尾器独立低温:结构化 JSON 输出在叙事高温下空选项/截断概率显著上升(重试是真金 token);
+  // 摘要/选项/状态增量不需要叙事的发散度
+  const optionsCall = () => aiChatJson<TurnStructured>(optionsMessages, { temperature: 0.5 }, {
     // 选项阶段继续接收实时估算回调(头部已改为常驻统计按钮,此数据保留供调试)
     onLive: (info) => {
       liveTokens.value = info.tokens
@@ -839,7 +869,11 @@ async function runOptionsPhase(
     optRes = await optionsCall()
     if (!optRes.ok) retryTokens += optRes.usage?.totalTokens ?? 0
   }
-  if (!optRes.ok) throw new Error(optRes.message)
+  if (!optRes.ok) {
+    // 已消耗的失败尝试照常入账(throw 会跳过下方正常入账点)
+    if (game.value) void addWorkTokensSmart(game.value.workId, retryTokens)
+    throw new Error(optRes.message)
+  }
 
   // 选项为空:自动补生成选项(最多再补 2 次),避免玩家面对空选项;每次尝试的用量都计入 retryTokens
   const MAX_EMPTY_OPTION_RETRIES = 2
@@ -851,7 +885,10 @@ async function runOptionsPhase(
       optRes = again
     } else {
       retryTokens += again.usage?.totalTokens ?? 0
-      if (again.status === 402 || again.status === 400) throw new Error(again.message)
+      if (again.status === 402 || again.status === 400) {
+        if (game.value) void addWorkTokensSmart(game.value.workId, retryTokens)
+        throw new Error(again.message)
+      }
       break // 重试也失败:用最后一次结果(可能仍为空),交给兜底提示与手动入口
     }
   }
@@ -865,9 +902,12 @@ async function runOptionsPhase(
   if (!game.value.optionsByMessage) game.value.optionsByMessage = {}
   game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(options.value))
   // 推进段定位:收尾器报告当前推进到的段序号(1-based),向前且最多跳 2 段时采纳
+  const beatBefore = plotBeat.value
   advancePlotBeat(turn.current_beat)
-  // 节点进度(仅 v2 段带 节点[] 时启用):收尾器回报已达最大节点序号,无推进则累计停滞
-  state.value = applyNodeProgress(state.value, plotBeat.value, turn.current_nodes, nodeTotal.value)
+  // 节点进度(仅 v2 段带 节点[] 时启用):收尾器回报已达最大节点序号,无推进则累计停滞。
+  // 跨段回合的回报基于旧段生成:段位变化当回合丢弃节点回报,防止旧段序号套到新段节点表
+  const nodesReport = plotBeat.value === beatBefore ? turn.current_nodes : undefined
+  state.value = applyNodeProgress(state.value, plotBeat.value, nodesReport, nodeTotal.value)
 
   if (options.value.length === 0) {
     toast.add({ title: '本回合没有生成选项,可重新生成或直接输入行动', color: 'warning' })
@@ -1085,7 +1125,8 @@ async function sendTurn(choice?: string) {
         : undefined,
       reinjectPlot
     }
-    const prompt = buildTurnPrompt(promptArgs)
+    // 组装一次拿到消息数组与分段:分段仅供消耗统计复用,免得统计时二次全量组装 prompt
+    const { prompt, parts: promptParts } = buildTurnPromptWithParts(promptArgs)
     // 1) 叙事流式(中继 SSE)。失败静默重试一次(HTTP 5xx/网络/超时/空输出):
     //    中途失败时流式可能已上屏半截,重试前 startNarrStream 重建从零开始;
     //    402 余额不足/400 参数错误重试必然复现,直接抛出;玩家取消(CancelledError)不重试
@@ -1122,11 +1163,17 @@ async function sendTurn(choice?: string) {
           const text = (typewriter?.fullText ?? streamDisplay.value).trim()
           if (text) return { usage: narr.usage, retryTokens, narratorText: text }
           retryTokens += narr.usage?.totalTokens ?? 0
-          if (attempt >= 1) throw new Error('AI 未返回剧情内容,请重试')
+          if (attempt >= 1) {
+            // 已消耗的失败尝试照常入账(throw 会跳过外层入账点)
+            if (game.value) void addWorkTokensSmart(game.value.workId, retryTokens)
+            throw new Error('AI 未返回剧情内容,请重试')
+          }
         } else if (narr.status === 402 || narr.status === 400 || attempt >= 1) {
+          if (game.value) void addWorkTokensSmart(game.value.workId, retryTokens)
           throw new Error(narr.message)
         }
         console.warn('[game] 叙事生成失败,静默重试一次:', narr.ok ? '输出为空' : narr.message)
+        retryTokens += (narr.ok ? narr.usage?.totalTokens ?? 0 : 0)
         startNarrStream()
       }
     }
@@ -1138,7 +1185,7 @@ async function sendTurn(choice?: string) {
     // 消耗统计:叙事大项(真实 usage,含重试)+ 输入细项(按字符估算);保留首回合欲望大项
     const narrUsage = narrResult.usage
     const narrTotal = narrResult.retryTokens + (narrUsage?.totalTokens ?? 0)
-    const narrDetails: TurnCostPart[] = estimateTurnPromptBreakdown(promptArgs).map(d => ({ label: d.label, tokens: d.tokens }))
+    const narrDetails: TurnCostPart[] = estimateTurnPromptBreakdown(promptArgs, promptParts).map(d => ({ label: d.label, tokens: d.tokens }))
     if (narrResult.retryTokens > 0) narrDetails.push({ label: '失败重试', tokens: narrResult.retryTokens })
     const prior: TurnCostItem[] = (turnCostReport.value ?? [] as TurnCostItem[]).filter(c => c.stage !== 'narrative')
     turnCostReport.value = [
@@ -1203,6 +1250,8 @@ async function sendTurn(choice?: string) {
       const last = messages.value.at(-1)
       if (last?.role === 'user') {
         messages.value.pop()
+        // v14:消息在独立表,撤销行动须同步截断水位线以上的行,否则重进页面时该行动「复活」
+        void deleteGameMessagesAfter(gameId, messages.value.at(-1)?.idx ?? -1)
         const prevNarr = [...messages.value].reverse().find(m => m.role === 'narrator')
         options.value = prevNarr ? (game.value?.optionsByMessage?.[prevNarr.id] ?? []) : []
         streamDisplay.value = ''
@@ -1271,7 +1320,9 @@ async function rollbackAction() {
   const target = points.find(p => p.idx < msg.idx)
   if (!target) return
 
-  messages.value = JSON.parse(JSON.stringify(target.messages))
+  // v14:消息本体在 game-messages 表,按存档点水位线截断(旧档点无快照,所需消息 ⊆ 当前表)
+  messages.value = JSON.parse(JSON.stringify(rowsUpTo(target.idx)))
+  await deleteGameMessagesAfter(gameId, target.idx)
   state.value = ensureDesires(JSON.parse(JSON.stringify(target.state)), cards.value)
   // 回滚后按存档点恢复段定位(新存档读 currentBeat,旧存档点回退解析旧 currentChapter 字符串)
   plotBeat.value = (typeof (target as { currentBeat?: number | null }).currentBeat === 'number'
@@ -1300,16 +1351,66 @@ async function rollbackAction() {
   // 回填恢复点最后一条旁白挂载的选项:回滚后可直接继续选择,不必只能自由输入
   const restoredNarr = [...messages.value].reverse().find(m => m.role === 'narrator')
   options.value = restoredNarr ? (game.value?.optionsByMessage?.[restoredNarr.id] ?? []) : []
+  // 回滚到开局(历史清空)时重建首回合的段首原文窗口:beatText 已在首回合后瘦身,
+  // 不重建的话重演首回合只剩细纲摘要,丢失【段首原文】锚点
+  if (messages.value.length === 0) rebuildOpeningWindow()
+  persistedMsgCount = messages.value.length
+  if (game.value) game.value.msgCount = messages.value.length
   persist()
   await pruneGamePoints(gameId, msg.idx)
   await savePointNow()
 }
 
-// 新内容自动滚到底部
+/** 重建开局 beatText 窗口(v2 取段正文;v1 按 storyline startChar 从全文切),供回滚到开局后重演首回合 */
+function rebuildOpeningWindow() {
+  const g = game.value
+  const w = work.value
+  if (!g?.opening || g.opening.beatIndex == null) return
+  const bi = g.opening.beatIndex
+  const wf = w?.fulltext ?? ''
+  const seg = w?.segments?.[bi]
+  const beat = w?.storyline?.[bi]
+  if (seg?.canon.text) {
+    g.opening.beatText = seg.canon.text.slice(0, 2500)
+  } else if (wf && beat) {
+    const start = beat.startChar ?? 0
+    g.opening.beatText = wf.slice(start, start + 2500)
+  } else {
+    return
+  }
+  const prev = w?.storyline?.[bi - 1]
+  const next = w?.storyline?.[bi + 1]
+  g.opening.prevBeat = prev?.startChar != null
+    ? { title: prev.label ?? undefined, text: wf.slice(prev.startChar, prev.startChar + 600) }
+    : undefined
+  g.opening.nextBeat = next?.startChar != null
+    ? { title: next.label ?? undefined, text: wf.slice(next.startChar, next.startChar + 600) }
+    : undefined
+}
+
+/** 当前消息表对应内存数组的浅拷(≤ waterline idx 的全部消息) */
+function rowsUpTo(waterline: number): LocalGame['messages'] {
+  return messages.value.filter(m => m.idx <= waterline)
+}
+
+// 新内容自动滚到底部:deep 监听(push 只改数组内容,浅监听不触发);打字机每 token 都触发,
+// 节流到 150ms + 尾随补滚一次,避免 smooth 动画被连续重置(滚动抖动/CPU 浪费)
+let autoScrollTimer: ReturnType<typeof setTimeout> | null = null
+let lastAutoScrollAt = 0
 watch([messages, streamDisplay], async () => {
-  await nextTick()
-  chatRef.value?.scrollTo({ top: chatRef.value.scrollHeight, behavior: 'smooth' })
-})
+  const now = Date.now()
+  if (now - lastAutoScrollAt >= 150) {
+    lastAutoScrollAt = now
+    await nextTick()
+    chatRef.value?.scrollTo({ top: chatRef.value.scrollHeight, behavior: 'smooth' })
+  } else if (!autoScrollTimer) {
+    autoScrollTimer = setTimeout(() => {
+      autoScrollTimer = null
+      lastAutoScrollAt = Date.now()
+      chatRef.value?.scrollTo({ top: chatRef.value.scrollHeight, behavior: 'smooth' })
+    }, 150)
+  }
+}, { deep: true })
 </script>
 
 <template>

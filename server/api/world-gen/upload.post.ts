@@ -47,7 +47,6 @@ export default defineEventHandler(async (event) => {
   const modeRaw = parts.find(p => p.name === 'mode')?.data.toString()
   const mode: WorldGenMode = modeRaw === 'eco' ? 'eco' : modeRaw === 'custom' ? 'custom' : 'full'
   const stepsRaw = parts.find(p => p.name === 'steps')?.data.toString()
-  const charCountRaw = Number(parts.find(p => p.name === 'charCount')?.data.toString())
   const configRaw = parts.find(p => p.name === 'config')?.data.toString()
 
   if (!filePart || !filePart.data?.length) {
@@ -139,9 +138,9 @@ export default defineEventHandler(async (event) => {
 
   // ---- 平台模式:余额充足性预检(不预扣;运行中只记账,任务完成时一次性结算,余额不足转 paused) ----
   const db = useD1(event)
-  const chars = Number.isFinite(charCountRaw) && charCountRaw > 0
-    ? Math.min(Math.round(charCountRaw), sourceChars) // 转换后字符数不可能超过原文长度,防客户端虚报
-    : sourceChars
+  // 估算一律用服务端解析出的精确字符数:客户端上报的 charCount 只用于展示,不可信其少报
+  // (报 1 可绕过余额预检,平台垫付整次 AI 成本且收不回)
+  const chars = sourceChars
   const estimatedTokens = estimateWorldGenTokens(chars, mode === 'eco', undefined, steps)
   if (!escrow && estimatedTokens > 0) {
     const me = await db.select({ aiTokenBalance: usersTable.aiTokenBalance })

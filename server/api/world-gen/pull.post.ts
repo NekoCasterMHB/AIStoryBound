@@ -21,6 +21,17 @@ export default defineEventHandler(async (event) => {
   const cache = await db.select().from(worldCache).where(eq(worldCache.id, cacheId)).get()
   if (!cache) throw createError({ statusCode: 404, statusMessage: '缓存不存在或已被清理' })
 
+  // 幂等:同一用户已拉取过同一 (hash, mode) 的缓存时,直接返回既有任务,不重复扣费/建行
+  const existing = await db.select().from(worldGenTasks)
+    .where(and(
+      eq(worldGenTasks.userId, sessUser.id),
+      eq(worldGenTasks.sourceHash, cache.sourceHash),
+      eq(worldGenTasks.mode, cache.mode === 'eco' ? 'eco' : 'full'),
+      eq(worldGenTasks.status, 'completed')
+    ))
+    .get()
+  if (existing) return { task: worldGenTaskToDTO(existing) }
+
   const cost = cacheHalfCost(cache.tokensUsed)
   if (cost > 0) {
     const claimed = await db.update(usersTable)

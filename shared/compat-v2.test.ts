@@ -216,3 +216,24 @@ test('兼容矩阵:空字段作品(v2 空段/空角色/v1 无产物)不崩、结
   const segs = Object.values(doc.segments)
   assert.ok(segs.every(s => s.canon.text.length > 0))
 })
+
+test('兼容矩阵:正文去重 zip——未编辑文档去重往返无损,单段编辑后回退内嵌', () => {
+  const doc = workToV2(makeWork())
+  const bytes = bookDocToZip(doc)
+  const back = bookZipToDoc(bytes)
+  // 去重格式生效:manifest 带 segStarts,且各段正文经切片重建后逐字节一致
+  assert.ok(Array.isArray(back.manifest.segStarts), '未编辑文档应走 segStarts 去重格式')
+  for (const [key, seg] of Object.entries(doc.segments)) {
+    assert.equal(back.segments[key]!.canon.text, seg.canon.text, `段 ${key} 正文往返无损`)
+    assert.equal(back.segments[key]!.canon.start, seg.canon.start)
+  }
+
+  // 单段被编辑(与全文切片不一致)→ 回退内嵌旧格式,编辑不丢失
+  const edited = workToV2(makeWork())
+  const firstKey = Object.keys(edited.segments)[0]!
+  edited.segments[firstKey]!.canon.text = `${edited.segments[firstKey]!.canon.text}(人工补写)`
+  const bytes2 = bookDocToZip(edited)
+  assert.equal(bookZipToDoc(bytes2).manifest.segStarts, undefined, '编辑过段正文的包必须回退内嵌格式')
+  const back2 = bookZipToDoc(bytes2)
+  assert.equal(back2.segments[firstKey]!.canon.text, edited.segments[firstKey]!.canon.text)
+})

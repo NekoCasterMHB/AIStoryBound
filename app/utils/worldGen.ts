@@ -4,7 +4,7 @@
 import { extractFrontMatter, normalizeCharacterCards } from '#shared/novel'
 import { detectNovelEncoding } from '#shared/novel-encoding'
 import type { ChapterSegment, LocalWork } from '#shared/novel'
-import { db } from './localDb'
+import { db, STORE_WORKS_META } from './localDb'
 
 export interface GenerateProgress {
   stage: 'parse' | 'author' | 'extract' | 'merge' | 'check' | 'synthesize' | 'arcs' | 'annotate' | 'done'
@@ -78,11 +78,11 @@ export async function getWork(id: string): Promise<LocalWork | null> {
   return w ? normalizeWork(w) : null
 }
 
-/** 按来源云端任务 id 查已安装作品(手动下载时判定"该任务是否已装过",防同一任务重复落库) */
+/** 按来源云端任务 id 查已安装作品(手动下载时判定"该任务是否已装过",防同一任务重复落库)。
+ *  v14 起走 sourceTaskId 索引(v14 前的全表扫描行为等价,索引对旧行自动缺失跳过) */
 export async function getWorkBySourceTask(taskId: string): Promise<LocalWork | null> {
   if (typeof indexedDB === 'undefined' || !taskId) return null
-  const all = await db.table(STORE_WORKS).toArray()
-  const found = all.find(w => w.sourceTaskId === taskId)
+  const found = (await db.table(STORE_WORKS).where('sourceTaskId').equals(taskId).first()) ?? null
   return found ? normalizeWork(found) : null
 }
 
@@ -94,6 +94,7 @@ export async function saveWork(work: LocalWork): Promise<void> {
 export async function deleteWork(id: string): Promise<void> {
   if (typeof indexedDB === 'undefined') return
   await db.table(STORE_WORKS).delete(id)
+  await db.table(STORE_WORKS_META).delete(id)
 }
 
 /** 记录一次浏览/操作:刷新最后操作时间(书架卡片展示用;无作品时静默) */
@@ -105,12 +106,31 @@ export async function touchWork(id: string): Promise<void> {
   await saveWork(work)
 }
 
-/** 游玩消耗追加到作品累计 tokens(书架卡片展示用),同时刷新最后操作时间 */
+/** v1 作品的游玩计量旁路(works-meta 表小行):IndexedDB 无部分更新,
+ *  每回合 AI 记账若整行重写 works 会搬全部章节正文(v14 books 同款拆分,works 为遗留层补一份) */
+interface WorksMetaRow { id: string, tokensUsed?: number, playedAt?: string }
+
+/** 游玩消耗追加到作品累计 tokens(书架卡片展示用):计量写旁路小行,读侧合并;不再每回合整书重写 */
 export async function addWorkTokens(id: string, tokens: number): Promise<void> {
   if (typeof indexedDB === 'undefined' || !tokens || tokens <= 0) return
-  const work = await getWork(id)
-  if (!work) return
-  work.tokensUsed = (work.tokensUsed ?? 0) + tokens
-  work.updatedAt = new Date().toISOString()
-  await saveWork(work)
+  await db.transaction('rw', db.table(STORE_WORKS_META), db.table(STORE_WORKS), async () => {
+    const meta = (await db.table(STORE_WORKS_META).get(id)) as WorksMetaRow | undefined
+    const work = (await db.table(STORE_WORKS).get(id)) as LocalWork | undefined
+    if (!work) return
+    // 基线同步:旁路计量与行内计量取大者(行内值来自安装/迁移时刻,旁路值随游玩累加)
+    const base = Math.max(meta?.tokensUsed ?? 0, work.tokensUsed ?? 0)
+    const next = base + tokens
+    await db.table(STORE_WORKS_META).put({ id, tokensUsed: next, playedAt: new Date().toISOString() })
+    // 行内 tokensUsed 停更(读取时合并旁路值);updatedAt 不每回合刷新,书架排序稳定
+  })
+}
+
+/** 读 v1 作品的游玩消耗(行内值与旁路值取大者) */
+export async function getWorkTokensUsed(id: string): Promise<number> {
+  if (typeof indexedDB === 'undefined') return 0
+  const [meta, work] = await Promise.all([
+    db.table(STORE_WORKS_META).get(id) as Promise<WorksMetaRow | undefined>,
+    db.table(STORE_WORKS).get(id) as Promise<LocalWork | undefined>
+  ])
+  return Math.max(meta?.tokensUsed ?? 0, work?.tokensUsed ?? 0)
 }

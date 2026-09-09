@@ -102,7 +102,7 @@ test('buildBookDoc:成书卡经代码翻译为中文保留键,弧线权威在 wo
   const arcs: CharacterArc[] = [{
     character: '何清玲',
     summary: '从学生到伴侣的成长线',
-    beats: [{ beatIndex: 0, summary: '接文件', status: '初识' }],
+    beats: [{ beatIndex: 0, summary: '接文件' }],
     ending: '在一起'
   }]
   const doc = buildBookDoc({ title: '测试', fulltext: 'x', storyline: beats, extracts, overlay, world: { characterArcs: arcs } })
@@ -131,9 +131,9 @@ test('remapArcsToSegments:粗段序 → 剧情段序,同段多 beat 合并为一
     character: '何清玲',
     summary: '成长线',
     beats: [
-      { beatIndex: 0, summary: '接文件', status: '初识' },
+      { beatIndex: 0, summary: '接文件' },
       { beatIndex: 1, summary: '绊倒后整理物品' }, // 与粗段0同属剧情段0 → 合并
-      { beatIndex: 2, summary: '主动约复习', status: '主动' }
+      { beatIndex: 2, summary: '主动约复习' }
     ],
     ending: '在一起'
   }]
@@ -143,10 +143,8 @@ test('remapArcsToSegments:粗段序 → 剧情段序,同段多 beat 合并为一
   assert.equal(out[0]!.beats.length, 2)
   assert.equal(out[0]!.beats[0]!.beatIndex, 0)
   assert.equal(out[0]!.beats[0]!.summary, '接文件；绊倒后整理物品')
-  assert.equal(out[0]!.beats[0]!.status, '初识') // status 取首条非空
   assert.equal(out[0]!.beats[1]!.beatIndex, 1)
   assert.equal(out[0]!.beats[1]!.summary, '主动约复习')
-  assert.equal(out[0]!.beats[1]!.status, '主动')
   assert.equal(out[0]!.ending, '在一起')
   // 越界粗段丢弃;空 groups 原样返回(降级安全)
   const withInvalid = remapArcsToSegments([{ character: 'x', summary: '', beats: [{ beatIndex: 9, summary: '幽灵' }] }], groups)

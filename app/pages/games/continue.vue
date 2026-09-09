@@ -115,7 +115,7 @@ function progressLabel(g: LocalGame): string {
           你是「{{ g.playerName }}」
         </p>
         <p class="mt-1 truncate text-xs text-neutral-500">
-          {{ progressLabel(g) }} · {{ g.messages.length }} 条剧情
+          {{ progressLabel(g) }} · {{ g.msgCount ?? 0 }} 条剧情
         </p>
         <p class="mt-1 text-xs text-neutral-500">
           最后游玩: {{ fmtTime(g.updatedAt) }}

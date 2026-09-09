@@ -1,53 +1,61 @@
-# format-v2 进度确认与开发计划
+## 目标
 
-## 现状结论(代码已核实,与文档 §10.0 一致)
+彻底消除"动一处 → 整书/整局重写"。v13 后仍有三处大字段与高频小写绑在同一行:
 
-`docs/format-v2.md` 记录的进度与实际代码完全一致(925c7b6「新重构」即把这批工作落盘提交,文档无滞后也无超前):
-
-| 阶段 | 状态 | 证据 |
+| 痛点 | 现状 | 触发场景 |
 |---|---|---|
-| P0 契约+类型 | ✅ | `shared/novel-v2.ts`(SegmentCanon 含`节点[]`/`主角`、bookDocToZip/bookZipToDoc) |
-| P1 存储+转换器 | ✅ | `localDb.ts` DB_VERSION 10 + book2 表;`v2-convert.ts`/`bookStoreV2.ts`/`normalize-card.ts`/`migrateV2.ts`(无 UI 入口);读取层经 `loadWorkSmart` 直连 book2 |
-| P2-A | ✅ | play/世界详情/角色卡编辑器经 `loadWorkSmart`;`game.ts` cardBrief 注入 profile「补充设定」 |
-| **P2-B** | 🔴 **未动工(当前卡点)** | `game.ts` 对 v2/节点/段叠加零引用;`character-interpreter.ts` 全仓无消费者;开局仍是旧"按细纲段"流程 |
-| P3 | 🟡 部分 | 自由区编辑器已接 v2 写回;统一富展示、分段查看 UI、v2 正文/世界详情编辑未做 |
-| P4/P5/P6 | 🔴 未开工 | Workflows 仍产 v1;无 R2 `works/<id>.zip`;迁移工具无 UI |
+| `books.fulltext`(整本正文)挂 meta 行 | touchBook2/saveBook2Meta/saveBook2Edits 的 charCount 更新都整行重写 | 进页面、概览编辑、存卡 |
+| `book-segments` 行 = canon + **canon.text(段正文)+ 整段角色文件 map** | 改一个角色的段文件 → 重写该段正文 + 全员文件;SegmentsModal 改正文 → 全段重写 | 卡编辑器每键提交、分镜编辑 |
+| `games.messages`(整局消息)+ saves 快照复制整局 messages | 每回合 persist 整行 O(N);50 个存档点 = 50 份消息拷贝 | 每回合 ×3 |
 
-**关键依赖缺口**:`节点[]`、段级`主角`、转折标题目前只有契约定义,无任何链路产出(`workToV2` 从 v1 storyline 切段只产 text+beat,无节点;云端管线是 v1)。因此 P2-B 按容错降级实施:引擎能力先建好,无节点数据的作品(现状全部)自动退回现有 beat 行为,P4 产出节点后自动生效。
+## 新表结构(v14)
 
-## 阶段一:P2-B 引擎读取层(下一步,本次实施)
+```
+books                 'id, updatedAt'          meta/manifest(无 fulltext,<5KB)
+book-texts            'key, id'                { key: `${id}::full` | `${id}::seg::${seq}`, text }  ← 正文大字段,仅整块读写
+book-segments         '[id+seq], id'           canon(去 text,含 节点/cast/beat)
+book-seg-chars        'key, id'                { key: `${id}::${seq}::${name}`, seq, name, file }  ← 段角色文件原子行
+book-characters       '[id+name], id'          基础卡(不变)
+book-world            'id'                     entities/conflicts/characterArcs(不变)
+book-stats            'id'                     tokensUsed(v13,不变)
+games                 'id'                     LocalGame 去 messages(optionsByMessage 留在行内,已被裁剪有界;新增 msgCount)
+game-messages         '[gameId+idx], gameId'   { gameId, idx, id, role, speaker, content }  ← 消息 append-only 一行一条
+saves                 'key, gameId'            存档点去 messages,只存 state/summary/idx 水位线
+works / 其余小表                              不动;顺手删零引用死表 worlds、extract-cache
+```
 
-1. **接入保留键解释器 + 段状态叠加**(§8 规则 4):
-   - `v2ToWork`/读取层把段角色文件(姓名/状态/剧情)随 LocalWork 透传给引擎(新增可选字段,如 `segmentCharacterFiles`),或引擎按 book2SourceId 直读 BookDoc;
-   - `game.ts` 有效卡计算:基础卡 → 当前段角色文件`状态`浅覆盖 → `剧情`作为该角色分线注入 prompt;`character-interpreter.ts` 的 `interpretCharacter` 在此接入,替代 `bookCharacterToCard` 的散点类型假设;无段文件的角色行为不变。
-2. **段级主角锚**(§11.6):`game.ts` NPC 对手戏锚改为先取当前段 `正典.主角` 名单最适者,段未标则回退 `role==='主角'`。
-3. **节点进度与注入**(§7.4):
-   - `turnOptionsSchema` 的 `current_beat` 扩展为可回报「段序号 + 已达节点/百分比」(兼容旧格式字符串,解析器双读);
-   - GameState 增加已触发节点记录;回合 prompt 的剧情轨道只注入「已达节点摘要 + 下一未触发节点详细描述」;
-   - **降级**:本段无`节点[]`时完全不启用节点逻辑,维持现有段窗口注入。
-4. **卡住引导**(§7.4):连续 5 回合且段内进度 <40% 时,在 options 混入「【推进剧情】…」引导项指向下一未触发节点;仍为建议,自由输入优先。无节点数据不触发。
-5. **开局交互「先选角色 → 再选时间点」**(§7.3):
-   - `play/[id].vue` 对 v2 作品(book2SourceId)改为两步:选角色(以各段角色文件反查可用角色)→ 选该角色的切入时间段(列表展示段`title`转折标题/主角/剧情摘要,以文件为准过滤);
-   - 选定后以该段该角色状态开局,现有 openingMode(ai/beat/custom)叠加细化首回合;v1 作品保持现有三选流程不变。
-6. **验证**:用测试账号导入/转换一个 v2 作品开局游玩,核对段状态叠加、主角锚、降级路径(v1 转 v2 无节点)均正常;有节点数据的作品用手工构造样例验证节点注入与卡住引导。
+saves 丢弃 messages 的无损性:消息表只追加,旧存档点(idx 水位线)所需消息 ⊆ 当前消息表,回滚语义不变。
 
-## 阶段二:P3 收尾(接下来)
+## 改造清单
 
-- 统一人物卡富展示组件(保留键富展示 + 自由键"键:值"通用渲染 + 折叠),选角页/书架/游戏内角色卡复用;
-- 分段查看 UI:正典(标题/beat/节点/cast/正文)+ 各角色本段文件(状态/剧情/自由区)浏览;
-- v2 正文编辑与世界详情概览编辑接 v2 写回,解除 `works.vue` 对 v2 的菜单禁用;
-- `migrateV2.ts` UI 入口(设置页/书架工具位,dry-run + 备份)。
+**1. app/utils/localDb.ts** — v14 schema + 单事务 upgrade:
+- books.fulltext → book-texts,并从行内删除该字段
+- segments:canon.text → book-texts;characters map → book-seg-chars 行;段行重写为 canon-only
+- games.messages → game-messages 行(msgCount 写入 games 行);saves 行删 messages 字段
+- worlds / extract-cache 置 null
 
-## 阶段三:P4 生成管线 v2 化(周期最长)
+**2. app/utils/bookStoreV2.ts**
+- `saveBookDoc`/`loadBookDocWithMeta`:按新表拆装(texts 批量写/按 id 拉取)
+- `saveBook2Edits`:段角色文件 diff 直接 put 到 book-seg-chars 单行(真原子);不再触发段行/正文搬移
+- 新增 `saveBook2Fulltext(id, text)`(edit 页用)、`saveBook2SegmentText(id, seq, text)`(SegmentsModal 用)——各一张小表单行写
+- `deleteBook2` 补删 book-texts(按 id 索引)、book-seg-chars
+- `touchBook2`/`saveBook2Meta`/charCount 更新自然变成 <5KB 行写入(拆出 fulltext 后自动达成)
+- `updateBook2` 保留兜底(edit 页切到专用 API 后仅罕见路径)
 
-Workflows 改为:parse → author → 切段即产 `正典.json`(AI 标转折标题/主角/cast/`节点[]`)→ extract 每段只产各角色`剧情+状态` → merge 合并 → 代码翻译成中文键 `characters/` → 弧线纯总结 → 落 v2 zip。此阶段完成后,阶段一的全部引擎能力在新生成作品上自动生效。
+**3. app/utils/gameStore.ts** — 新增消息表 API:`appendGameMessages`(bulkPut)、`listGameMessages(gameId)`、`deleteGameMessagesAfter(gameId, idx)`、`deleteGameMessages(gameId)`;`saveLocalGame` 保留但调用方改为传"无消息的游戏行";`restoreLocalGame` 兼容旧格式行(带 messages → 拆行)。列表用 `msgCount` 替代 `messages.length`。
 
-## 阶段四:P5 云端/同步/工坊
+**4. app/pages/games/[id].vue** — persist 改为:games 行(state/summary/currentBeat/optionsByMessage/msgCount)+ 仅新增消息 append(内存维护 lastPersistedIdx 水位线);打开会话 = getLocalGame + listGameMessages 拼装(渲染逻辑不变);回滚 = deleteGameMessagesAfter + 行内 state 覆盖。
 
-R2 zip 统一存储(`works/<id>.zip`、`preset-worlds/<id>.zip`、`store/<id>.zip`),D1 只存索引元数据;分享 share|kind=game 打包 games/;存量 world_state JSON 迁移。
+**5. app/utils/gameSaveStore.ts** — `GameSavePoint` 去 messages;恢复存档点时消息从 game-messages 读(idx ≤ 点位线),旧备份恢复路径同语义。
 
-## 阶段五:P6 回归 + 兼容矩阵
+**6. app/utils/backupStore.ts** — 备份导出 games 时组装消息进备份 JSON、恢复时拆行写入消息表;旧备份(行内带 messages)容错兼容。
 
-旧 zip/新版 zip/空字段/异结构导入回归;迁移工具全量走查;更新 `docs/format-v2.md` §10.0 进度表(每阶段完成后同步)。
+**7. 调用点小改** — `edit/[id].vue`(saveBook2Fulltext)、`SegmentsModal.vue`(saveBook2SegmentText)、`continue.vue`/`works.vue`(msgCount)、`CharacterCardsModal.vue` 无需动(saveBook2Edits 签名不变)。
 
-**本次执行范围**:阶段一(P2-B)完整落地并验证;阶段二起按上述顺序作为后续迭代,不并行展开。
+## 不做 / 风险声明
+
+- works(v1)表不动(遗留层,写入源都是低频)。
+- LocalWork/BookView/zip 边界形状不变,全部吸收在拼装层,页面消费方无感。
+- v14 迁移是一次性全库重写(单事务,失败整体回滚),换永久细粒度。
+- 每回合仍写 games 行(state/summary 有界增长),但消息体 O(N) 部分拆除后,回合写放大从 O(N) 降为 O(1) 增量。
+- 纯本地改动,不触云端/分享格式;完成后跑 lint + typecheck + 56 项测试,并按 §10.0 用现有本地作品实点验证(打开书架/卡编辑/续玩/回滚/导出)。

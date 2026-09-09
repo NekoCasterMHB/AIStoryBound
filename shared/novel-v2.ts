@@ -46,6 +46,8 @@ export interface SegmentCanon {
   turn?: string
   /** 结尾钩子 */
   hook?: string
+  /** 本段正文起点(归档全文中的字符偏移;去重/重建用,可选) */
+  start?: number
   /** 本段正文原文(全局真相,段自包含) */
   text: string
 }
@@ -83,7 +85,8 @@ export interface BookCharacter {
   性欲强度?: number | null
   耐心?: number | null
   心软?: number | null
-  玩法喜好?: { 主题: string, 态度?: string | null, 角色?: string | null, 细节?: string | null }[]
+  /** 玩法喜好:归一四键 + 来源方自定义扩展键(解释器/写回均原样保留) */
+  玩法喜好?: ({ 主题: string, 态度?: string | null, 角色?: string | null, 细节?: string | null } & Record<string, unknown>)[]
   成人属性?: Record<string, unknown>
   首次出场?: string | null
   /** 旧卡遗留键:基础卡不再写入/读取(一律视为生);死亡在段角色文件「状态」里表达(见 format-v2 §4.2) */
@@ -141,6 +144,10 @@ export interface AisbBookManifest {
   genre?: string
   contentWarnings?: string[]
   tropes?: string[]
+  /** 段正文起点数组(按段序;与各段 canon.start 一致)。
+   *  存在且段数吻合时 = 正典文件不内嵌正文(去重:正文唯一来源是归档全文),
+   *  读取端按 slice(fulltext, start, nextStart) 重建;缺失/不吻合 = 旧格式,正文内嵌正典 */
+  segStarts?: number[]
   exportedAt?: string
 }
 
@@ -161,14 +168,44 @@ function sanitizePath(s: string): string {
   return s.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
 }
 
-/** BookDoc → zip 字节(manifest + <书名>.txt + segments/* + characters/* + games/*) */
+/** BookDoc → zip 字节(manifest + <书名>.txt + segments/* + characters/* + games/*)。
+ *  正文去重:当全部段都携带有效 start 且 canon.text 与 slice(fulltext, start, nextStart) 逐字节一致时,
+ *  manifest 写 segStarts、正典文件剥除 text(正文唯一来源 = 归档全文,包体约省一半);
+ *  任一段被单独编辑过(与全文切片不一致)则回退旧格式(正文内嵌正典),保证逐字节往返无损 */
 export function bookDocToZip(doc: BookDoc): Uint8Array {
   const entries: Record<string, Uint8Array> = {}
-  entries[ENTRY_MANIFEST] = strToU8(JSON.stringify(doc.manifest, null, 2))
+
+  const segEntries = Object.entries(doc.segments)
+  const segStarts: number[] = []
+  let dedupeSafe = segEntries.length > 0
+  for (const [, seg] of segEntries) {
+    const start = seg.canon.start
+    if (typeof start !== 'number' || !Number.isInteger(start) || start < 0) {
+      dedupeSafe = false
+      break
+    }
+    segStarts.push(start)
+  }
+  if (dedupeSafe) {
+    for (let i = 0; i < segEntries.length; i++) {
+      const seg = segEntries[i]![1]
+      const start = segStarts[i]!
+      const end = i + 1 < segStarts.length ? segStarts[i + 1]! : doc.fulltext.length
+      if (seg.canon.text !== doc.fulltext.slice(start, Math.max(start, end))) {
+        dedupeSafe = false
+        break
+      }
+    }
+  }
+
+  const manifest: AisbBookManifest = dedupeSafe ? { ...doc.manifest, segStarts } : { ...doc.manifest, segStarts: undefined }
+  entries[ENTRY_MANIFEST] = strToU8(JSON.stringify(manifest, null, 2))
   entries[ENTRY_FULLTEXT(doc.manifest.title)] = strToU8(doc.fulltext)
 
-  for (const [segName, seg] of Object.entries(doc.segments)) {
-    entries[ENTRY_CANON(segName)] = strToU8(JSON.stringify(seg.canon, null, 2))
+  for (const [segName, seg] of segEntries) {
+    // 去重格式:正典不内嵌正文(text 置 undefined,JSON.stringify 自动剔除该键)
+    const canonOut = dedupeSafe ? { ...seg.canon, text: undefined } : seg.canon
+    entries[ENTRY_CANON(segName)] = strToU8(JSON.stringify(canonOut, null, 2))
     for (const [name, ch] of Object.entries(seg.characters)) {
       entries[ENTRY_CHARACTER(segName, name)] = strToU8(JSON.stringify(ch, null, 2))
     }
@@ -247,11 +284,29 @@ export function bookZipToDoc(bytes: Uint8Array): BookDoc {
   }
 
   const title = manifest.title || '未命名'
+  const fulltext = str(ENTRY_FULLTEXT(title)) ?? ''
+  // 正文去重格式:manifest.segStarts 存在且段数吻合时,正典不内嵌正文 → 按起点切片重建;
+  // 旧格式(无 segStarts)与切片条件不满足的段回退内嵌 text。单段被编辑过的包逐段回退。
+  // segStarts 按 zip 写入顺序(段名升序)对位,读取端显式排序,防第三方工具重排条目后错位
+  const segStarts = Array.isArray(manifest.segStarts) ? manifest.segStarts : null
+  const segKeys = Object.keys(segments).sort()
+  for (const [i, segName] of segKeys.entries()) {
+    const dir = segments[segName]
+    if (!dir?.canon) continue
+    const viaSlice = segStarts != null && segStarts.length === segKeys.length
+      && typeof dir.canon.start === 'number' && dir.canon.start === segStarts[i]
+      && fulltext.length > 0
+    if (viaSlice) {
+      const start = segStarts[i]!
+      const end = i + 1 < segStarts.length ? segStarts[i + 1]! : fulltext.length
+      dir.canon.text = fulltext.slice(start, Math.max(start, end))
+    }
+  }
   // world.json(引擎派生数据随包):可选,解析失败按缺失
   const world = json<BookWorld>(ENTRY_WORLD) ?? undefined
   return {
     manifest,
-    fulltext: str(ENTRY_FULLTEXT(title)) ?? '',
+    fulltext,
     segments,
     characters,
     ...(world && typeof world === 'object' ? { world } : {}),

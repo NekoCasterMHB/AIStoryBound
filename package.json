@@ -12,7 +12,7 @@
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "lint": "eslint .",
-    "test": "tsx --tsconfig tsconfig.test.json --test shared/token-estimate.test.ts shared/json.test.ts shared/game-v2.test.ts shared/book-build.test.ts shared/compat-v2.test.ts shared/entity-link.test.ts",
+    "test": "tsx --tsconfig tsconfig.test.json --test shared/token-estimate.test.ts shared/json.test.ts shared/game-v2.test.ts shared/book-build.test.ts shared/world-build.test.ts shared/compat-v2.test.ts shared/entity-link.test.ts",
     "typecheck": "nuxt typecheck",
     "build:cf": "nuxt build --preset cloudflare_module",
     "deploy:cf": "nuxt build --preset cloudflare_module && wrangler deploy",
@@ -24,7 +24,6 @@
     "seed:presets:remote": "tsx scripts/seed-presets.ts --remote",
     "seed:plugins:local": "tsx scripts/seed-plugins.ts --local",
     "seed:plugins:remote": "tsx scripts/seed-plugins.ts --remote",
-    "prebuild:presets": "tsx scripts/prebuild-presets.ts",
     "demo:toy": "tsx scripts/demo/mvp3-device.mts",
     "gen:pwa-icons": "node scripts/generate-pwa-icons.mjs"
   },

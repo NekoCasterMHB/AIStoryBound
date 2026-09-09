@@ -8,7 +8,7 @@ import { BACKUP_FORMAT, BACKUP_VERSION, BACKUP_ENTRIES, type BackupManifest } fr
 import { getWork, saveWork } from './worldGen'
 import { loadBook2RawZip, loadWorkView, saveBook2 } from './bookStoreV2'
 import { bookZipToDoc } from '#shared/novel-v2'
-import { listLocalGames, restoreLocalGame } from './gameStore'
+import { listLocalGames, listGameMessages, restoreLocalGame } from './gameStore'
 import { listGamePoints, saveGamePoint, type GameSavePoint } from './gameSaveStore'
 
 /** 备份包体积上限(与服务端 upload 守卫一致) */
@@ -31,11 +31,14 @@ export interface WorkBackupBundle {
 
 /** 组装某作品的整包备份 ZIP(work + games + saves,JSON 平铺;纯数据,直接结构化克隆)。
  *  v2(book2)作品:作品层以 book2.zip 条目整包存放(aisb-book 目录 zip),无 work.json;
- *  v1 作品沿用 work.json。两者共用 games/saves 条目(游戏按 workId 关联,v2 与 book2 行同 id)。 */
+ *  v1 作品沿用 work.json。两者共用 games/saves 条目(游戏按 workId 关联,v2 与 book2 行同 id)。
+ *  v14 起消息本体在 game-messages 表:备份时组装回 games[].messages(备份边界仍是完整形状) */
 export async function buildWorkBackupZip(workId: string): Promise<WorkBackupBundle> {
   const games = (await listLocalGames()).filter(g => g.workId === workId)
   const saves: GameSavePoint[] = []
   for (const g of games) {
+    const msgs = await listGameMessages(g.id)
+    g.messages = msgs.map(m => ({ id: m.msgId, idx: m.idx, role: m.role, speaker: m.speaker, content: m.content }))
     saves.push(...await listGamePoints(g.id))
   }
   // v2 真源在 book2:raw zip 原样入包
@@ -161,7 +164,9 @@ export async function importBackupData(bundle: ParsedBackup, opts: { includeWork
     counts.games++
   }
   for (const p of bundle.saves) {
-    await saveGamePoint(p)
+    // v14 存档点不再携带消息快照:旧备份(带 messages)写入前剥除,消息真源在 game-messages 表
+    const { messages: _legacy, ...point } = p as GameSavePoint & { messages?: unknown }
+    await saveGamePoint(point)
     counts.saves++
   }
   return counts

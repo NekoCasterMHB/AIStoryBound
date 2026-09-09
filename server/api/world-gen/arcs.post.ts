@@ -14,7 +14,7 @@ import { uuid } from '../../../shared/novel'
 import type { StoryBeat, WorldEntities } from '../../../shared/novel'
 import { isAiApiFormat } from '../../../shared/ai-config'
 import { estimateMessagesTokens } from '../../../shared/token-estimate'
-import { buildCharacterArcMessages, characterArcCandidates } from '../../../shared/world-build'
+import { ARC_WINDOW_BEAT_LIMIT, ARC_WINDOW_CHARS, buildCharacterArcMessages, characterArcCandidates } from '../../../shared/world-build'
 import { encryptJson } from '../../utils/crypto'
 import { aiConfigFingerprint } from '../../utils/ai-fingerprint'
 import { ARCS_UNIT_OUTPUT_RESERVE, arcsTextInputKey } from '../../utils/world-gen-pipeline'
@@ -88,7 +88,10 @@ export default defineEventHandler(async (event) => {
   }
 
   // ---- 平台模式:余额充足性预检(不预扣;运行中只记账,任务完成时一次性结算,余额不足转 paused) ----
-  const inputTokens = estimateMessagesTokens(buildCharacterArcMessages(title || '小说', candidates[0]!, storyline))
+  // 预检样本与真实管线同形:补齐登场段原文窗口(3×2500 字)与事实底稿,否则低估数万 token/候选
+  const sampleWindow = '窗'.repeat(ARC_WINDOW_CHARS * ARC_WINDOW_BEAT_LIMIT)
+  const sampleDrafts = candidates[0]!.beats.map(bi => ({ beatIndex: bi, plot: '底'.repeat(120), status: '样' }))
+  const inputTokens = estimateMessagesTokens(buildCharacterArcMessages(title || '小说', candidates[0]!, storyline, sampleWindow, sampleDrafts))
   const estimatedTokens = Math.max(1, (inputTokens + ARCS_UNIT_OUTPUT_RESERVE) * totalUnits)
   if (!escrow) {
     const me = await db.select({ aiTokenBalance: usersTable.aiTokenBalance })
@@ -112,30 +115,36 @@ export default defineEventHandler(async (event) => {
   if (payloadText) {
     await getSkillBucket(event).put(arcsTextInputKey(taskId), payloadText)
   }
-  await db.insert(worldGenTasks).values({
-    id: taskId,
-    userId: sessUser.id,
-    kind: 'arcs',
-    sourceWorkId: workId,
-    payload: JSON.stringify({ entities, storyline, ...(payloadText ? { textKey: arcsTextInputKey(taskId) } : {}), ...(Array.isArray(body.plots) ? { plots: body.plots.slice(0, 2000) } : {}) }),
-    status: 'uploaded',
-    stage: 'arcs',
-    stageDetail: JSON.stringify({ doneUnits: 0, totalUnits }),
-    sourceHash: '',
-    sourceKey: '',
-    fileSize: 0,
-    title,
-    mode: 'full',
-    keySource: escrow ? 'user' : 'platform',
-    keyCiphertext: escrow?.ciphertext ?? null,
-    keyIv: escrow?.iv ?? null,
-    estimatedTokens,
-    reserveTaken: 0,
-    tokensUsed: 0,
-    warnings: '[]',
-    createdAt: now,
-    updatedAt: now
-  }).run()
+  try {
+    await db.insert(worldGenTasks).values({
+      id: taskId,
+      userId: sessUser.id,
+      kind: 'arcs',
+      sourceWorkId: workId,
+      payload: JSON.stringify({ entities, storyline, ...(payloadText ? { textKey: arcsTextInputKey(taskId) } : {}), ...(Array.isArray(body.plots) ? { plots: body.plots.slice(0, 2000) } : {}) }),
+      status: 'uploaded',
+      stage: 'arcs',
+      stageDetail: JSON.stringify({ doneUnits: 0, totalUnits }),
+      sourceHash: '',
+      sourceKey: '',
+      fileSize: 0,
+      title,
+      mode: 'full',
+      keySource: escrow ? 'user' : 'platform',
+      keyCiphertext: escrow?.ciphertext ?? null,
+      keyIv: escrow?.iv ?? null,
+      estimatedTokens,
+      reserveTaken: 0,
+      tokensUsed: 0,
+      warnings: '[]',
+      createdAt: now,
+      updatedAt: now
+    }).run()
+  } catch (e) {
+    // 建行失败(如 payload 超行限)时回删 R2 spool,避免无人引用的孤儿对象
+    if (payloadText) await getSkillBucket(event).delete(arcsTextInputKey(taskId)).catch(() => {})
+    throw e
+  }
 
   // ---- 启动执行:Workflow binding 优先;无 binding(本地 dev)时内联兜底 ----
   const started = await startWorldGenTask(event, taskId)

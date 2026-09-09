@@ -47,8 +47,6 @@ export interface PresetNovelRow {
   sort_order: number
   download_count: number
   created_at: string | null
-  /** 是否已有预生成世界(列表接口附加;用户可直接 0 token 进入,未预生成回退自定义生成) */
-  hasWorld?: boolean
 }
 
 /** 预置小说缓存条目(浏览器 IndexedDB presets store) */
@@ -460,7 +458,7 @@ export interface CharacterArcBeat {
   beatIndex: number
   /** 该角色在本段的行动/处境/目标推进(以该角色为中心,80~150 字) */
   summary: string
-  /** 本段该角色的处境变化(受伤/被囚/身份转变等,无则省略) */
+  /** @deprecated 仅旧数据遗留,新产物不再写入;本段处境唯一真源 = 段角色文件 状态.处境(§6.1),读取端忽略此字段 */
   status?: string | null
 }
 
@@ -659,20 +657,25 @@ export interface LocalWork {
   v2Segments?: SegmentDir[]
 }
 
-/** 本地游戏会话(浏览器驱动回合,本地落盘;登录用户可手动同步云端) */
+/** 本地游戏会话(浏览器驱动回合,本地落盘;登录用户可手动同步云端)。
+ *  存储形态(v14):messages 拆至 game-messages 表(append-only 一消息一行),本行保留
+ *  state/summary/optionsByMessage 等有界字段 + msgCount 计数;内存/备份/分享边界仍用完整形状 */
 export interface LocalGame {
   id: string
   workId: string
   playerName: string
   characterName: string
   state: GameState
+  /** 完整形状字段(内存/备份/导出);games 表行内不再存储,拆至 game-messages 表 */
   messages: { id: string, idx: number, role: string, speaker: string | null, content: string }[]
-  /** 每条旁白消息挂载的选项(回合结束后生成,回滚时一并恢复) */
+  /** 每条旁白消息挂载的选项(回合结束后生成,回滚时一并恢复);已被裁剪有界,留在 games 行 */
   optionsByMessage?: Record<string, { idx: number, text: string }[]>
+  /** 消息总数(games 表行用;= 消息表该局行数,列表页展示用) */
+  msgCount?: number
   /** 剧情当前推进到的细纲段下标(0-based;由收尾器按回回报,用于阶段变体与回注;旧存档无此字段) */
   currentBeat?: number | null
   summary?: { idx: number, text: string } | null
-  /** 云端同步进度:上次成功同步的最后一条消息 idx(-1=从未同步;回滚后失效,下次同步自动转全量重建) */
+  /** @deprecated 云端增量同步已退役,全仓无读写(仅旧档可能残留);保留键位避免类型破坏 */
   lastSyncedIdx?: number
   /** 开局设定(仅对首回合生效;旧存档无此字段=原有自由开场) */
   opening?: {
@@ -700,6 +703,9 @@ export interface LocalGame {
   updatedAt: string
   syncStatus: 'local' | 'synced' | 'dirty'
 }
+
+/** games 表存储行:LocalGame 去掉 messages(拆 game-messages 表),msgCount 必填 */
+export type LocalGameRow = Omit<LocalGame, 'messages'> & { msgCount: number }
 
 /** LLM 用量统计 */
 export interface TokenUsage {
@@ -733,7 +739,7 @@ export interface GameState {
    *  beat=所属段下标(0-based,换段重置);lastNode=已达最大节点序号(0-based,-1=未触发);
    *  stallTurns=连续无节点推进的回合数(卡住引导用,≥5 且进度<40% 时混入推进选项) */
   nodeProgress?: { beat: number, lastNode: number, stallTurns?: number }
-  /** AI 内部状态(不展示给玩家,仅进 prompt) */
+  /** AI 内部状态(不展示给玩家,仅进 prompt);@deprecated 无消费方,旧档残留——prompt 投影外字段不应新增 */
   internal?: Record<string, unknown>
 }
 

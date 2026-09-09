@@ -7,6 +7,7 @@ import { CJK_TOKEN_PER_CHAR } from './token-estimate'
 import { DEFAULT_GEN_LIMITS } from './gen-limits'
 import type { GenLimits } from './gen-limits'
 import { ARC_CHARACTER_LIMIT } from './world-build'
+import { ANNOTATE_CHUNK_BEATS } from './book-build'
 
 /** full=完整(提取+检查+AI成书)| eco=节约(无检查,人物卡本地直拼)| custom=按步骤开关自定义 */
 export type WorldGenMode = 'full' | 'eco' | 'custom'
@@ -153,10 +154,17 @@ const ECO_SYNTH_INPUT_TOKEN_RATIO = 0.06
 const ECO_SYNTH_OUTPUT_TOKENS = 800
 /** 作者识别(正文抽样输入 + 未命中时联网检索,输出极少) */
 const AUTHOR_TOKENS = 1200
-/** 配角故事线:每候选角色的输入开销(tokens;主线 beats 节选 + 角色素材 + 登场段原文窗口 3×2500 字) */
-const ARCS_UNIT_INPUT_TOKENS = 4000
-/** 配角故事线:每候选角色的典型输出(tokens;单条独立弧线 JSON,覆盖全部登场段) */
-const ARCS_UNIT_OUTPUT_TOKENS = 1500
+/** 标剧情转折(全模式无条件执行):每块 ≤ ANNOTATE_CHUNK_BEATS 个粗段,输入=块内细纲摘要(每条截 160 字)+衔接+指令 */
+const ANNOTATE_CHUNK_INPUT_TOKENS = 4500
+/** 标剧情转折:每块输出(剧情段分组 + 3~8 条节点描述 JSON) */
+const ANNOTATE_CHUNK_OUTPUT_TOKENS = 1800
+/** 配角故事线:每候选角色的固定输入开销(登场段原文窗口 3×2500 字 + 角色素材卡 + 事实底稿 + 指令;
+ *  实测《巴掌印》~22k/候选,其中细纲外固定部分 ≈12k,宁高勿低) */
+const ARCS_UNIT_FIXED_INPUT_TOKENS = 12000
+/** 配角故事线:每候选角色注入的主线细纲(beatLines 全量)≈ 全书 token 的该比例(随书长亚线性,实测 ≈4%,取 5% 留余) */
+const ARCS_STORYLINE_INPUT_RATIO = 0.05
+/** 配角故事线:每候选角色的典型输出(逐登场段 beat,每拍 80~150 字;实测 2.5k~5k) */
+const ARCS_UNIT_OUTPUT_TOKENS = 3000
 /** 配角故事线候选数量:登场 2 段以上角色数,按全书规模估算(有界于 ARC_CHARACTER_LIMIT;登场角色随书长亚线性) */
 function arcsCandidateCount(totalChars: number): number {
   // 粗模型:约每 4000 字一个登场角色,候选 ≈ 登场角色的一半(登场≥2 段),封顶 10
@@ -168,9 +176,9 @@ const SAFETY_FACTOR = 1.1
 
 /**
  * 预估一次世界生成的 token 消耗:按真实流水线分阶段建模
- * (提取全量正文 → 一致性检查压缩实体 → 成书头部卡片 + 作者识别),随生成参数收敛。
+ * (提取全量正文 → 一致性检查压缩实体 → 成书头部卡片 + 标剧情转折 + 作者识别 + 配角故事线 + 实体消歧)。
  * 正文按 CJK_TOKEN_PER_CHAR(0.7 token/汉字,实测主流 tokenizer 校准)折算;
- * 典型结果 ≈ 全书字数的 1.0~1.4 倍(节约模式更低),与真实入账同量级。
+ * 完整模式典型结果 ≈ 全书字数的 1.5~3 倍(弧线逐候选注入细纲+窗口是大头;节约模式 ≈ 0.8~1.2 倍)。
  * steps 为自定义模式的步骤开关(仅 mode=custom 时使用):关掉的步骤不计入,
  * synth 关闭=轻量成书(同节约模式成书项),arcs 开启时按候选角色上限计入。
  */
@@ -200,16 +208,20 @@ export function estimateWorldGenTokens(
     + (synthFull ? SYNTH_OUTPUT_TOKENS : ECO_SYNTH_OUTPUT_TOKENS)
   // 作者识别(自定义关闭时跳过):正文抽样输入 + 未命中时联网检索,输出极少
   const author = steps && !steps.author ? 0 : AUTHOR_TOKENS
+  // 标剧情转折(annotate,全模式无条件执行,无开关):粗段按 30 个/块分块标注
+  const annotateChunks = Math.max(1, Math.ceil(units / ANNOTATE_CHUNK_BEATS))
+  const annotate = annotateChunks * (ANNOTATE_CHUNK_INPUT_TOKENS + ANNOTATE_CHUNK_OUTPUT_TOKENS)
   // 配角故事线(仅自定义开启或完整模式计入;eco 与自定义关闭为 0):
-  // 每候选角色一次调用(输入含主线 beats 节选 + 角色素材 + 登场段原文窗口,输出独立弧线)
+  // 每候选角色一次调用(输入 = 主线细纲全量(≈全书 token 3%)+ 登场段原文窗口 + 角色素材/底稿,输出独立弧线)
   const arcsOn = !eco && (steps ? steps.arcs : true)
+  const arcsUnit = textTokens * ARCS_STORYLINE_INPUT_RATIO + ARCS_UNIT_FIXED_INPUT_TOKENS + ARCS_UNIT_OUTPUT_TOKENS
   const arcs = arcsOn
-    ? arcsCandidateCount(totalChars) * (ARCS_UNIT_INPUT_TOKENS + ARCS_UNIT_OUTPUT_TOKENS)
+    ? arcsCandidateCount(totalChars) * arcsUnit
     : 0
   // 实体消歧(全模式,merge 后逐簇裁决;簇数有上限,成本极低):预聚类簇 × 单簇来回
   const unitsForLink = Math.max(1, Math.ceil(totalChars / unitMax))
-  const link = unitsForLink > 2 ? Math.min(8, Math.ceil(unitsForLink / 6)) * 2000 : 0
-  return Math.max(1, Math.round((extract + check + synth + author + arcs + link) * SAFETY_FACTOR))
+  const link = unitsForLink > 2 ? Math.min(12, Math.ceil(unitsForLink / 6)) * 2000 : 0
+  return Math.max(1, Math.round((extract + check + synth + author + annotate + arcs + link) * SAFETY_FACTOR))
 }
 
 /** 拉取共享缓存的价格:记录消耗的一半(向下取整;0 消耗的缓存免费) */

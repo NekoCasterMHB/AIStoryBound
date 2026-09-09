@@ -4,13 +4,9 @@
 // - 全文单段展示(不再按章节切分)
 // - "用这本小说生成世界" → 跳转 /generate?from=preset&id=xxx:由生成页自动加载本小说为附件,进入确认页由用户确认
 import type { PresetNovelRow, ChapterSegment } from '#shared/novel'
-import { fetchPrebuiltWorld, installPrebuiltWork } from '~/utils/prebuiltWorld'
-import type { PrebuiltWorld } from '~/utils/prebuiltWorld'
-import { setAdultModeEnabled } from '~/utils/adultMode'
 import { useAuthModal } from '~/composables/useAuthModal'
 
 const { requireLogin } = useAuthModal()
-const toast = useToast()
 
 const route = useRoute()
 const id = String(route.params.id)
@@ -62,43 +58,6 @@ async function loadText() {
   }
 }
 
-onMounted(() => {
-  loadText()
-  loadPrebuilt()
-})
-
-// ---- 预生成世界:管理员预先跑好的成书结果,用户 0 token 直接进入 ----
-const prebuilt = ref<PrebuiltWorld | null>(null)
-const prebuiltError = ref(false)
-const directStarting = ref(false)
-
-async function loadPrebuilt() {
-  try {
-    prebuilt.value = await fetchPrebuiltWorld(id)
-  } catch (e) {
-    prebuiltError.value = true
-    console.error('[prebuilt] load failed:', e)
-  }
-}
-
-/** 直接开始:用预生成世界组装作品落书架 → 跳选角页(不消耗 token) */
-async function goDirectStart() {
-  if (!prebuilt.value || !meta.value) return
-  const ok = await requireLogin()
-  if (!ok) return
-  directStarting.value = true
-  try {
-    const workId = await installPrebuiltWork(meta.value, prebuilt.value)
-    // 预置小说进入世界默认开启成人模式(选角页可关)
-    setAdultModeEnabled(true)
-    await navigateTo(`/play/${workId}`)
-  } catch (e) {
-    toast.add({ color: 'error', icon: 'i-lucide-triangle-alert', title: '进入失败', description: e instanceof Error ? e.message : String(e) })
-  } finally {
-    directStarting.value = false
-  }
-}
-
 // ---- 用这本小说生成世界:跳转生成页自动带上本小说,由用户确认后再生成;生成模式(完整/节约)在生成页选择 ----
 async function goGenerateWithNovel() {
   if (textState.value !== 'ready') return // 全文未就绪(加载中/失败)时不跳转
@@ -109,6 +68,10 @@ async function goGenerateWithNovel() {
   const q = new URLSearchParams({ from: 'preset', id })
   await navigateTo(`/generate?${q.toString()}`)
 }
+
+onMounted(() => {
+  loadText()
+})
 
 function fmtChars(n?: number) {
   if (!n || n <= 0) return '—'
@@ -174,15 +137,6 @@ function fmtChars(n?: number) {
             </div>
           </div>
           <div class="flex flex-col gap-2 sm:ml-auto sm:items-end">
-            <UButton
-              v-if="prebuilt"
-              label="进入世界"
-              color="primary"
-              icon="i-lucide-zap"
-              :loading="directStarting"
-              :disabled="textState !== 'ready'"
-              @click="goDirectStart"
-            />
             <UButton
               label="用这本小说生成世界"
               color="primary"

@@ -26,6 +26,8 @@ export class WorldGenWorkflow extends WorkflowEntrypoint<Env, WorldGenWorkflowPa
     try {
       const task = await requireTask(ctx)
       if (task.status === 'cancelled') return
+      // 防竞态:旧实例被部署重置后、新实例启动前任务已被取消/终态化时,不得覆写回 running
+      if (task.status !== 'uploaded' && task.status !== 'paused' && task.status !== 'running') return
       await markTask(ctx, { status: 'running', error: null })
 
       // arcs 任务(补充配角故事线):单个步骤生成全部候选角色弧线,完成后实例结束

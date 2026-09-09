@@ -3,7 +3,7 @@
 // v1 作品保存回 IndexedDB works,v2(book2)作品写回 book2 zip 的 characters/ 层
 // 入口:书架「本地作品」卡片上的「角色卡」按钮;保存后由父组件刷新列表
 import { saveWork, getWork } from '../utils/worldGen'
-import { loadWorkView, saveBook2Characters, updateBook2, updateBook2World } from '../utils/bookStoreV2'
+import { loadWorkView, saveBook2Edits } from '../utils/bookStoreV2'
 import { listLocalGames, saveLocalGame } from '../utils/gameStore'
 import { desireTierName, DESIRE_TIERS, SEX_TEXT_KEYS } from '#shared/novel'
 import type { CharacterArc, CharacterCard, SexAttrs, SexTextField } from '#shared/novel'
@@ -20,8 +20,58 @@ const draft = ref<CharacterCard[]>([])
 const characterArcs = ref<CharacterArc[]>([])
 /** 当前作品真源(book2 才有可持久化的段文件;聚合分段编辑只对它开放) */
 const workSource = ref<'book2' | 'works'>('book2')
-/** book2 打开时的全量段文档深拷贝:分段编辑的中间态,保存时与最新数据 diff 后合并 */
+/** book2 打开时的全量段文档深拷贝:分段编辑的中间态(fulltext 已剥离),保存时单事务 diff 写回 */
 const segDocWork = ref<BookDoc | null>(null)
+/** 打开时的角色卡快照:保存后与编辑结果 diff,清理局内 AI 补丁中重叠的字段 */
+const cardsAtOpen = ref<CharacterCard[]>([])
+/** 打开时的角色原名(按卡对象记录):改名保存时弧线/段文件跟随迁移,避免旧名残留成孤儿 */
+const origNameByCard = new Map<CharacterCard, string>()
+/** 本次会话的改名对(旧名→新名):供保存事务改写 world 派生层与游戏补丁 */
+const renamePairs = ref<{ from: string, to: string }[]>([])
+
+/** 改名迁移:弧线条目改 character、段角色文件改键、各段 cast/主角与他人关系名跟随
+ *  (新名已有数据时保留新名、丢弃旧名);纯空白差异(归一后同名)直接跳过 */
+function migrateRenames() {
+  for (const [card, orig] of origNameByCard) {
+    const name = (card.name ?? '').trim()
+    if (!name || name === orig || arcKey(name) === arcKey(orig)) continue
+    const oKey = arcKey(orig)
+    const nKey = arcKey(name)
+    const oldArc = characterArcs.value.find(a => arcKey(a.character) === oKey)
+    if (oldArc) {
+      const newArc = characterArcs.value.find(a => arcKey(a.character) === nKey)
+      characterArcs.value = characterArcs.value.filter(a => a !== oldArc && arcKey(a.character) !== oKey)
+      if (!newArc) characterArcs.value = [...characterArcs.value, { ...oldArc, character: name }]
+    }
+    const doc = segDocWork.value
+    if (doc) {
+      for (const seg of Object.values(doc.segments)) {
+        const file = seg.characters[orig]
+        if (file) {
+          Reflect.deleteProperty(seg.characters, orig)
+          if (!seg.characters[name]) {
+            seg.characters[name] = file
+            // 内嵌「姓名」是关联锚(cast/基础卡姓名一致),随迁移同步
+            if (typeof file['姓名'] === 'string' && file['姓名'].replace(/\s+/g, '') === oKey) file['姓名'] = name
+          }
+        }
+        // 出场名单/叙事主角按名字匹配,同步改写,否则改名角色在各段“消失”
+        if (Array.isArray(seg.canon.cast)) seg.canon.cast = seg.canon.cast.map(n => (n === orig ? name : n))
+        if (Array.isArray(seg.canon.主角)) seg.canon.主角 = seg.canon.主角.map((n: string) => (n === orig ? name : n))
+      }
+    }
+    // 其他角色卡上的关系名跟随
+    for (const c of draft.value) {
+      for (const r of c.relationships ?? []) {
+        if (r.name === orig) r.name = name
+      }
+    }
+    // world 派生层(实体库/冲突)与局内补丁的改名跟随不在工作副本里改——
+    // 收集改名对,保存事务内改写 world 行(saveBook2Edits)并在游戏侧迁移补丁键(clearOverlappingPatches)
+    renamePairs.value.push({ from: orig, to: name })
+    origNameByCard.set(card, name)
+  }
+}
 const selIdx = ref(0)
 const saving = ref(false)
 const loaded = ref(false)
@@ -60,21 +110,38 @@ watch(open, async (v) => {
   loaded.value = false
   loadErr.value = ''
   selIdx.value = 0
-  // loadWorkView 统一入口:角色卡 = v2 语义卡(单一解释器;profile 自由区随卡)
-  const view = await loadWorkView(props.workId)
+  // loadWorkView 统一入口:角色卡 = v2 语义卡(单一解释器;profile 自由区随卡)。
+  // texts:false 跳过正文行查询——弹窗只用卡/正典元数据/弧线,大书打开不拉几百行段正文
+  const view = await loadWorkView(props.workId, { texts: false })
   if (!view) {
     loadErr.value = '本地未找到该作品'
     loaded.value = true
     return
   }
   workTitle.value = view.title
-  draft.value = JSON.parse(JSON.stringify(view.characters))
+  // 卡编辑基底:v2 用解释器语义卡;v1(works)直接用 overlay 原卡(getWork 已做兼容归一),
+  // 避免 v2 往返丢 chapterVariants(保存即清空旧作品的全部段状态变体)
+  if (view.source === 'works') {
+    const raw = await getWork(props.workId)
+    draft.value = JSON.parse(JSON.stringify(raw?.overlay?.characters ?? view.characters))
+  } else {
+    draft.value = JSON.parse(JSON.stringify(view.characters))
+  }
+  cardsAtOpen.value = JSON.parse(JSON.stringify(draft.value))
+  origNameByCard.clear()
+  renamePairs.value = []
+  for (const c of draft.value) origNameByCard.set(c, c.name)
   characterArcs.value = JSON.parse(JSON.stringify(view.world.characterArcs ?? []))
   // book2 真源:拷贝段文档供分段剧情/状态聚合编辑;v1(works 源)没有可持久化的段,跳过
   workSource.value = view.source
-  segDocWork.value = view.source === 'book2'
-    ? JSON.parse(JSON.stringify(view.doc)) as BookDoc
-    : null
+  if (view.source === 'book2') {
+    const doc = JSON.parse(JSON.stringify(view.doc)) as BookDoc
+    doc.fulltext = '' // 段编辑工作副本不持有归档全文(内存里不多扛一份)
+    for (const seg of Object.values(doc.segments)) seg.canon.text = '' // 段正文同理(diff/展示只用 index/title/cast/characters)
+    segDocWork.value = doc
+  } else {
+    segDocWork.value = null
+  }
   expandedSegs.value.clear()
   rebuildAttrRows()
   rebuildArcDraft()
@@ -105,6 +172,14 @@ function arcOfCard(name: string | undefined): CharacterArc | undefined {
 /** 当前选中角色对应的独立故事线 */
 const selArc = computed(() => arcOfCard(sel.value?.name))
 
+/** 段号越界的弧线单拍(弧线坐标换算修复前的旧数据):下方按段列表覆盖不到,在顶部只读兜底显示,避免不可见 */
+const orphanArcBeats = computed<ArcBeatDraft[]>(() => {
+  const a = arcDraft.value
+  if (!a || workSource.value !== 'book2') return []
+  const known = new Set(Object.values(segDocWork.value?.segments ?? {}).map(s => s.canon.index))
+  return a.beats.filter(b => !known.has(b.segIndex))
+})
+
 // ---- 角色列表操作 ----
 function addCard() {
   draft.value.push({ name: `角色 ${draft.value.length + 1}`, role: '配角', personality: [] })
@@ -113,6 +188,8 @@ function addCard() {
 
 function removeCard(i: number) {
   const name = draft.value[i]?.name || '未命名角色'
+  const removed = draft.value[i]
+  if (removed) origNameByCard.delete(removed)
   draft.value.splice(i, 1)
   if (selIdx.value >= draft.value.length) selIdx.value = draft.value.length - 1
   if (draft.value.length) toast.add({ title: `已删除角色「${name}」`, color: 'neutral' })
@@ -198,16 +275,16 @@ function relNum(v: string | number | null | undefined): number {
 // 其余任意新键 → profile 自由区(引擎以「补充设定」注入,见 docs/format-v2.md §8)。「未知」等同空,不写、不占行。
 // 机械/结构化字段(姓名/角色/关系/耐心/心软/性欲强度/玩法喜好/成人属性)仍走下方专用编辑区,不进本表;
 // 「已死亡」不在基础卡编辑(死亡以段状态键表达,见下方「分段剧情 / 状态」)。
-const DESC_FIELDS: { cn: string, prop: string, type: 'text' | 'longtext' | 'tags' }[] = [
+const DESC_FIELDS: { cn: string, prop: string, type: 'text' | 'text-multi' | 'tags' }[] = [
   { cn: '别名', prop: 'alias', type: 'text' },
   { cn: '性别', prop: 'gender', type: 'text' },
   { cn: '年龄', prop: 'age', type: 'text' },
   { cn: '身份', prop: 'identity', type: 'text' },
   { cn: '首次出场', prop: 'first_appearance', type: 'text' },
-  { cn: '外貌', prop: 'appearance', type: 'longtext' },
+  { cn: '外貌', prop: 'appearance', type: 'text-multi' },
   { cn: '性格', prop: 'personality', type: 'tags' },
   { cn: '说话风格', prop: 'speech_style', type: 'tags' },
-  { cn: '背景', prop: 'background', type: 'longtext' },
+  { cn: '背景', prop: 'background', type: 'text-multi' },
   { cn: '能力', prop: 'abilities', type: 'tags' },
   { cn: '目标', prop: 'goals', type: 'tags' },
   { cn: '恐惧', prop: 'fears', type: 'tags' },
@@ -496,8 +573,9 @@ const DESC_PLACEHOLDER: Record<string, string> = {
 
 // ---- 分段剧情 / 状态(仅 book2 段角色文件:segments/NNN/角色.json 的 剧情/状态 聚合编辑) ----
 interface SegStateRow { key: string, value: string, kind: 'text' | 'number' | 'boolean' | 'object' }
-/** 弧线单拍编辑缓冲(segIndex=段下标;与 CharacterArcBeat 对应,存回时转换) */
-interface ArcBeatDraft { segIndex: number, summary: string, status: string }
+/** 弧线单拍编辑缓冲(segIndex=段下标;与 CharacterArcBeat 对应,存回时转换)。
+ *  不含 status:本段处境唯一真源是段文件 状态.处境(下方「属性状态」行,§6.1),弧线只存叙事 */
+interface ArcBeatDraft { segIndex: number, summary: string }
 /** 当前角色弧线编辑缓冲 */
 interface ArcDraft { summary: string, ending: string, beats: ArcBeatDraft[] }
 interface SegDraft {
@@ -519,11 +597,11 @@ const expandedSegs = ref(new Set<string>())
 /** 当前角色的弧线编辑草稿(从工作副本拷贝;null=该角色无弧线,可经分段面板添加创建) */
 const arcDraft = ref<ArcDraft | null>(null)
 
-/** 从工作副本当前角色的弧线重建编辑草稿(须先于 rebuildSegDrafts 调用) */
+/** 从工作副本当前角色的弧线重建编辑草稿(须先于 rebuildSegDrafts 调用;旧数据的 status 忽略不进草稿) */
 function rebuildArcDraft() {
   const a = selArc.value
   arcDraft.value = a
-    ? { summary: a.summary ?? '', ending: a.ending ?? '', beats: a.beats.map(b => ({ segIndex: b.beatIndex, summary: b.summary, status: b.status ?? '' })) }
+    ? { summary: a.summary ?? '', ending: a.ending ?? '', beats: a.beats.map(b => ({ segIndex: b.beatIndex, summary: b.summary })) }
     : null
 }
 
@@ -532,8 +610,8 @@ function commitArcDraft() {
   if (!arcDraft.value || !sel.value) return
   const key = arcKey(sel.value.name)
   const beats = arcDraft.value.beats
-    .filter(b => b.summary.trim() || b.status.trim())
-    .map(b => ({ beatIndex: b.segIndex, summary: b.summary.trim(), status: b.status.trim() || null }))
+    .filter(b => b.summary.trim())
+    .map(b => ({ beatIndex: b.segIndex, summary: b.summary.trim() }))
   const summary = arcDraft.value.summary.trim()
   const ending = arcDraft.value.ending.trim()
   const rest = characterArcs.value.filter(a => arcKey(a.character) !== key)
@@ -546,7 +624,7 @@ function commitArcDraft() {
 function addSegArcBeat(d: SegDraft) {
   if (!arcDraft.value) arcDraft.value = { summary: '', ending: '', beats: [] }
   if (!arcDraft.value.beats.some(b => b.segIndex === d.index)) {
-    arcDraft.value.beats.push({ segIndex: d.index, summary: '', status: '' })
+    arcDraft.value.beats.push({ segIndex: d.index, summary: '' })
   }
   d.arcBeat = arcDraft.value.beats.find(b => b.segIndex === d.index)
   commitArcDraft()
@@ -602,7 +680,9 @@ function rebuildSegDrafts() {
   for (const [segKey, seg] of segEntries) {
     const cast = seg.canon.cast ?? []
     const file = seg.characters[name]
-    if (!file && !cast.includes(name)) continue
+    // 弧线单拍是本段戏份的唯一显示位(上方区块不再重复列出):即使本段无角色文件/未登场也要成行
+    const arcBeat = arcDraft.value?.beats.find(b => b.segIndex === seg.canon.index)
+    if (!file && !cast.includes(name) && !arcBeat) continue
     const plot = typeof file?.['剧情'] === 'string' ? file['剧情'] : ''
     const status = file?.['状态'] && typeof file['状态'] === 'object' && !Array.isArray(file['状态'])
       ? file['状态'] as Record<string, unknown>
@@ -621,7 +701,7 @@ function rebuildSegDrafts() {
       inCast: cast.includes(name),
       plot,
       stateRows,
-      arcBeat: arcDraft.value?.beats.find(b => b.segIndex === seg.canon.index)
+      arcBeat
     })
   }
   segDrafts.value = drafts
@@ -643,9 +723,10 @@ function segExpanded(d: SegDraft): boolean {
   return expandedSegs.value.has(segExpKey(d))
 }
 
-/** 该折叠栏是否有实际内容(剧情或状态行) */
+/** 该折叠栏是否有实际内容(本段剧情、属性状态或本段故事线) */
 function segHasContent(d: SegDraft): boolean {
   return !!d.plot.trim() || d.stateRows.some(r => r.key.trim() && r.value.trim())
+    || !!d.arcBeat?.summary.trim()
 }
 
 /** 以草稿重建该段角色文件并写回 segDocWork(剧情与状态皆空 → 删除文件,与生成管线口径一致) */
@@ -678,46 +759,15 @@ function addSegStateRow(d: SegDraft) {
   d.stateRows.push({ key: '', value: '', kind: 'text' })
 }
 
+/** 末行状态键已填时才显示「添加状态」(避免连开多行空状态) */
+function canAddSegState(d: SegDraft): boolean {
+  const last = d.stateRows[d.stateRows.length - 1]
+  return !last || !last.key
+}
+
 function removeSegStateRow(d: SegDraft, i: number) {
   d.stateRows.splice(i, 1)
   commitSegDraft(d)
-}
-
-/** 两段角色文件是否等价(null 视为同一) */
-function sameSegFile(a: unknown, b: unknown): boolean {
-  const na = a == null ? undefined : a
-  const nb = b == null ? undefined : b
-  if (!na && !nb) return true
-  return JSON.stringify(na ?? null) === JSON.stringify(nb ?? null)
-}
-
-/** 保存时把 segDocWork 中相对最新 book2 数据有差异的 (段,角色) 文件写回/删除,避免覆盖打开期间的并发改动 */
-async function flushSegEdits(): Promise<void> {
-  const doc = segDocWork.value
-  if (!doc) return
-  await updateBook2(props.workId, (live) => {
-    let changed = false
-    const segKeys = new Set([...Object.keys(live.segments), ...Object.keys(doc.segments)])
-    for (const key of segKeys) {
-      const liveSeg = live.segments[key]
-      const workSeg = doc.segments[key]
-      if (!liveSeg || !workSeg) continue
-      const names = new Set([...Object.keys(liveSeg.characters), ...Object.keys(workSeg.characters)])
-      for (const name of names) {
-        const lf = liveSeg.characters[name]
-        const wf = workSeg.characters[name]
-        if (sameSegFile(lf, wf)) continue
-        if (!wf || Object.keys(wf).length <= 1) {
-          // 只有姓名键(空档):移除该段文件
-          Reflect.deleteProperty(liveSeg.characters, name)
-        } else {
-          liveSeg.characters[name] = JSON.parse(JSON.stringify(wf)) as never
-        }
-        changed = true
-      }
-    }
-    return changed
-  })
 }
 
 const patienceModel = computed({
@@ -763,19 +813,22 @@ function normalizeCards(): CharacterCard[] {
     }
     const rels = (c.relationships ?? [])
       .filter(r => (r.name ?? '').trim())
-      .map(r => ({ name: r.name.trim(), type: (r.type ?? '').trim() || '未知', value: relNum(r.value) }))
+      // 空说明保持空(与解释器读取侧形状一致);补「未知」会让补丁 diff 恒不等,误清局内关系补丁
+      .map(r => ({ name: r.name.trim(), type: (r.type ?? '').trim(), value: relNum(r.value) }))
     if (rels.length) patch.relationships = rels
     if (c.patience != null) patch.patience = numOrNull(c.patience)
     if (c.softness != null) patch.softness = numOrNull(c.softness)
     if (c.desire != null) patch.desire = numOrNull(c.desire)
     const kinks = (c.kinks ?? [])
       .filter(k => (k.theme ?? '').trim())
-      .map(k => ({ theme: k.theme.trim(), view: k.view ?? null, role: k.role ?? null, detail: k.detail ?? null }))
+      .map(k => ({ ...k, theme: k.theme.trim(), view: k.view ?? null, role: k.role ?? null, detail: k.detail ?? null }))
     if (kinks.length) patch.kinks = kinks
-    const sex: Partial<SexAttrs> = {}
+    // 成人属性:已知文本键归一,原对象上的扩展键(未来新增字段)原样保留,不丢弃
+    const sex: Partial<SexAttrs> = { ...(c.sex ?? {}) }
     for (const k of SEX_TEXT_KEYS) {
       const v = c.sex?.[k]
       if (v && v.trim()) sex[k] = v.trim()
+      else Reflect.deleteProperty(sex, k)
     }
     if (c.sex?.condom === true || c.sex?.condom === false) sex.condom = c.sex.condom
     if (Object.keys(sex).length) patch.sex = sex
@@ -800,21 +853,18 @@ async function onSave() {
   }
   saving.value = true
   try {
-    // 弧线草稿可能有最后一次输入未落副本,先统一提交
+    // 弧线草稿可能有最后一次输入未落副本,先统一提交;随后迁移改名(弧线/段文件跟随新名)
     commitArcDraft()
-    // 重新读取最新数据,避免覆盖弹窗打开期间的其它改动(如游玩累计 tokens)
-    const view = await loadWorkView(props.workId)
-    if (!view) throw new Error('本地未找到该作品')
-    if (view.source === 'book2') {
-      // v2 真源在 book2 zip:人物卡写回 characters/ 基础层
-      await saveBook2Characters(props.workId, cards)
-      // 分段剧情 / 状态:把弹窗内改动的段角色文件按差异合并回段数据
-      await flushSegEdits()
-      // 独立故事线:整层写回 world(保留实体库/冲突,只替换 characterArcs)。
-      // reactive 代理进不了 IndexedDB(structured clone 抛 DataCloneError),先深拷为普通对象
-      await updateBook2World(props.workId, {
-        ...view.world,
-        characterArcs: JSON.parse(JSON.stringify(characterArcs.value)) as CharacterArc[]
+    migrateRenames()
+    if (workSource.value === 'book2') {
+      // v2 真源单事务写回(人物卡 + 段文件 diff + 弧线键,原子);
+      // 段工作副本不持有归档全文,这里只把 reactive 代理深拷为普通对象落库
+      const segWork = segDocWork.value?.segments
+      await saveBook2Edits(props.workId, {
+        cards,
+        ...(segWork ? { segWork: JSON.parse(JSON.stringify(segWork)) as BookDoc['segments'] } : {}),
+        characterArcs: JSON.parse(JSON.stringify(characterArcs.value)) as CharacterArc[],
+        ...(renamePairs.value.length ? { renames: JSON.parse(JSON.stringify(renamePairs.value)) } : {})
       })
     } else {
       const work = await getWork(props.workId)
@@ -829,7 +879,7 @@ async function onSave() {
         updatedAt: new Date().toISOString()
       })
     }
-    await clearOverlappingPatches(view.characters, cards)
+    await clearOverlappingPatches(cardsAtOpen.value, cards, renamePairs.value)
     emit('saved')
     open.value = false
   } catch (e) {
@@ -847,26 +897,48 @@ const PATCHABLE_KEYS = [
 ] as const
 
 /** 编辑保存后,清除进行中游戏里该角色动态补丁中与本次被编辑字段重叠的键:
- *  有效卡=基础卡+局内补丁,不清理的话用户改的卡字段会被 AI 玩出来的旧补丁一直覆盖 */
-async function clearOverlappingPatches(prevCards: CharacterCard[], cards: CharacterCard[]) {
+ *  有效卡=基础卡+局内补丁,不清理的话用户改的卡字段会被 AI 玩出来的旧补丁一直覆盖。
+ *  renames:本次改名对——局内 state.characterStates 以角色名为键,改名后补丁键跟随迁移 */
+async function clearOverlappingPatches(
+  prevCards: CharacterCard[],
+  cards: CharacterCard[],
+  renames: { from: string, to: string }[] = []
+) {
   const editedFields = new Map<string, Set<string>>()
   for (const c of cards) {
+    // 改名对齐:旧名卡是编辑基底(改名后 prev 按 c.name 找不到),经改名映射回旧名再 diff
+    const orig = renames.find(r => r.to === c.name)?.from
     const prev = prevCards.find(p => p.name === c.name)
+      ?? (orig ? prevCards.find(p => p.name === orig) : undefined)
     if (!prev) continue
     const fields = new Set<string>()
-    for (const k of PATCHABLE_KEYS) {
-      if (JSON.stringify(prev[k] ?? null) !== JSON.stringify(c[k] ?? null)) fields.add(k)
+    // 固定补丁键 + 卡上实际出现的全部键(含 profile 自由区/动态键——局内补丁是开放键集,
+    // AI 可写入任意非保留键,固定清单会漏)有差异的都视为被编辑
+    const keys = new Set<string>([...PATCHABLE_KEYS, ...Object.keys(prev), ...Object.keys(c)])
+    for (const k of keys) {
+      if (JSON.stringify((prev as unknown as Record<string, unknown>)[k] ?? null) !== JSON.stringify((c as unknown as Record<string, unknown>)[k] ?? null)) fields.add(k)
     }
     if (fields.size) editedFields.set(c.name, fields)
   }
-  if (!editedFields.size) return
+  if (!editedFields.size && !renames.length) return
   const games = await listLocalGames()
   let touched = 0
   for (const g of games) {
     if (g.workId !== props.workId) continue
     const states = g.state?.characterStates
-    if (!states) continue
+    if (!states && !renames.length) continue
     let dirty = false
+    // 改名迁移:state.characterStates 键跟随新名(旧名条目整体搬移)
+    if (renames.length && states) {
+      for (const { from, to } of renames) {
+        if (states[from] && !states[to]) {
+          states[to] = states[from]
+          Reflect.deleteProperty(states, from)
+          dirty = true
+        }
+      }
+    }
+    if (!states) continue
     for (const [name, fields] of editedFields) {
       const patch = states[name]?.patch
       if (!patch || !Object.keys(patch).length) continue
@@ -1116,14 +1188,15 @@ function confirmRemoveCard() {
               <UFormField label="弧线概述">
                 <UTextarea
                   v-model="arcDraft.summary"
-                  :rows="2"
+                  autoresize
                   placeholder="该角色全书的弧线概述(目标 / 宿命 / 处境演变)…"
                   class="w-full"
                   @update:model-value="commitArcDraft()"
                 />
               </UFormField>
+              <!-- 段戏份统一在下方「分段剧情 / 状态」按段编辑;仅段文件不可写的来源(v1 works)在此保留只读索引 -->
               <ul
-                v-if="arcDraft.beats.length"
+                v-if="arcDraft.beats.length && workSource !== 'book2'"
                 class="max-h-56 space-y-1.5 overflow-y-auto text-xs text-neutral-600 dark:text-neutral-400"
               >
                 <li
@@ -1131,9 +1204,23 @@ function confirmRemoveCard() {
                   :key="b.segIndex"
                 >
                   <span class="font-medium text-highlighted">段{{ b.segIndex + 1 }}</span>
-                  {{ b.summary }}<template v-if="b.status">
-                    ({{ b.status }})
-                  </template>
+                  {{ b.summary }}
+                </li>
+              </ul>
+              <!-- 段号越界的旧单拍(生成于弧线坐标换算修复前):下方按段列表覆盖不到,在此只读列出 -->
+              <ul
+                v-if="orphanArcBeats.length"
+                class="space-y-1.5 rounded-md bg-amber-500/10 px-2.5 py-2 text-xs text-amber-700 dark:text-amber-400"
+              >
+                <li class="font-medium">
+                  {{ orphanArcBeats.length }} 条单拍的段号超出剧情段范围(旧数据),暂不可按段编辑:
+                </li>
+                <li
+                  v-for="b in orphanArcBeats"
+                  :key="b.segIndex"
+                >
+                  <span class="font-medium">段{{ b.segIndex + 1 }}</span>
+                  {{ b.summary }}
                 </li>
               </ul>
               <UFormField label="结局走向">
@@ -1145,7 +1232,12 @@ function confirmRemoveCard() {
                 />
               </UFormField>
               <p class="text-xs text-neutral-400">
-                扮演该角色时以此为主叙事线;各段戏份在下方「分段剧情 / 状态」里按段编辑。重跑「质量提升补充生成」并「更新世界情报」会覆盖手改内容。
+                <template v-if="workSource === 'book2'">
+                  扮演该角色时以此为主叙事线;{{ arcDraft.beats.length }} 段戏份已按段显示在下方「分段剧情 / 状态」,展开对应段即可编辑(单拍留空即删除)。重跑「质量提升补充生成」并「更新世界情报」会覆盖手改内容。
+                </template>
+                <template v-else>
+                  扮演该角色时以此为主叙事线;重跑「质量提升补充生成」并「更新世界情报」会覆盖手改内容。
+                </template>
               </p>
             </section>
 
@@ -1181,6 +1273,16 @@ function confirmRemoveCard() {
                     <span class="text-neutral-600 dark:text-neutral-300"> · {{ d.title }}</span>
                   </span>
                   <span
+                    v-if="d.arcBeat?.summary.trim()"
+                    class="shrink-0 text-primary-500 dark:text-primary-400"
+                    title="本段有独立故事线"
+                  >
+                    <UIcon
+                      name="i-lucide-route"
+                      class="size-3.5"
+                    />
+                  </span>
+                  <span
                     v-if="segHasContent(d)"
                     class="shrink-0 rounded-full bg-primary-500/10 px-1.5 py-0.5 text-[10px] text-primary-600 dark:bg-primary-400/10 dark:text-primary-400"
                   >有内容</span>
@@ -1207,18 +1309,12 @@ function confirmRemoveCard() {
                     </p>
                     <UTextarea
                       v-model="d.arcBeat.summary"
-                      :rows="2"
+                      autoresize
                       placeholder="该角色在本段的行动 / 处境 / 目标推进…"
                       class="w-full"
                       @update:model-value="commitArcDraft()"
                     />
-                    <UInput
-                      v-model="d.arcBeat.status"
-                      size="xs"
-                      placeholder="本段处境变化(如 受伤/身份转变),可空"
-                      class="w-full"
-                      @update:model-value="commitArcDraft()"
-                    />
+                    <!-- 本段处境在此不重复编辑:唯一真源是下方「属性状态」的 处境 行(段文件,§6.1) -->
                   </div>
                   <UButton
                     v-else
@@ -1233,7 +1329,7 @@ function confirmRemoveCard() {
                   <UFormField label="本段剧情">
                     <UTextarea
                       v-model="d.plot"
-                      :rows="2"
+                      autoresize
                       placeholder="该角色在本段的行动 / 处境 / 目标推进…"
                       class="w-full"
                       @update:model-value="commitSegDraft(d)"
@@ -1243,21 +1339,20 @@ function confirmRemoveCard() {
                     <p class="text-xs font-medium text-neutral-500">
                       属性状态
                     </p>
-                    <div
+                    <UFieldGroup
                       v-for="(row, i) in d.stateRows"
                       :key="i"
-                      class="flex items-center gap-2"
+                      size="xs"
+                      class="w-full"
                     >
                       <UInput
                         v-model="row.key"
-                        size="xs"
                         placeholder="键(如 处境/外貌/已死亡)"
-                        class="w-36 shrink-0"
+                        class="w-32 shrink-0"
                         @update:model-value="commitSegDraft(d)"
                       />
                       <UInput
                         v-model="row.value"
-                        size="xs"
                         placeholder="值(清空键名即移除该行)"
                         class="min-w-0 flex-1"
                         @update:model-value="commitSegDraft(d)"
@@ -1265,14 +1360,13 @@ function confirmRemoveCard() {
                       <UButton
                         icon="i-lucide-x"
                         color="error"
-                        variant="ghost"
-                        size="xs"
+                        variant="outline"
                         aria-label="删除状态行"
                         @click="removeSegStateRow(d, i)"
                       />
-                    </div>
+                    </UFieldGroup>
                     <UButton
-                      v-if="!d.stateRows.length || d.stateRows[d.stateRows.length - 1].key"
+                      v-if="canAddSegState(d)"
                       label="添加状态"
                       icon="i-lucide-plus"
                       color="neutral"
@@ -1630,7 +1724,6 @@ function confirmRemoveCard() {
           <UTextarea
             v-model="editAttr.text"
             autoresize
-            :rows="4"
             :placeholder="modalPlaceholder(editAttr.scope, editAttr.key, editAttr.type)"
             class="w-full"
           />

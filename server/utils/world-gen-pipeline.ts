@@ -11,7 +11,7 @@
 //    用户自建 key 模式解密暂存 key 转发,零扣费仅记账。
 //  - 任务终态一律清空 key 暂存列(clearTaskKey),防静态泄露。
 import { drizzle } from 'drizzle-orm/d1'
-import { and, asc, eq, inArray, lt, or, sql, isNotNull, count } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, lt, or, sql, isNotNull, count } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { aiUsage, user as usersTable, worldCache, worldGenTasks, worldGenUnits, aiProviderConfigs } from '../db/schema'
 import type { RelayTarget } from './ai-relay'
@@ -35,7 +35,7 @@ import type { ExtractUnit, WorldLocalSummary } from '../../shared/world-build'
 import type { WorldGenMode, WorldGenStageDetail } from '../../shared/world-gen-task'
 import { parseWorldGenSteps } from '../../shared/world-gen-task'
 import { billedTokens } from '../../shared/token-estimate'
-import { buildEntityLinkMessages, clusterCharacterCandidates, parseEntityLinkGroups, applyEntityMerges } from '../../shared/entity-link'
+import { buildEntityLinkMessages, buildAliasNameMap, clusterCharacterCandidates, parseEntityLinkGroups, applyEntityMerges } from '../../shared/entity-link'
 import { parseNovelBytes } from './novel-parser'
 import {
   ANNOTATE_CHUNK_BEATS, buildAnnotateMessages, buildBookDoc, groupBeats, normalizeSegmentAnnotations,
@@ -124,7 +124,7 @@ export function createWorldGenCtx(env: WorldGenEnv, taskId: string) {
     relayPromise: null as Promise<RelayTarget> | null,
     /** 源文解析惰性缓存:同一 isolate 存活期内只做一次全文下载+解析(提取每单元、merge/arcs/finalize 都要取文)。
      *  源文只读、结果确定,isolate 重放/续跑时重取一次无正确性风险;不缓存则每个单元一次全文往返。 */
-    sourcePromise: null as Promise<{ units: ExtractUnit[], text: string }> | null
+    sourcePromise: null as Promise<{ units: ExtractUnit[], text: string, parsed: ReturnType<typeof parseNovelBytes> }> | null
   }
 }
 
@@ -193,10 +193,10 @@ export function parseStageDetail(raw: string | null): ExtendedStageDetail {
 
 /** stage_detail 合并写:保留既有字段(plan 与并行分支子进度),只覆盖指定分支槽位。
  *  并行收尾分支(synthesize/arcs/annotate)各自写自己的槽位,不得整写 stage_detail 互相覆盖。 */
-async function mergeStageDetail(ctx: TaskRef, patch: Pick<ExtendedStageDetail, 'synthDone' | 'arcs' | 'annotate'>): Promise<void> {
+async function mergeStageDetail(ctx: TaskRef, patch: Pick<ExtendedStageDetail, 'synthDone' | 'arcs' | 'annotate'>, extra?: Partial<typeof worldGenTasks.$inferInsert>): Promise<void> {
   const task = await requireTask(ctx)
   const d = parseStageDetail(task.stageDetail)
-  await markTask(ctx, { stageDetail: JSON.stringify({ ...d, ...patch }) })
+  await markTask(ctx, { stageDetail: JSON.stringify({ ...d, ...patch }), ...extra })
 }
 
 // ---- 计费与账目 ----
@@ -306,13 +306,21 @@ export async function sweepStaleWorldGenTasks(db: WorldGenDb, bucket?: R2Bucket)
         or(isNotNull(worldGenTasks.keyCiphertext), isNotNull(worldGenTasks.keyIv))
       ))
       .run()
-    // 失败/取消任务的 scratch 回收(merged/overlay/检查点等中间产物,任务已终态无再利用价值)
+    // 失败/取消任务 + 过期 completed world 任务 的 scratch 回收(中间产物,任务已终态无再利用价值)。
+    // completed 的 arcs 任务保留 arcs.json 供「更新世界情报」结果端点读取,不纳入回收;
+    // completed world 任务的 scratch 正常已在 finalize 清理,这里只兜底「置 completed 后崩溃」的残留
     if (bucket) {
       const gcBefore = new Date(now.getTime() - SCRATCH_GC_DAYS * 24 * 60 * 60 * 1000)
       const doomed = await db.select({ id: worldGenTasks.id })
         .from(worldGenTasks)
         .where(and(
-          inArray(worldGenTasks.status, ['failed', 'cancelled']),
+          or(
+            inArray(worldGenTasks.status, ['failed', 'cancelled']),
+            and(
+              eq(worldGenTasks.status, 'completed'),
+              or(isNull(worldGenTasks.kind), eq(worldGenTasks.kind, 'world'))
+            )
+          ),
           lt(worldGenTasks.updatedAt, gcBefore)
         ))
         .limit(SCRATCH_GC_LIMIT)
@@ -411,20 +419,30 @@ async function relayOf(ctx: WorldGenCtx, task: WorldGenTaskRow): Promise<RelayTa
 
 // ---- 正文读取与切段 ----
 
-async function fetchSourceText(ctx: WorldGenCtx, task: WorldGenTaskRow): Promise<string> {
-  const key = task.sourceKey || worldSourceKey(task.sourceHash)
-  const obj = await ctx.bucket.get(key)
-  if (!obj) throw new Error(`R2 源文件缺失: ${key}`)
-  const bytes = new Uint8Array(await obj.arrayBuffer())
-  return parseNovelBytes(bytes, `${task.title || 'novel'}.txt`).text
+/** 源文下载+解析+切段(带 ctx 级缓存,三产物一次算齐):parse/plan/提取/merge/arcs/finalize 全部取自此缓存,
+ *  同一 isolate 存活期内只做一次整本下载+清洗(此前 parse 步与 deriveUnits 各做一次,双份 R2 往返)。
+ *  下载/解析失败时清空缓存:同一 step 的重试可重新发起下载,不被永久 rejected 的 promise 卡死 */
+async function sourceCache(ctx: WorldGenCtx, task: WorldGenTaskRow): Promise<{ text: string, parsed: ReturnType<typeof parseNovelBytes>, units: ExtractUnit[] }> {
+  if (!ctx.sourcePromise) {
+    ctx.sourcePromise = (async () => {
+      const key = task.sourceKey || worldSourceKey(task.sourceHash)
+      const obj = await ctx.bucket.get(key)
+      if (!obj) throw new Error(`R2 源文件缺失: ${key}`)
+      const bytes = new Uint8Array(await obj.arrayBuffer())
+      const parsed = parseNovelBytes(bytes, `${task.title || 'novel'}.txt`)
+      return { text: parsed.text, parsed, units: splitUnits([{ title: '', content: parsed.text }]) }
+    })()
+    ctx.sourcePromise.catch(() => {
+      ctx.sourcePromise = null
+    })
+  }
+  return ctx.sourcePromise
 }
 
 /** 从全文确定性重建提取单元(内容不进 Workflow step 状态/D1;同一 isolate 存活期内复用一次下载+解析) */
 async function deriveUnits(ctx: WorldGenCtx, task: WorldGenTaskRow): Promise<{ units: ExtractUnit[], text: string }> {
-  if (!ctx.sourcePromise) {
-    ctx.sourcePromise = fetchSourceText(ctx, task).then(text => ({ units: splitUnits([{ title: '', content: text }]), text }))
-  }
-  return ctx.sourcePromise
+  const { units, text } = await sourceCache(ctx, task)
+  return { units, text }
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -439,17 +457,14 @@ export interface ParseOutcome {
   totalChars: number
 }
 
-/** 步骤 1:R2 取原文 → 解析(编码/清洗)→ 书名页正则识别作者,写回任务行 */
+/** 步骤 1:R2 取原文 → 解析(编码/清洗)→ 书名页正则识别作者,写回任务行。
+ *  解析结果经 ctx.sourcePromise 复用给后续 deriveUnits(同一 isolate 内不再二次下载+解析整本书) */
 export async function stepParseSource(ctx: WorldGenCtx): Promise<ParseOutcome> {
   const task = await requireTask(ctx)
   await assertNotCancelled(task)
-  const key = task.sourceKey || worldSourceKey(task.sourceHash)
-  const obj = await ctx.bucket.get(key)
-  if (!obj) throw new Error(`R2 源文件缺失: ${key}`)
-  const bytes = new Uint8Array(await obj.arrayBuffer())
-  const parsed = parseNovelBytes(bytes, `${task.title || 'novel'}.txt`)
-  if (!parsed.text.trim()) throw new Error('正文为空,无法生成世界')
-  const author = detectAuthorFromFrontMatter(extractFrontMatter(parsed.text, 3000))
+  const { text, parsed } = await parseSourceCached(ctx, task)
+  if (!text.trim()) throw new Error('正文为空,无法生成世界')
+  const author = detectAuthorFromFrontMatter(extractFrontMatter(text, 3000))
   await markTask(ctx, {
     stage: 'author',
     title: parsed.title || task.title,
@@ -457,6 +472,12 @@ export async function stepParseSource(ctx: WorldGenCtx): Promise<ParseOutcome> {
     encoding: parsed.encoding
   })
   return { title: parsed.title || task.title || '', encoding: parsed.encoding, author, totalChars: parsed.totalChars }
+}
+
+/** 源文下载+解析(带 ctx 级缓存):fetchSourceText 的下载与 parseNovelBytes 的清洗同源,避免双份 */
+async function parseSourceCached(ctx: WorldGenCtx, task: WorldGenTaskRow): Promise<{ text: string, parsed: ReturnType<typeof parseNovelBytes> }> {
+  const { text, parsed } = await sourceCache(ctx, task)
+  return { text, parsed }
 }
 
 /** 按模式/开关判断某 AI 步骤是否执行:full=全开,eco=仅 author(其余跳过),custom=按 payload 开关 */
@@ -480,7 +501,8 @@ export async function stepAuthorAi(ctx: WorldGenCtx): Promise<string | null> {
     if (done.author && done.author !== task.author) await markTask(ctx, { author: done.author })
     return done.author
   }
-  const text = await fetchSourceText(ctx, task)
+  // 源文取自 ctx 级缓存(不额外整本下载,只用书名页片段)
+  const { text } = await parseSourceCached(ctx, task)
   const front = extractFrontMatter(text, 3000)
   if (!front.trim()) {
     await putScratch(ctx, 'author-done', { author: null })
@@ -665,10 +687,15 @@ async function deleteArcsTextInput(ctx: WorldGenCtx): Promise<void> {
   }
 }
 
-/** 步骤 4:合并全部单元提取(代码 Reduce)+ 引用校验 + 故事线 + 本地聚合草稿 → scratch/merged.json */
+/** 步骤 4:合并全部单元提取(代码 Reduce)+ 引用校验 + 故事线 + 本地聚合草稿 → scratch/merged.json。
+ *  持久化检查点 merge-done:合并完成后续跑/重放直接跳过——否则 paused(at 收尾阶段)恢复时重跑合并
+ *  会用未消歧/未复核的全新 merged 覆盖掉已并入消歧与检查裁决的结果(两份不一致的 merged) */
 export async function stepMerge(ctx: WorldGenCtx, planOverride?: UnitPlan): Promise<{ okUnits: number, totalUnits: number, characters: number, storyline: number, warnings: string[] }> {
   const task = await requireTask(ctx)
   await assertNotCancelled(task)
+  if (await getScratch<{ ok: true }>(ctx, 'merge-done') && await getScratch(ctx, 'merged')) {
+    return { okUnits: 0, totalUnits: 0, characters: 0, storyline: 0, warnings: [] }
+  }
   // 切段计划:优先调用方传入(Workflow step 输出/inline 内存),否则读 stage_detail,
   // 都没有时从 R2 原文重新推导(历史任务的进度更新曾覆盖 stage_detail 里的 plan)
   let plan: UnitPlanEntry[] = planOverride?.units ?? parseStageDetail(task.stageDetail).plan ?? []
@@ -721,14 +748,18 @@ export async function stepMerge(ctx: WorldGenCtx, planOverride?: UnitPlan): Prom
 
   const merged: MergedState = { entities, conflicts, warnings, storyline, localSummary }
   await putScratch(ctx, 'merged', merged)
-  // 并行收尾分支槽位初始化(各自后续自行推进;arcs 未启用置 null,不参与整体进度)
+  // 瘦身提取状态落 scratch(仅 name/status/plot):arcs/finalize 复用,免第二次/第三次全量读 units 表
+  await putScratch(ctx, 'statuses', extracts.map(ex => ({
+    characters: (ex?.characters ?? []).map(c => ({ name: c.name ?? '', status: c.status ?? null, plot: c.plot ?? null }))
+  })))
+  await putScratch(ctx, 'merge-done', { ok: true })
+  // 并行收尾分支槽位初始化(各自后续自行推进;arcs 未启用置 null,不参与整体进度),
+  // 槽位与下一阶段 stage 合并为一次任务行写
   await mergeStageDetail(ctx, {
     synthDone: 0,
     arcs: stepEnabled(task, 'arcs') ? { doneUnits: 0, totalUnits: 0 } : null,
     annotate: { doneUnits: 0, totalUnits: 0 }
-  })
-  // 下一阶段:节约/自定义关 check 时直接进入成书,避免进度停在被跳过的检查阶段
-  await markTask(ctx, { stage: stepEnabled(task, 'check') ? 'check' : 'synthesize' })
+  }, { stage: stepEnabled(task, 'check') ? 'check' : 'synthesize' })
   return { okUnits, totalUnits: plan.length, characters: entities.characters.length, storyline: storyline.length, warnings }
 }
 
@@ -779,6 +810,41 @@ export async function stepDisambiguate(ctx: WorldGenCtx): Promise<{ clusters: nu
   const before = chars.length
   if (groups.length > 0) {
     merged.entities.characters = applyEntityMerges(chars, groups).characters
+    // 别名→规范名回写:消歧只改实体库的话,storyline.cast(→正典 cast)、statuses(→段角色文件键、
+    // arcs 事实底稿)仍用消歧前用名,被合并角色的段数据会静默失效。按簇内规范名(mentionCount 最高,
+    // 与 applyEntityMerges 同规则)建立精确名映射(含被并条目的 alias),统一改写
+    const nameMap = buildAliasNameMap(chars, groups)
+    if (nameMap.size > 0) {
+      const remap = (n: string) => nameMap.get(n.replace(/\s+/g, '')) ?? n
+      for (const beat of merged.storyline) {
+        if (beat.cast?.length) beat.cast = [...new Set(beat.cast.map(remap))]
+      }
+      const statuses = await getScratch<(ChapterExtractStatuses | null)[]>(ctx, 'statuses')
+      if (statuses) {
+        for (const ex of statuses) {
+          if (!ex?.characters?.length) continue
+          const regroup = new Map<string, { name: string, status: string | null, plot: string | null }>()
+          for (const c of ex.characters) {
+            const cn = remap(c.name)
+            const hit = regroup.get(cn)
+            if (hit) {
+              // 同段双名合并:后值非空覆盖(与「段内最后一条非空」口径一致)
+              if (c.status) hit.status = c.status
+              if (c.plot) hit.plot = c.plot
+            } else {
+              regroup.set(cn, { name: cn, status: c.status ?? null, plot: c.plot ?? null })
+            }
+          }
+          ex.characters = [...regroup.values()]
+        }
+        await putScratch(ctx, 'statuses', statuses)
+      }
+    }
+    await putScratch(ctx, 'merged', merged)
+  }
+  // 消歧降级告警并入 merged.warnings:该步返回值在编排层被丢弃,不并入用户就永远看不到
+  if (warnings.length > 0) {
+    merged.warnings = [...(merged.warnings ?? []), ...warnings].slice(0, 20)
     await putScratch(ctx, 'merged', merged)
   }
   await putScratch(ctx, 'link-done', { ok: true })
@@ -947,6 +1013,11 @@ function parseArcsPayload(raw: string | null): ArcsTaskPayload | null {
   return null
 }
 
+/** 角色名归一(去空白;段文件事实底稿按角色名对齐用) */
+function arcNameKey(s: string | null | undefined): string {
+  return (s ?? '').replace(/\s+/g, '').trim()
+}
+
 /**
  * 配角故事线步骤(arcs 补充任务与 world 成书共用):按候选角色逐单元生成独立故事线。
  *  - 数据来源:arcs 任务读 payload(entities/storyline/text);world 成书读 merged 实体 + R2 原文;
@@ -979,7 +1050,8 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
   let entities: WorldEntities
   let storyline: StoryBeat[]
   let sourceText: string | null
-  let extracts: (ChapterExtractStatuses | null)[] = []
+  /** 事实底稿查询:该角色在某段的 剧情/状态(arcs 任务取客户端上传的段文件底稿,world 任务取提取单元结果) */
+  let draftOf: (name: string, beatIndex: number) => { plot?: string | null, status?: string | null } | undefined = () => undefined
   if (task.kind === 'arcs') {
     const payload = parseArcsPayload(task.payload)
     if (!payload) throw new Error('任务载荷缺失,无法生成配角故事线')
@@ -990,7 +1062,11 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
       const obj = await ctx.bucket.get(payload.textKey)
       sourceText = obj ? await obj.text() : null
     }
-    extracts = (payload.plots ?? []).map(p => ({ characters: [{ name: p.name, status: p.status, plot: p.plot }] }))
+    // payload.plots 是「段 × 角色」的扁平列表(自带 beatIndex),必须按 (角色名, 段下标) 建索引——
+    // 早期按数组位置当下标会让每个角色拿到别人/别段的事实底稿
+    const draftsByKey = new Map<string, { plot?: string | null, status?: string | null }>()
+    for (const p of payload.plots ?? []) draftsByKey.set(`${arcNameKey(p.name)}|${p.beatIndex}`, { plot: p.plot, status: p.status })
+    draftOf = (name, bi) => draftsByKey.get(`${arcNameKey(name)}|${bi}`)
   } else {
     const merged = await getScratch<MergedState>(ctx, 'merged')
     if (!merged) throw new Error('合并结果缺失,无法生成配角故事线')
@@ -999,7 +1075,8 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
     if (!storyline || storyline.length === 0) return { count: 0, warnings: [] }
     const du = await deriveUnits(ctx, task)
     sourceText = du.text
-    extracts = await loadUnitStatuses(ctx, du.units.length)
+    const extracts = await loadUnitStatuses(ctx, du.units.length)
+    draftOf = (name, bi) => (extracts[bi]?.characters ?? []).find(c => arcNameKey(c.name) === arcNameKey(name))
   }
 
   const candidates = characterArcCandidates(entities, storyline)
@@ -1054,7 +1131,10 @@ export async function stepSupplementArcs(ctx: WorldGenCtx): Promise<{ count: num
     try {
       // 不设 maxTokens:输出上限交给上游模型自身,避免登场段多时被低上限截断丢段
       // 事实底稿:该角色各段的 extract 剧情/状态(事实层);arcs 只做角色中心的叙事精化,事实不得与之冲突
-      const arcDrafts = candidate.beats.flatMap(bi => (extracts[bi]?.characters ?? []).map(c => ({ beatIndex: bi, plot: c.plot, status: c.status })))
+      const arcDrafts = candidate.beats.flatMap((bi) => {
+        const d = draftOf(candidate.card.name, bi)
+        return d ? [{ beatIndex: bi, plot: d.plot ?? null, status: d.status ?? null }] : []
+      })
       const { data, usage } = await callAiJson(relay, {
         messages: buildCharacterArcMessages(title, candidate, storyline, textWindowOf(candidate), arcDrafts),
         temperature: 0.3
@@ -1174,8 +1254,11 @@ export async function stepAnnotate(ctx: WorldGenCtx): Promise<{ groups: number, 
   return { groups: annotations.length, warnings }
 }
 
-/** 汇总各提取单元的角色数据(name+status+plot),供 v2 段角色文件「状态/剧情」取用(§6.1:提取阶段直接产出) */
+/** 汇总各提取单元的角色数据(name+status+plot),供 v2 段角色文件「状态/剧情」取用(§6.1:提取阶段直接产出)。
+ *  优先读 merge 时落盘的 scratch 瘦身快照(免全量读 units 表);快照缺失(历史任务续跑)时回退查询 */
 async function loadUnitStatuses(ctx: WorldGenCtx, totalUnits: number): Promise<(ChapterExtractStatuses | null)[]> {
+  const cached = await getScratch<(ChapterExtractStatuses | null)[]>(ctx, 'statuses')
+  if (Array.isArray(cached) && cached.length > 0) return cached
   const out: (ChapterExtractStatuses | null)[] = new Array(totalUnits).fill(null)
   const rows = await ctx.db.select({ unitIndex: worldGenUnits.unitIndex, result: worldGenUnits.result })
     .from(worldGenUnits)
@@ -1275,13 +1358,15 @@ export async function stepFinalize(ctx: WorldGenCtx, postWarnings: string[] = []
     }).run()
   }
 
+  // 完成态与清 key 合并为一次任务行写(终态必须清自建 key 暂存,防库文件/备份静态泄露)
   await markTask(ctx, {
     status: 'completed',
     stage: 'done',
     resultKey,
-    warnings: JSON.stringify([...merged.warnings, ...postWarnings].slice(0, 20))
+    warnings: JSON.stringify([...merged.warnings, ...postWarnings].slice(0, 20)),
+    keyCiphertext: null,
+    keyIv: null
   })
-  await clearTaskKey(ctx)
   await cleanupScratch(ctx)
   // 自定义模式不参与共享缓存,直接返回 null(返回值当前无消费方;冲突时 cacheId 非库内 id,无影响)
   return { resultKey, cacheId: task.mode !== 'custom' ? cacheId : null }

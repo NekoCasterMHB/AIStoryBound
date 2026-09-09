@@ -60,17 +60,32 @@ export function characterCardToBook(c: CharacterCard): BookCharacter | undefined
   if (typeof c.patience === 'number') bc['耐心'] = c.patience
   if (typeof c.softness === 'number') bc['心软'] = c.softness
   if (typeof c.desire === 'number') bc['性欲强度'] = c.desire
-  if (c.kinks?.length) bc['玩法喜好'] = c.kinks.map(k => ({ 主题: k.theme, 态度: k.view ?? undefined, 角色: k.role ?? undefined, 细节: k.detail ?? undefined }))
-  if (c.sex) bc['成人属性'] = c.sex as Record<string, unknown>
-  // 自由区:profile(读取时未识别键并入,见 v2-convert.bookCharacterToCard)原样回写,不与保留键冲突
-  if (c.profile && typeof c.profile === 'object') {
-    for (const [k, v] of Object.entries(c.profile)) {
-      if (!(k in bc) && v !== undefined) bc[k] = v as never
-    }
+  if (c.kinks?.length) {
+    bc['玩法喜好'] = c.kinks.map((k): Record<string, unknown> => {
+      const base: Record<string, unknown> = {
+        主题: k.theme,
+        ...(k.view != null ? { 态度: k.view } : {}),
+        ...(k.role != null ? { 角色: k.role } : {}),
+        ...(k.detail != null ? { 细节: k.detail } : {})
+      }
+      // 归一四键之外的扩展键原样保留(来源方自定义字段,往返不丢)
+      const known = new Set(['theme', 'view', 'role', 'detail'])
+      for (const [k2, v2] of Object.entries(k as Record<string, unknown>)) {
+        if (!known.has(k2) && v2 !== undefined) base[k2] = v2
+      }
+      return base
+    }) as BookCharacter['玩法喜好']
   }
+  // 自由区:profile(读取时未识别键并入)原样回写,不与保留键冲突;
+  // 先取出再并入——cleanUnknown 是「未知=空」的语义清洗,不应触及用户自由键的任意取值
+  const profileEntries = Object.entries(c.profile && typeof c.profile === 'object' ? c.profile : {})
+  if (c.sex) bc['成人属性'] = c.sex as Record<string, unknown>
   // 统一「未知」清洗:AI 返回「未知」的属性(含数组项/对象内嵌键)不落卡;
   // 姓名除外(是卡的身份键,即使恰好叫「未知」也保留)
   const cleaned = cleanUnknown(bc) as BookCharacter | undefined
   if (!cleaned) return undefined
+  for (const [k, v] of profileEntries) {
+    if (!(k in cleaned) && v !== undefined) cleaned[k] = v as never
+  }
   return { ...cleaned, 姓名: bc['姓名'] }
 }

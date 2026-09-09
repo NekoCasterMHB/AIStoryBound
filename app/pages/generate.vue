@@ -11,9 +11,6 @@ import { checkWorldGenQuota, estimateWorldGenTokens } from '../utils/tokenQuota'
 import { DEFAULT_STEP_SWITCHES, parseWorldGenSteps } from '#shared/world-gen-task'
 import type { WorldGenStepSwitches } from '#shared/world-gen-task'
 import { loadPresetChapters } from '../utils/chapters'
-import { fetchPrebuiltWorld, installPrebuiltWork } from '../utils/prebuiltWorld'
-import type { PrebuiltWorld } from '../utils/prebuiltWorld'
-import { setAdultModeEnabled } from '../utils/adultMode'
 import { getActiveRelayConfig } from '../utils/aiConfigStore'
 import {
   uploadWorldGenTask, pullCachedWorld,
@@ -52,8 +49,6 @@ const presetAuthor = ref<string | null>(null)
 /** 预置小说元数据(官方预生成世界组装作品用) */
 const presetMeta = ref<PresetNovelRow | null>(null)
 /** 官方预生成世界:存在时确认页提供 0 token 直接进入(自定义生成保留) */
-const prebuiltWorld = ref<PrebuiltWorld | null>(null)
-const directStarting = ref(false)
 
 const toast = useToast()
 
@@ -635,7 +630,6 @@ async function loadPresetIntoConfirm(presetId: string) {
   quotaWarn.value = null
   pendingGen.value = null
   fromPreset.value = false
-  prebuiltWorld.value = null
   presetMeta.value = null
   resetCloudState()
   // 重置平滑计数,开始新一轮展示
@@ -653,12 +647,6 @@ async function loadPresetIntoConfirm(presetId: string) {
     }
     if (seq !== runSeq) return // 加载期间已被取消
     presetMeta.value = meta
-    // 拉取官方预生成世界(存在则确认页提供 0 token 直接进入;失败/未预生成不影响自定义生成)
-    if (meta) {
-      fetchPrebuiltWorld(presetId)
-        .then((w) => { prebuiltWorld.value = w })
-        .catch(() => { prebuiltWorld.value = null })
-    }
     const { chapters, title } = await loadPresetChapters(presetId)
     if (seq !== runSeq) return
     const useTitle = meta?.title ?? title
@@ -689,7 +677,6 @@ async function loadWorkIntoConfirm(workId: string) {
   quotaWarn.value = null
   pendingGen.value = null
   fromPreset.value = false
-  prebuiltWorld.value = null
   presetMeta.value = null
   resetCloudState()
   // 重置平滑计数,开始新一轮展示
@@ -735,31 +722,12 @@ function startGenerationFromConfirm() {
   void startCloudGeneration()
 }
 
-/** 确认页"直接开始":用官方预生成世界组装作品落书架,0 token 跳选角(自定义生成保留) */
-async function startPrebuiltFromConfirm() {
-  const world = prebuiltWorld.value
-  const meta = presetMeta.value
-  if (!world || !meta) return
-  directStarting.value = true
-  try {
-    const workId = await installPrebuiltWork(meta, world)
-    // 预置小说进入世界默认开启成人模式(选角页可关)
-    setAdultModeEnabled(true)
-    await navigateTo(`/play/${workId}`)
-  } catch (e) {
-    toast.add({ color: 'error', icon: 'i-lucide-triangle-alert', title: '进入失败', description: e instanceof Error ? e.message : String(e) })
-  } finally {
-    directStarting.value = false
-  }
-}
-
 /** 确认页"重新选择":回到上传态并直接打开文件选择 */
 function repickFile() {
   pendingGen.value = null
   quotaWarn.value = null
   fromPreset.value = false
   presetAuthor.value = null
-  prebuiltWorld.value = null
   presetMeta.value = null
   resetCloudState()
   genState.value = { phase: 'idle', title: '', progress: null, error: null, resultId: null, tokensUsed: 0 }
@@ -780,7 +748,6 @@ async function cancelGeneration() {
   quotaWarn.value = null
   fromPreset.value = false
   presetAuthor.value = null
-  prebuiltWorld.value = null
   presetMeta.value = null
   resetCloudState()
   genState.value = { phase: 'idle', title: '', progress: null, error: null, resultId: null, tokensUsed: 0 }
@@ -1000,30 +967,6 @@ const features = [
                 {{ fromPreset ? '来自预置小说库 · ' : '' }}全书约 {{ formatChars(totalChars) }}
               </p>
             </div>
-          </div>
-
-          <!-- 官方预生成世界:直接进入 0 token(自定义生成保留) -->
-          <div
-            v-if="fromPreset && prebuiltWorld"
-            class="flex flex-col items-center gap-3 rounded-xl border border-primary-300/60 bg-primary-500/10 px-3.5 py-3 sm:flex-row sm:justify-between dark:border-primary-700/60"
-          >
-            <div class="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-200">
-              <UIcon
-                name="i-lucide-zap"
-                class="size-4 shrink-0 text-primary-500"
-              />
-              <span>
-                本书已有官方预生成世界,<span class="font-semibold">0 token 直接进入</span><template v-if="!usingUserKey">(本页自定义生成按全书估算约 {{ estimatedTokens.toLocaleString() }} tokens)</template>
-              </span>
-            </div>
-            <UButton
-              color="primary"
-              icon="i-lucide-play"
-              :loading="directStarting"
-              @click="startPrebuiltFromConfirm"
-            >
-              直接开始
-            </UButton>
           </div>
 
           <!-- 缓存预检命中:同文本已有共享成书,可直接拉取(半价),不必重新生成 -->

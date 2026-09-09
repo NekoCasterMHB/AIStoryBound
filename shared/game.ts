@@ -114,6 +114,29 @@ function kinkBoostFactor(card: CharacterCard | undefined, kinkName: string | und
 /** 角色动态状态白名单合并:已知键(status/location/mood/dead)特殊处理,其余键视为人物卡字段补丁(数组/字符串整体替换) */
 const DYN_RESERVED_KEYS = new Set(['status', 'location', 'mood', 'dead', 'log', 'patch'])
 
+/** 状态收敛上限(落库无界会让每回合 2 份深拷贝 + 存档点随局膨胀):flags/quests 条数、
+ *  characterStates 条目数(按写入序保留最新;身亡角色的条目保留——叙事仍需知道其死亡,但裁掉履历与补丁) */
+export const STATE_LIMITS = { flags: 50, quests: 20, characterStates: 40 } as const
+
+function trimState(s: GameState): GameState {
+  if (s.flags && Object.keys(s.flags).length > STATE_LIMITS.flags) {
+    const drop = Object.keys(s.flags).slice(0, Object.keys(s.flags).length - STATE_LIMITS.flags)
+    s.flags = Object.fromEntries(Object.entries(s.flags).filter(([k]) => !drop.includes(k)))
+  }
+  if (s.quests && s.quests.length > STATE_LIMITS.quests) s.quests = s.quests.slice(-STATE_LIMITS.quests)
+  if (s.characterStates && Object.keys(s.characterStates).length > STATE_LIMITS.characterStates) {
+    const drop = new Set(Object.keys(s.characterStates).slice(0, Object.keys(s.characterStates).length - STATE_LIMITS.characterStates))
+    s.characterStates = Object.fromEntries(Object.entries(s.characterStates).filter(([k]) => !drop.has(k)))
+  }
+  for (const [name, cs] of Object.entries(s.characterStates ?? {})) {
+    if (cs?.dead) {
+      // 身亡角色:条目保留(叙事需知其死亡),补丁与履历裁掉
+      if (cs.patch && Object.keys(cs.patch).length) s.characterStates![name] = { dead: true, status: cs.status }
+    }
+  }
+  return s
+}
+
 /** 轻量状态引擎:白名单合并 state_delta,数值做增量与钳制;LLM 不直接写库(铁律 3)
  *  desires 变化曲线:原始增量钳 ±30 × 性欲强度因子(强度/50,0.2~2.0,低=性冷淡波动小)
  *  × 高值加速因子(1+当前值/100,1.0~2.0,低值难涨高值加速) × 嗜好放大(仅正增量,戳中「喜欢」×2.5)
@@ -193,7 +216,7 @@ export function mergeState(prev: GameState, delta: TurnStructured['state_delta']
     }
     if (Object.keys(s.characterStates).length === 0) delete s.characterStates
   }
-  return s
+  return trimState(s)
 }
 
 /** 为游戏状态播种/补齐各角色的性欲值(初始 = 性欲强度 × 0.3,未知强度 = 0);
@@ -578,6 +601,16 @@ function playerArc(
     ?? characterArcs.find(a => arcKey(a.character).includes(key) || key.includes(arcKey(a.character)))
 }
 
+/** 段角色文件的 处境(本段处境唯一真源 = 段文件 状态.处境,§6.1;弧线自 2026-09 起不再存 status) */
+function segStatusOf(segFiles: Record<string, SegmentCharacterFile> | undefined, name: string | undefined): string | undefined {
+  const st = name ? segFiles?.[name]?.['状态'] : undefined
+  if (!st || typeof st !== 'object' || Array.isArray(st)) return undefined
+  const v = (st as Record<string, unknown>)['处境']
+  if (v == null) return undefined
+  const s = typeof v === 'string' ? v.trim() : (toText(v) ?? '')
+  return s || undefined
+}
+
 function overlayToneLine(
   genre: string | null | undefined,
   summary: string | null | undefined,
@@ -617,9 +650,10 @@ function plotTrackBlock(args: {
 
   const arc = playerArc(args.characterArcs, args.playerName)
   if (arc) {
-    // 玩家角色的独立弧线:以该角色为中心的分段戏份,替代主角中心主线;按当前段窗口化
+    // 玩家角色的独立弧线:以该角色为中心的分段戏份,替代主角中心主线;按当前段窗口化。
+    // 不再注入 beat.status(处境唯一真源是段文件,当前段处境已经由有效卡覆盖注入,§6.1)
     const arcLines = trackLines(
-      arc.beats.map(b => ({ index: b.beatIndex, summary: b.summary, note: b.status || undefined })),
+      arc.beats.map(b => ({ index: b.beatIndex, summary: b.summary })),
       args.currentBeat
     ).join('\n')
     lines.push(`玩家角色「${arc.character}」的独立故事线(以此为主叙事线,未登场段不在其中):\n${arcLines}${arc.ending ? `\n结局走向:${arc.ending}` : ''}${arc.summary ? `\n弧线概述:${arc.summary}` : ''}`)
@@ -775,7 +809,7 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   const track = plotTrackBlock({ entities, conflicts, storyline, characterArcs, playerName: playerArcCharacter || playerName, currentBeat: stageIndex, v2Segment, lastNode, segmentStorylines })
   const playerLine = `你是《${title}》的互动叙事引擎。玩家扮演「${playerName}」(${headPlayer ? cardBrief(headPlayer) : '原著角色'})。`
   const othersLine = `可能出场的其他角色:\n${others.map(c => cardBrief(c)).join('\n')}`
-  const stateLine = `当前游戏状态:${JSON.stringify(state, null, 0)}`
+  const stateLine = `当前游戏状态:${JSON.stringify(stateForPrompt(state, [...sceneNames, playerName]), null, 0)}`
   const dynLine = '角色动态状态:state.characterStates 记录各角色随互动演进后的当前处境/位置/情绪及已变化的字段(卡上「当前状态/当前情绪/当前位置」同源),演绎时以此为准;人物卡其余字段被互动永久改变时(如身份、目标、秘密曝光),也一并写入收尾的 state_delta.character_states 回报。'
   const deviceLines = deviceSpec?.trim() ? ['设备联动(指令对玩家不可见):', deviceSpec.trim()] : []
 
@@ -803,7 +837,10 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
   // 开场判定基于剧情上下文(摘要/历史),与人设提醒是否注入无关——
   // 人设提醒只要有角色卡就总会注入,若用它挡在开场前面,首回合开场指令会被吞掉
   const hasStoryContext = !!summaryText || history.length > 0
-  const recent = history.slice(-12)
+  // 历史窗口:容量 12 条,窗口头按 4 条量化对齐——窗口静止期内 user 段头部逐字节不变,
+  // 供应商前缀缓存可命中「历史消息」这块大头(缓存重建频率降为 1/4)
+  const histStart = Math.max(0, Math.floor(Math.max(0, history.length - 12) / 4) * 4)
+  const recent = history.slice(histStart)
   // 本轮行动已在尾部「玩家本轮行动」单独强调,历史里去重,避免同一行动重复出现稀释指令
   if (choice && recent.at(-1)?.role === 'user' && recent.at(-1)!.content === choice) recent.pop()
   if (recent.length > 0) {
@@ -827,7 +864,9 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
       if (arc && opening.beatIndex != null) {
         const arcBeat = arc.beats.find(b => b.beatIndex === opening.beatIndex)
         if (arcBeat) {
-          beatParts.push(`【玩家角色「${arc.character}」在本段的戏份】${arcBeat.summary}${arcBeat.status ? `（${arcBeat.status}）` : ''}\n(以该角色为叙事主体展开,不要切换到主角视角)`)
+          // 处境取段文件 状态.处境(开局段即当前段,segFiles 正是该段文件;弧线不再存 status)
+          const st = segStatusOf(segFiles, arc.character)
+          beatParts.push(`【玩家角色「${arc.character}」在本段的戏份】${arcBeat.summary}${st ? `（${st}）` : ''}\n(以该角色为叙事主体展开,不要切换到主角视角)`)
         } else {
           beatParts.push(`【玩家角色「${arc.character}」的弧线概述】${arc.summary}\n(该角色在本段登场但弧线未记录本段戏份:请让该角色以玩家身份自然地参与本段情节,不要凭空安排与弧线走向相悖的事件)`)
         }
@@ -863,7 +902,9 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
     if (arc && reinjectPlot.beatIndex != null) {
       const arcBeat = arc.beats.find(b => b.beatIndex === reinjectPlot.beatIndex)
       if (arcBeat) {
-        reinjectParts.push(`【玩家角色「${arc.character}」在本段的戏份】${arcBeat.summary}${arcBeat.status ? `（${arcBeat.status}）` : ''}\n(该角色为叙事主体,不要切换到主角视角)`)
+        // 处境取段文件 状态.处境(回注段即当前段;弧线不再存 status)
+        const st = segStatusOf(segFiles, arc.character)
+        reinjectParts.push(`【玩家角色「${arc.character}」在本段的戏份】${arcBeat.summary}${st ? `（${st}）` : ''}\n(该角色为叙事主体,不要切换到主角视角)`)
       } else {
         reinjectParts.push(`【玩家角色「${arc.character}」的弧线概述】${arc.summary}\n(该角色在本段登场,请按其弧线走向自然推进)`)
       }
@@ -925,14 +966,80 @@ export function buildTurnPrompt(args: TurnPromptArgs): ChatMsg[] {
   return [{ role: 'system', content: system }, { role: 'user', content: `${user}\n\n请以此为接续,生成下一段剧情。` }]
 }
 
-/** 叙事 prompt 输入 token 估算:按统计标签聚合分段字符估算(与真实 usage 有偏差,仅用于构成占比) */
-export function estimateTurnPromptBreakdown(args: TurnPromptArgs): { label: string, tokens: number, pct: number }[] {
-  const parts = buildTurnPromptParts(args)
+/** 叙事 prompt 输入 token 估算:按统计标签聚合分段字符估算(与真实 usage 有偏差,仅用于构成占比)。
+ *  parts 可传入 buildTurnPromptParts 的现成产物复用(叙事调用后统计消耗时免二次全量组装) */
+export function estimateTurnPromptBreakdown(
+  args: TurnPromptArgs,
+  parts?: TurnPromptPart[]
+): { label: string, tokens: number, pct: number }[] {
+  const list = parts ?? buildTurnPromptParts(args)
   const byLabel = new Map<string, number>()
-  for (const p of parts) {
+  for (const p of list) {
     byLabel.set(p.label, (byLabel.get(p.label) ?? 0) + estimateTextTokens(p.content))
   }
   const rows = [...byLabel.entries()].map(([label, tokens]) => ({ label, tokens }))
   const total = rows.reduce((s, r) => s + r.tokens, 0) || 1
   return rows.map(r => ({ label: r.label, tokens: r.tokens, pct: Math.round((r.tokens / total) * 1000) / 10 }))
+}
+
+/** 组装分段一次,得到消息数组 + 分段(消耗统计复用同一份,免二次组装) */
+export function buildTurnPromptWithParts(args: TurnPromptArgs): { prompt: ChatMsg[], parts: TurnPromptPart[] } {
+  const parts = buildTurnPromptParts(args)
+  return { prompt: turnPromptFromParts(parts), parts }
+}
+
+/** flags 条目数上限(只增不减的字段,超限按写入序淘汰最旧的,防 prompt/状态行无限膨胀) */
+export const MAX_FLAGS = 50
+
+/** 状态的 prompt 投影(叙事 prompt 用;收尾器写回仍用原始 state,投影只影响注入):
+ *  - 剔 characterStates[].log(UI 履历)与 nodeProgress(引擎簿记,节点锚已单独注入);
+ *  - flags 超上限时按序淘汰最旧;
+ *  - cast 给定时,角色键(relationships/desires/characterStates)裁到登场角色 + 玩家——
+ *    未登场角色的状态由卡 brief 承载,不必每回合全量重发 */
+export function stateForPrompt(state: GameState, cast?: string[]): GameState {
+  const keep = cast?.length ? new Set(cast) : null
+  const out: GameState = { ...state }
+
+  if (keep) {
+    const inCast = (name: string) => keep.has(name)
+    if (out.relationships && Object.keys(out.relationships).some(n => !inCast(n))) {
+      out.relationships = Object.fromEntries(Object.entries(out.relationships).filter(([n]) => inCast(n)))
+    }
+    if (out.desires && Object.keys(out.desires).some(n => !inCast(n))) {
+      out.desires = Object.fromEntries(Object.entries(out.desires).filter(([n]) => inCast(n)))
+    }
+  }
+
+  if (state.characterStates) {
+    const characterStates: GameState['characterStates'] = {}
+    for (const [name, cs] of Object.entries(state.characterStates)) {
+      if (keep && !keep.has(name)) continue
+      if (cs?.log) {
+        const { log: _log, ...rest } = cs
+        characterStates[name] = rest
+      } else {
+        characterStates[name] = cs
+      }
+    }
+    out.characterStates = characterStates
+  }
+
+  if (out.nodeProgress) {
+    delete out.nodeProgress
+  }
+  if (out.internal) {
+    delete out.internal // @deprecated 旧档残留字段,无消费方不该进 prompt
+  }
+  if (out.flags && Object.keys(out.flags).length > MAX_FLAGS) {
+    const keys = Object.keys(out.flags).slice(0, Object.keys(out.flags).length - MAX_FLAGS)
+    out.flags = Object.fromEntries(Object.entries(out.flags).filter(([k]) => !keys.includes(k)))
+  }
+  return out
+}
+
+/** 分段 → 消息数组(system 合并一条 + user 合并一条 + 收尾指令) */
+export function turnPromptFromParts(parts: TurnPromptPart[]): ChatMsg[] {
+  const system = parts.filter(p => p.role === 'system').map(p => p.content).join('\n')
+  const user = parts.filter(p => p.role === 'user').map(p => p.content).join('\n\n')
+  return [{ role: 'system', content: system }, { role: 'user', content: `${user}\n\n请以此为接续,生成下一段剧情。` }]
 }

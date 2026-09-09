@@ -33,6 +33,8 @@ export interface BookView {
   syncStatus?: 'local' | 'synced' | 'dirty'
   updatedAt: string
   tokensUsed?: number
+  /** 归档正文字符数(books 行维护;texts:false 窄读取时仍可展示字数/判定空正文) */
+  textChars?: number
 }
 
 export interface BuildBookViewOptions {
@@ -42,6 +44,8 @@ export interface BuildBookViewOptions {
   tokensUsed?: number
   syncStatus?: 'local' | 'synced' | 'dirty'
   sourceTaskId?: string
+  /** 归档正文字符数(books 行维护;texts:false 窄读取时仍回传) */
+  textChars?: number
   /** works 源覆盖:真 v1 行的正文/段轨道带真实 startChar;book2 源不需传 */
   overrides?: { fulltext?: string, storyline?: StoryBeat[] }
 }
@@ -82,6 +86,7 @@ export function buildBookView(doc: BookDoc, opts: BuildBookViewOptions): BookVie
     storyline,
     ...(opts.syncStatus ? { syncStatus: opts.syncStatus } : {}),
     updatedAt: opts.updatedAt ?? new Date().toISOString(),
-    ...(opts.tokensUsed ? { tokensUsed: opts.tokensUsed } : {})
+    ...(opts.tokensUsed ? { tokensUsed: opts.tokensUsed } : {}),
+    ...(opts.textChars ? { textChars: opts.textChars } : {})
   }
 }
