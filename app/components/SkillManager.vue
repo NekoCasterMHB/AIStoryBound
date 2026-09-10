@@ -6,6 +6,7 @@ import {
   listInstalledSkills, loadEnabledAiSkills, saveEnabledAiSkills, deleteUserSkill, installStoreSkillZip
 } from '../utils/aiSkills'
 import type { AiSkill } from '#shared/ai-skills'
+import { META_ATTACHMENT_RE } from '#shared/ai-skills'
 import type { StoreSkillSummary } from '#shared/store-skill'
 
 const toast = useToast()
@@ -66,13 +67,16 @@ function estimateTokens(text: string): number {
   return Math.ceil(cjk + other / 4)
 }
 
-/** 已启用技能注入叙事提示词的内容量(正文 + 随附附件),预估 token 消耗 */
+/** 已启用技能注入叙事提示词的内容量(正文 + 随附附件,README/LICENSE 等元文件与注入侧同口径排除),预估 token 消耗 */
 const enabledTokenEstimate = computed(() => {
   let tokens = 0
   for (const s of skills.value) {
     if (!enabled.value.includes(s.key)) continue
     tokens += estimateTokens(s.body)
-    for (const a of s.attachments ?? []) tokens += estimateTokens(a.text)
+    for (const a of s.attachments ?? []) {
+      if (META_ATTACHMENT_RE.test(a.name)) continue
+      tokens += estimateTokens(a.text)
+    }
   }
   return tokens
 })

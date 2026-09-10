@@ -51,8 +51,6 @@ export interface StoreSkillSummary {
   owned: boolean
   /** 是否已购买(自己发布的商品不算;卡片售价区显示「已购买」tag) */
   purchased: boolean
-  /** SKILL.md frontmatter 图标(emoji,可空) */
-  icon: string | null
   /** SKILL.md frontmatter 标签(卡片展示) */
   tags: string[]
   /** 已上架版本(版本号倒序;「获取技能」可切换,旧版本通过后保持可下载) */
@@ -170,24 +168,21 @@ function plainText(md: string): string {
 
 /**
  * 从 SKILL.md 文本提取商城卡片展示元数据:
- * frontmatter 可选 icon(emoji 字符串)与 tags(数组或逗号分隔);
+ * frontmatter 可选 tags(数组或逗号分隔);icon 字段已废弃不读取(卡片一律用默认图);
  * readme = 压缩包内 README 文件内容(上架必带,商城说明区域展示);未提供时回退 SKILL.md 正文。
  */
-export function extractSkillMeta(md: string, readmeFile?: string | null): { icon: string | null, tags: string[], readme: string } {
+export function extractSkillMeta(md: string, readmeFile?: string | null): { tags: string[], readme: string } {
   const body = md.replace(/^\uFEFF/, '')
   const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(body)
-  let icon: unknown = null
   let tags: unknown = null
   if (m) {
     try {
       const meta = yaml.load(m[1] ?? '') as Record<string, unknown> | null
-      icon = meta?.icon
       tags = meta?.tags
     } catch {
       // frontmatter 非法时忽略扩展字段,正文仍可用
     }
   }
-  const iconStr = typeof icon === 'string' ? icon.trim().slice(0, 20) : ''
   const rawTags = Array.isArray(tags) ? tags : (typeof tags === 'string' ? tags.split(/[,，]/) : [])
   const tagList = rawTags
     .filter((t): t is string => typeof t === 'string' && !!t.trim())
@@ -199,7 +194,7 @@ export function extractSkillMeta(md: string, readmeFile?: string | null): { icon
     ? readmeFile
     : (m ? body.slice(m[0].length) : body)
   const readme = plainText(raw)
-  return { icon: iconStr || null, tags: tagList, readme }
+  return { tags: tagList, readme }
 }
 
 /** 计算分成(整数运算,避免浮点误差):卖家所得 = round(price*80%),平台 = price - 卖家所得 */

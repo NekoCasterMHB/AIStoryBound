@@ -44,7 +44,6 @@ export default defineEventHandler(async (event) => {
     name: skillProductVersions.name,
     desc: skillProductVersions.desc,
     price: skillProductVersions.price,
-    icon: skillProductVersions.icon,
     tags: skillProductVersions.tags,
     readme: skillProductVersions.readme
   })
@@ -66,7 +65,6 @@ export default defineEventHandler(async (event) => {
         name: row.name,
         desc: row.desc,
         price: row.price,
-        icon: row.icon,
         tags: row.tags,
         readme: row.readme,
         mainVersion: version,

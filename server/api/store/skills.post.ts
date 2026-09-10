@@ -74,8 +74,8 @@ export default defineEventHandler(async (event) => {
   if (!readmeFile?.trim()) {
     throw createError({ statusCode: 400, statusMessage: '压缩包缺少 README 文件(如 README.md):商城说明区域将展示 README 内容' })
   }
-  // 展示元数据:frontmatter 的 icon/tags + README 内容摘要(脱标记截断 ≤2000 字)
-  const { icon, tags: fmTags, readme } = extractSkillMeta(skillMd ?? '', readmeFile)
+  // 展示元数据:frontmatter 的 tags + README 内容摘要(脱标记截断 ≤2000 字);icon 字段已废弃
+  const { tags: fmTags, readme } = extractSkillMeta(skillMd ?? '', readmeFile)
   if (!readme) {
     throw createError({ statusCode: 400, statusMessage: '压缩包内的 README 内容为空:请在 README 中写明玩法说明,商城说明区域将展示其内容' })
   }
@@ -130,7 +130,7 @@ export default defineEventHandler(async (event) => {
       fileName,
       fileSize: fileData.length,
       fileEntries: JSON.stringify(entries.slice(0, 200)),
-      icon,
+      icon: null,
       tags: tags.length ? JSON.stringify(tags) : null,
       readme,
       status: 'pending',
@@ -153,7 +153,7 @@ export default defineEventHandler(async (event) => {
     fileName,
     fileSize: fileData.length,
     fileEntries: JSON.stringify(entries.slice(0, 200)),
-    icon,
+    icon: null,
     tags: tags.length ? JSON.stringify(tags) : null,
     readme,
     status: 'pending',

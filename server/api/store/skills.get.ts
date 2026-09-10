@@ -22,7 +22,6 @@ export default defineEventHandler(async (event) => {
     sellerId: skillProducts.sellerId,
     createdAt: skillProducts.createdAt,
     mainVersion: skillProducts.mainVersion,
-    icon: skillProducts.icon,
     tags: skillProducts.tags,
     readme: skillProducts.readme
   })
@@ -87,7 +86,6 @@ export default defineEventHandler(async (event) => {
       createdAt: Number(r.createdAt),
       owned: ownedIds.has(r.id),
       purchased: purchasedIds.has(r.id),
-      icon: r.icon,
       mainVersion: r.mainVersion,
       tags: parseStoredTags(r.tags),
       versions: versionsBySkill.get(r.id) ?? [],

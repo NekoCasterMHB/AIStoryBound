@@ -6,7 +6,7 @@
 // 历史遗留:内置玩法、链接导入与旧结构化条目(trigger/steps/rules)已废弃,不再兼容读取。
 import { unzipSync } from 'fflate'
 import { parseSkillZip } from '#shared/store-skill'
-import { parseSkillMd } from '#shared/ai-skills'
+import { parseSkillMd, META_ATTACHMENT_RE } from '#shared/ai-skills'
 import type { AiSkill } from '#shared/ai-skills'
 import { db } from './localDb'
 
@@ -85,7 +85,7 @@ export async function installStoreSkillZip(zip: Uint8Array, storeId: string, ver
   if (storeName?.trim()) skill.name = storeName.trim()
 
   // 随附文件:SKILL.md 之外的小文本文件(单文件上限 200KB,最多 20 个)
-  // README/LICENSE 为上架/版权文件,不注入提示词(README 只供商城说明区展示)
+  // README/LICENSE 为上架/版权文件,不作为玩法附件(任意层级,统一见 META_ATTACHMENT_RE)
   let files: Record<string, Uint8Array>
   try {
     files = unzipSync(zip)
@@ -95,7 +95,7 @@ export async function installStoreSkillZip(zip: Uint8Array, storeId: string, ver
   const attachments: { name: string, text: string }[] = []
   for (const [name, buf] of Object.entries(files)) {
     if (/SKILL\.md$/i.test(name) || name.endsWith('/') || buf.length === 0) continue
-    if (/^README(\.md)?$/i.test(name) || /^LICENSE(\.txt)?$/i.test(name)) continue
+    if (META_ATTACHMENT_RE.test(name)) continue
     if (buf.length > 200 * 1024) continue
     attachments.push({ name, text: new TextDecoder().decode(buf) })
     if (attachments.length >= 20) break

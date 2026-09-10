@@ -90,10 +90,15 @@ export function stripSkillExamples(body: string): string {
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
+/** README/LICENSE 属上架/版权说明文件而非玩法指引:不进提示词(任意目录层级)。
+ *  安装与注入两侧统一过滤;注入侧过滤可自愈早期版本安装时已把 README 存进 attachments 的旧本地数据 */
+export const META_ATTACHMENT_RE = /(^|\/)(README(\.md)?|LICENSE(\.txt)?)$/i
+
 /** 把一个技能格式化为提示词区块(正文剥离示例章节 + 随附参考文件) */
 export function skillPromptBlocks(skill: AiSkill): string[] {
   const blocks = [`正文:\n${stripSkillExamples(skill.body)}`]
   for (const a of skill.attachments ?? []) {
+    if (META_ATTACHMENT_RE.test(a.name)) continue
     if (a.text.trim()) blocks.push(`参考文件:${a.name}\n${a.text}`)
   }
   return blocks

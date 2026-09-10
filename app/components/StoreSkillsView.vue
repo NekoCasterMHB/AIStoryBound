@@ -647,17 +647,12 @@ async function onPreviewFile(i: number) {
             class="flex flex-col"
             :ui="{ body: 'flex-1' }"
           >
-            <!-- 第一行:方形圆角图标 + 标题 + 标题下方标签 -->
+            <!-- 第一行:方形圆角图标(固定默认图,frontmatter icon 已废弃)+ 标题 + 标题下方标签 -->
             <div class="flex items-start gap-3">
               <div
                 class="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-primary/10"
               >
-                <span
-                  v-if="s.icon"
-                  class="text-2xl leading-none"
-                >{{ s.icon }}</span>
                 <img
-                  v-else
                   src="/icons/default-skill-icon.png"
                   alt=""
                   class="h-full w-full object-cover"

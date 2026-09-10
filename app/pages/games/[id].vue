@@ -278,8 +278,24 @@ let liveStartedAt = 0
 const turnUsage = ref<string | null>(null)
 /** 本回合 token 消耗统计(模态框展示;各阶段真实 usage + 叙事输入细项估算) */
 interface TurnCostPart { label: string, tokens: number }
-interface TurnCostItem { stage: 'narrative' | 'options' | 'desires', label: string, prompt: number, completion: number, total: number, details?: TurnCostPart[] }
+interface TurnCostItem { stage: 'opening' | 'narrative' | 'options' | 'desires', label: string, prompt: number, completion: number, total: number, details?: TurnCostPart[] }
 const turnCostReport = ref<TurnCostItem[] | null>(null)
+/** 开场设定生成(AI 开场模式,确认开局前那笔):已入账作品累计,暂存供首回合消耗统计展示 */
+const openingGenCost = ref<{ prompt: number, completion: number, total: number } | null>(null)
+/** 开场生成消耗是否已并入本回合统计(只并入一次,避免重试回合重复计入) */
+let openingCostFlushed = false
+/** 开场卡消耗并入回合统计(在性欲播种前调用,报告顺序:开场设定 → 性欲播种 → 叙事 → 收尾) */
+function flushOpeningGenCost() {
+  if (openingCostFlushed || !openingGenCost.value) return
+  openingCostFlushed = true
+  turnCostReport.value = [{
+    stage: 'opening',
+    label: '开场设定生成',
+    prompt: openingGenCost.value.prompt,
+    completion: openingGenCost.value.completion,
+    total: openingGenCost.value.total
+  }]
+}
 const costModalOpen = ref(false)
 /** 顶部状态面板(地点/时间等 6 项)折叠开关 */
 const statsOpen = ref(true)
@@ -648,8 +664,14 @@ async function generateOpenings() {
       res = await openingCall()
       if (!res.ok) retryTokens += res.usage?.totalTokens ?? 0
     }
-    // 失败尝试与重试的用量都入账,避免少扣
-    void addWorkTokensSmart(game.value?.workId ?? '', retryTokens + (res.usage?.totalTokens ?? 0))
+    // 失败尝试与重试的用量都入账,避免少扣;同口径暂存进首回合消耗统计(开场设定生成大项)
+    const metered = retryTokens + (res.usage?.totalTokens ?? 0)
+    void addWorkTokensSmart(game.value?.workId ?? '', metered)
+    openingGenCost.value = {
+      prompt: (openingGenCost.value?.prompt ?? 0) + (res.usage?.promptTokens ?? 0),
+      completion: (openingGenCost.value?.completion ?? 0) + (res.usage?.completionTokens ?? 0),
+      total: (openingGenCost.value?.total ?? 0) + metered
+    }
     if (!res.ok) throw new Error(res.message)
     const list = (res.data.openings ?? []).slice(0, 4)
     if (list.length === 0) throw new Error('AI 未返回开场设定,请重试')
@@ -724,10 +746,15 @@ async function seedDesiresByOpening(): Promise<void> {
     { maxTokens: 400, temperature: 0.4 },
     { signal: turnAbort?.signal }
   )
-  if (!res.ok) return
+  if (!res.ok) {
+    // 失败尝试(如 JSON 解析失败)已产生的真实用量照常入账,再静默放弃播种
+    const failedTokens = res.usage?.totalTokens ?? 0
+    if (game.value && failedTokens > 0) void addWorkTokensSmart(game.value.workId, failedTokens)
+    return
+  }
   void addWorkTokensSmart(game.value?.workId ?? '', res.usage?.totalTokens ?? 0)
-  // 消耗统计:开局性欲初始化大项(首回合,真实 usage;叙事大项稍后覆盖写入)
-  turnCostReport.value = [{
+  // 消耗统计:开局性欲初始化大项(首回合,真实 usage;叙事大项稍后写入;追加保留开场设定项)
+  turnCostReport.value = [...(turnCostReport.value ?? []), {
     stage: 'desires',
     label: '开局性欲初始化',
     prompt: res.usage?.promptTokens ?? 0,
@@ -831,8 +858,7 @@ async function savePointNow(snapState = snapshotState()) {
  */
 async function runOptionsPhase(
   narratorMsg: LocalGame['messages'][number],
-  narratorText: string,
-  narrTokens: number
+  narratorText: string
 ): Promise<void> {
   if (!game.value) throw new Error('会话已丢失')
   const optionsMessages = [
@@ -919,17 +945,18 @@ async function runOptionsPhase(
     game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(options.value))
   }
 
-  const total = narrTokens + (retryTokens + (optRes.usage?.totalTokens ?? 0))
-  turnUsage.value = `本回合 ${total.toLocaleString()} tokens`
-  // 消耗统计:追加选项收尾大项(真实 usage,含重试;叙事大项已在叙事成功后写入)
+  // 消耗统计:追加选项收尾大项(真实 usage,含重试;叙事/开场/播种大项已先行写入)
   const optTotal = retryTokens + (optRes.usage?.totalTokens ?? 0)
-  turnCostReport.value = [...(turnCostReport.value ?? []), {
+  const report: TurnCostItem[] = [...(turnCostReport.value ?? []), {
     stage: 'options',
     label: '选项与状态收尾',
     prompt: optRes.usage?.promptTokens ?? 0,
     completion: optRes.usage?.completionTokens ?? 0,
     total: optTotal
   }]
+  turnCostReport.value = report
+  // 「本回合」总数 = 各阶段之和(开场设定/性欲播种/叙事/收尾),与统计弹窗总计同口径
+  turnUsage.value = `本回合 ${report.reduce((s, c) => s + c.total, 0).toLocaleString()} tokens`
   // 注意:不在收尾器内落盘。此时旁白尚未 push 进 messages(要等打字机播完,sendTurn 才会 push),
   // 在这里 persist 会把「结算已写入、旁白缺失」的错位快照固化——续玩恢复时末条行动看似未获回应,
   // 「重试本回合」会对已结算回合二次应用 state_delta,导致后续剧情失控。落盘统一由调用方在
@@ -950,7 +977,7 @@ async function retryOptionsPhase() {
   liveTokens.value = 0
   liveSpeed.value = 0
   try {
-    await runOptionsPhase(narratorMsg, narratorMsg.content, 0)
+    await runOptionsPhase(narratorMsg, narratorMsg.content)
     // 收尾补跑成功:旁白已在消息尾部,与 sendTurn 同语义闭环落盘(重进/回滚点完整;快照复用省一次克隆)
     await savePointNow(persist() ?? undefined)
   } catch (e) {
@@ -994,6 +1021,8 @@ async function sendTurn(choice?: string) {
   turnAbort = new AbortController()
   turnUsage.value = null
   turnCostReport.value = null
+  // 开场设定生成的消耗(确认开局前那笔)并入本回合统计,只并入一次
+  flushOpeningGenCost()
   streamDisplay.value = ''
   options.value = []
   liveTokens.value = 0
@@ -1206,7 +1235,7 @@ async function sendTurn(choice?: string) {
     // 提前入列会与流式文本重复显示);收尾上下文显式补入 narratorText(见 runOptionsPhase)。
     let optionsOk = false
     let optionsErr: unknown = null
-    const optionsTask = runOptionsPhase(narratorMsg, narratorText, narrResult.retryTokens + (narrResult.usage?.totalTokens ?? 0))
+    const optionsTask = runOptionsPhase(narratorMsg, narratorText)
       .then(() => { optionsOk = true })
       .catch((e: unknown) => {
         // 收尾失败/被取消:不打断播放;错误播完后统一抛出(取消视为回合完成,可重新生成选项)

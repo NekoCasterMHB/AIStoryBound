@@ -37,7 +37,7 @@ skills/
     LICENSE.txt                   # 可选: 版权声明(CC BY 4.0)
     <NN>-<slug>-skill.zip         # 构建产物,由脚本生成,不要手改
   shop/
-    <slug>.json                   # 可选: 上架配置(name/price/tags/icon/zip 路径)
+    <slug>.json                   # 可选: 上架配置(name/price/tags/zip 路径)
   README.md                       # 大类总览与判定标准
 ```
 
@@ -62,13 +62,12 @@ skills/
 ---
 name: <英文短横线 slug>        # ★必填,1~60 字符;派生安装 key(见 §5),改动会换 key
 description: <中文一句话说明>   # ★必填,解析时截断 200 字;列全本包玩法名
-icon: 📏                       # 可选,emoji(≤20 字符),商城卡片展示
 tags: [标签1, 标签2, 标签3]     # 可选,数组或逗号分隔;≤6 个,每个 ≤12 字,商城展示
 license: CC BY 4.0(LICENSE.txt)
 ---
 ```
 
-- `parseSkillMd` 只读 `name`/`description`（缺失报错）；`extractSkillMeta` 读 `icon`/`tags` 供商城卡片。
+- `parseSkillMd` 只读 `name`/`description`（缺失报错）；`extractSkillMeta` 读 `tags` 供商城卡片（icon 字段已废弃,卡片一律用默认图）。
 - `description` 建议格式：`<类名>玩法合集(<玩法名 key>、…)。在<触发情境>时启用;<一句话核心原则>。`
 
 ### 3.2 正文结构（建议的章节骨架）
@@ -154,7 +153,7 @@ license: CC BY 4.0(LICENSE.txt)
 3. 上架二选一：
    - **管理员直接上架**：`/admin/skills` →「发布技能」→ 上传 zip → 在线编辑 md → 填售价 → 直接上架（跳过审核）；
    - 普通用户流程：商城「发布」页上传（状态 pending，需管理员审核通过）；
-4. （可选）在 `skills/shop/<slug>.json` 写上架配置（name/price/tags/icon/zip 路径），供脚本或人工对照。
+4. （可选）在 `skills/shop/<slug>.json` 写上架配置（name/price/tags/zip 路径），供脚本或人工对照。
 
 **上架校验（发布接口强制）**：zip 可解压、必含 SKILL.md、必含 README（根目录 `README.md` 或 `README`，内容非空）、zip ≤ 1MB、name ≤ 60 字、tags ≤ 6 个且每个 ≤ 12 字。
 
@@ -163,7 +162,7 @@ license: CC BY 4.0(LICENSE.txt)
 ## 7. 发布前检查清单
 
 - [ ] 目录名符合 `NN-slug`，build 脚本能打包出 zip
-- [ ] SKILL.md frontmatter：name/description 必填；icon/tags 可选但建议写（商城展示）
+- [ ] SKILL.md frontmatter：name/description 必填；tags 可选但建议写（商城展示）
 - [ ] 正文含「何时使用」（含"不要用于"反例）与「叙事原则」
 - [ ] 每个玩法含：触发场景 / 执行步骤 / 强度进阶(低中高极致) / 示例
 - [ ] 核心指引不依赖示例章节（注入时会剥离示例）

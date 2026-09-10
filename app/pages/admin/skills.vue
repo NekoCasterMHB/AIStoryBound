@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { parseMarkdown } from '@nuxtjs/mdc/runtime'
 import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate'
-import { SKILL_STATUS_LABELS, extractSkillMeta, MAX_SKILL_ZIP_BYTES } from '#shared/store-skill'
+import { SKILL_STATUS_LABELS, extractSkillMeta, MAX_SKILL_ZIP_BYTES, MAX_SKILL_NAME_CHARS } from '#shared/store-skill'
 import type { SkillStatus } from '#shared/store-skill'
 
 // /admin/skills — Skill 审核(管理后台):商品列表 + 下载审核 + 通过/拒绝 + 推荐标记。
@@ -10,6 +10,13 @@ definePageMeta({ layout: 'admin', middleware: 'admin' })
 useHead({ title: 'AI Word2World · Skill 审核' })
 
 const toast = useToast()
+
+/** $fetch 错误取服务端可读消息:ofetch 的 error.message 只含「[POST] url: 400」状态行
+ *  (HTTP/2 下连短语都没有),Nitro 的中文 statusMessage 在响应体 data 里 */
+function errMsg(e: unknown): string {
+  const data = (e as { data?: { statusMessage?: string, message?: string } } | null)?.data
+  return data?.statusMessage || data?.message || (e instanceof Error ? e.message : String(e))
+}
 
 interface SkillFileEntry {
   name: string
@@ -62,7 +69,7 @@ async function load() {
       return acc
     }, {} as Record<string, number>)
   } catch (e) {
-    toast.add({ title: '加载 Skill 列表失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+    toast.add({ title: '加载 Skill 列表失败', description: errMsg(e), color: 'error' })
   } finally {
     loading.value = false
   }
@@ -97,7 +104,7 @@ async function approve(row: SkillRow) {
     toast.add({ title: `已通过「${row.name}」,将在商城展示`, color: 'success' })
     void load()
   } catch (e) {
-    toast.add({ title: '操作失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+    toast.add({ title: '操作失败', description: errMsg(e), color: 'error' })
   }
 }
 
@@ -129,7 +136,7 @@ async function submitReject() {
     rejectOpen.value = false
     void load()
   } catch (e) {
-    toast.add({ title: '操作失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+    toast.add({ title: '操作失败', description: errMsg(e), color: 'error' })
   } finally {
     rejecting.value = false
   }
@@ -145,7 +152,7 @@ async function toggleFeatured(row: SkillRow) {
     toast.add({ title: row.featured === 0 ? '已标记「平台推荐」' : '已取消推荐', color: 'success' })
     void load()
   } catch (e) {
-    toast.add({ title: '操作失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+    toast.add({ title: '操作失败', description: errMsg(e), color: 'error' })
   }
 }
 
@@ -180,7 +187,7 @@ async function openPreview(row: SkillRow | null) {
       await renderPreview(0)
     }
   } catch (e) {
-    previewError.value = e instanceof Error ? e.message : String(e)
+    previewError.value = errMsg(e)
   } finally {
     previewLoading.value = false
   }
@@ -209,7 +216,6 @@ const pubFileTexts = ref<Record<string, string>>({})
 const pubName = ref('')
 const pubPrice = ref('0')
 const pubTags = ref<string[]>([])
-const pubIcon = ref('')
 const pubFileName = ref('')
 
 function openPublish() {
@@ -222,7 +228,6 @@ function openPublish() {
   pubName.value = ''
   pubPrice.value = '0'
   pubTags.value = []
-  pubIcon.value = ''
   pubFileName.value = ''
 }
 
@@ -260,8 +265,13 @@ async function onPickPubZip(e: Event) {
       return
     }
     pubEditFile.value = skillMdName
-    const { icon, tags } = extractSkillMeta(texts[skillMdName] ?? '', null)
-    pubIcon.value = icon ?? ''
+    // 与服务端发布校验一致,提前拦下最常见的 400:根目录必须有 README.md/README 且内容非空(商城说明区展示)
+    const readmeName = pubFileNames.value.find(n => /^README\.md$/i.test(n)) ?? pubFileNames.value.find(n => /^README$/i.test(n))
+    if (!readmeName || !(texts[readmeName] ?? '').trim()) {
+      publishError.value = '压缩包根目录缺少 README.md(或 README,且内容非空):商城说明区域将展示 README 内容'
+      return
+    }
+    const { tags } = extractSkillMeta(texts[skillMdName] ?? '', null)
     pubTags.value = tags
     pubName.value = frontmatterName(texts[skillMdName] ?? '') || file.name.replace(/\.zip$/i, '')
   } catch {
@@ -282,15 +292,20 @@ async function submitPublish() {
     publishError.value = '请填写 Skill 名称'
     return
   }
+  if (pubName.value.trim().length > MAX_SKILL_NAME_CHARS) {
+    publishError.value = `Skill 名称需在 1~${MAX_SKILL_NAME_CHARS} 字之间`
+    return
+  }
   publishing.value = true
   publishError.value = ''
   try {
-    // 回填编辑内容并重新打包(未编辑文件保留原字节)
+    // 回填编辑内容并重新打包:仅重编码与原字节解码不一致(被编辑过)的文件,
+    // 未编辑文件(含图标等二进制)保留原字节,避免 strFromU8/strToU8 有损往返损坏内容
     const out: Record<string, Uint8Array> = {}
     for (const [name, b] of Object.entries(pubZipFiles.value)) {
       if (name.endsWith('/')) continue
       const text = pubFileTexts.value[name]
-      out[name] = text !== undefined ? strToU8(text) : b
+      out[name] = text !== undefined && strFromU8(b) !== text ? strToU8(text) : b
     }
     const zipped = zipSync(out, { level: 6 })
     const fd = new FormData()
@@ -306,7 +321,7 @@ async function submitPublish() {
     publishOpen.value = false
     void load()
   } catch (e) {
-    publishError.value = e instanceof Error ? e.message : String(e)
+    publishError.value = errMsg(e)
   } finally {
     publishing.value = false
   }
@@ -777,13 +792,6 @@ async function openGuide() {
               <UInputTags
                 v-model="pubTags"
                 :max="6"
-              />
-            </UFormField>
-            <UFormField label="展示图标(frontmatter 自动读取)">
-              <UInput
-                :model-value="pubIcon"
-                disabled
-                placeholder="未设置"
               />
             </UFormField>
           </div>

@@ -5,6 +5,7 @@ import {
   MAX_SKILL_TAGS,
   MAX_SKILL_ZIP_BYTES,
   SELLER_RATIO,
+  extractSkillMeta,
   parseSkillZip
 } from '#shared/store-skill'
 import type { SkillFileEntry } from '#shared/store-skill'
@@ -70,6 +71,12 @@ const earnTokens = computed(() => Math.round(settlePrice.value * SELLER_RATIO))
 /** 人民币价值估算:按平台标准价格(1M token ≈ TOKEN_CNY_PER_M 元)折算 */
 const estCny = computed(() => settlePrice.value / 1_000_000 * TOKEN_CNY_PER_M)
 
+/** SKILL.md frontmatter 的 name 行(宽松匹配,对齐管理端直发行为);缺失返回空串 */
+function frontmatterName(md: string): string {
+  const m = /^name:\s*(.+)$/m.exec(md)
+  return m?.[1]?.trim() ?? ''
+}
+
 // UFileUpload 选中/删除文件都会更新 fileData,统一在此校验(可解压 + 含 SKILL.md,尽早提示)
 watch(fileData, (file) => {
   fileEntries.value = []
@@ -94,7 +101,12 @@ watch(fileData, (file) => {
       }
       if (!parsed.skillMd?.trim() || !parsed.skillMd.replace(/^---[\s\S]*?---/, '').trim()) {
         fileError.value = 'SKILL.md 缺少正文:请在 frontmatter 之后写明玩法步骤与规则'
+        return
       }
+      // 选包即解析(对齐管理端直发):技能名取 SKILL.md frontmatter name(缺省用文件名去 .zip),
+      // 标签取 frontmatter tags;均可在下方表单手动修改,提交时服务端还会与 frontmatter 再合并一次
+      name.value = frontmatterName(parsed.skillMd) || file.name.replace(/\.zip$/i, '')
+      tags.value = extractSkillMeta(parsed.skillMd, null).tags
     } catch (err) {
       fileError.value = (err as Error).message
     }
@@ -177,6 +189,47 @@ async function submit() {
 
     <UCard>
       <div class="flex flex-col gap-4">
+        <UFormField>
+          <template #label>
+            <span class="flex items-center gap-1">
+              Skill 压缩包(.zip)
+              <span class="text-error">*</span>
+              <UButton
+                color="neutral"
+                variant="ghost"
+                size="xs"
+                icon="i-lucide-circle-help"
+                aria-label="如何制作一个 skill"
+                @click="guideOpen = true"
+              >
+                如何制作一个 skill
+              </UButton>
+            </span>
+          </template>
+          <UFileUpload
+            v-model="fileData"
+            accept=".zip"
+            position="inside"
+            layout="list"
+            label="点击选择或拖拽 .zip 压缩包到此处"
+            :description="`压缩包须包含 SKILL.md 与 README 文件(README 内容将展示在商城说明区域),大小不超过 ${MAX_SKILL_ZIP_BYTES / 1024 / 1024}MB`"
+            class="w-full"
+            :ui="{ base: 'min-h-48' }"
+          />
+          <p
+            v-if="fileError"
+            class="mt-1 text-xs text-red-500"
+          >
+            {{ fileError }}
+          </p>
+          <p
+            v-else-if="fileEntries.length"
+            class="mt-1 text-xs text-neutral-500"
+          >
+            已识别 {{ fileEntries.length }} 个文件,含 SKILL.md 与 README ✓;技能名与标签已自动读取,可在下方修改
+          </p>
+        </UFormField>
+
         <UFormField
           label="Skill 名称"
           required
@@ -185,8 +238,11 @@ async function submit() {
             v-model="name"
             :maxlength="MAX_SKILL_NAME_CHARS"
             class="w-full"
-            placeholder="如:文案润色助手"
+            placeholder="选择压缩包后自动读取,可修改"
           />
+          <p class="mt-1 text-xs text-neutral-500">
+            取 SKILL.md frontmatter 的 name(未声明时用文件名);商城展示名以这里的填写为准
+          </p>
         </UFormField>
 
         <UFormField label="标签(商城展示)">
@@ -200,7 +256,7 @@ async function submit() {
             placeholder="输入标签后回车添加,最多 6 个;如:玩法编排、人物卡"
           />
           <p class="mt-1 text-xs text-neutral-500">
-            标签展示在商城卡片的标题下方;商城说明自动取压缩包内 README 文件内容第一段,无需单独填写
+            选包后自动读取 frontmatter tags;标签展示在商城卡片的标题下方,商城说明自动取压缩包内 README 文件内容第一段,无需单独填写
           </p>
         </UFormField>
 
@@ -246,47 +302,6 @@ async function submit() {
           <span class="font-semibold text-highlighted">{{ currentPrice.toLocaleString() }} tokens</span>
           ,不可修改;如确需改价请通过其他渠道联系管理员
         </p>
-
-        <UFormField label="Skill 压缩包(.zip)">
-          <template #label>
-            <span class="flex items-center gap-1">
-              Skill 压缩包(.zip)
-              <span class="text-error">*</span>
-              <UButton
-                color="neutral"
-                variant="ghost"
-                size="xs"
-                icon="i-lucide-circle-help"
-                aria-label="如何制作一个 skill"
-                @click="guideOpen = true"
-              >
-                如何制作一个 skill
-              </UButton>
-            </span>
-          </template>
-          <UFileUpload
-            v-model="fileData"
-            accept=".zip"
-            position="inside"
-            layout="list"
-            label="点击选择或拖拽 .zip 压缩包到此处"
-            :description="`压缩包须包含 SKILL.md 与 README 文件(README 内容将展示在商城说明区域),大小不超过 ${MAX_SKILL_ZIP_BYTES / 1024 / 1024}MB`"
-            class="w-full"
-            :ui="{ base: 'min-h-48' }"
-          />
-          <p
-            v-if="fileError"
-            class="mt-1 text-xs text-red-500"
-          >
-            {{ fileError }}
-          </p>
-          <p
-            v-else-if="fileEntries.length"
-            class="mt-1 text-xs text-neutral-500"
-          >
-            已识别 {{ fileEntries.length }} 个文件,含 SKILL.md 与 README ✓
-          </p>
-        </UFormField>
 
         <UButton
           class="mt-2"
