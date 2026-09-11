@@ -56,9 +56,9 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     description: '约 10+ 次完整世界生成',
     description2: '文字对话约 170 万字',
     tokens: 1_000_000,
-    priceYuan: 15,
+    priceYuan: 12,
     originalPriceYuan: packPriceYuan(1),
-    discountLabel: '7.5 折'
+    discountLabel: '6 折'
   },
   {
     id: 'tokens_10m',
@@ -67,9 +67,9 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     description: '约 100+ 次完整世界生成',
     description2: '文字对话约 1700 万字',
     tokens: 10_000_000,
-    priceYuan: 120,
+    priceYuan: 100,
     originalPriceYuan: packPriceYuan(10),
-    discountLabel: '6.3 折'
+    discountLabel: '5.2 折'
   },
   {
     id: 'tokens_50m',
@@ -78,9 +78,9 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     description: '约 500+ 次完整世界生成',
     description2: '文字对话约 8500 万字',
     tokens: 50_000_000,
-    priceYuan: 500,
+    priceYuan: 400,
     originalPriceYuan: packPriceYuan(50),
-    discountLabel: '5.3 折'
+    discountLabel: '4.2 折'
   },
   // ---- 双倍首充包(同价双 token,每档每人限购一次;与新人包同用 oneTimeOnly 限购机制) ----
   {
@@ -90,9 +90,9 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     description: '首充双倍 · 每人限购 1 次',
     description2: '约 20+ 次完整世界生成',
     tokens: 2_000_000,
-    priceYuan: 15,
+    priceYuan: 12,
     originalPriceYuan: packPriceYuan(2),
-    discountLabel: '3.8 折',
+    discountLabel: '3.1 折',
     oneTimeOnly: true,
     doublePack: true
   },
@@ -103,9 +103,9 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     description: '首充双倍 · 每人限购 1 次',
     description2: '约 200+ 次完整世界生成',
     tokens: 20_000_000,
-    priceYuan: 120,
+    priceYuan: 100,
     originalPriceYuan: packPriceYuan(20),
-    discountLabel: '3.1 折',
+    discountLabel: '2.6 折',
     oneTimeOnly: true,
     doublePack: true
   },
@@ -116,9 +116,9 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     description: '首充双倍 · 每人限购 1 次',
     description2: '文字对话约 1.7 亿字',
     tokens: 100_000_000,
-    priceYuan: 500,
+    priceYuan: 400,
     originalPriceYuan: packPriceYuan(100),
-    discountLabel: '2.6 折',
+    discountLabel: '2.1 折',
     oneTimeOnly: true,
     doublePack: true
   }
