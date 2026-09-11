@@ -330,3 +330,28 @@ export interface GameSavePointRow {
 
 /** 共享 Dexie 实例(单例;versionchange 自动关连接由 Dexie 内置处理) */
 export const db = new AIStoryBoundDB()
+
+// ---- 写入边界消毒:IDB 结构化克隆拒绝一切 Vue reactive Proxy(ref()/reactive() 的深层包装,
+// 实测连扁平代理都无法克隆,存档/设置/消息行只要带一个代理字段整行写入即抛 DataCloneError)。
+// 在 Table 原型上统一把写入值深度转纯数据(JSON 往返;库内值域全是纯 JSON),put/add/bulkPut/
+// update 的所有调用点(现有与未来)自动免疫,不再逐调用点手工 JSON.clone。 ----
+function plainForWrite<T>(v: T): T {
+  return JSON.parse(JSON.stringify(v)) as T
+}
+
+{
+  const writeProto = Object.getPrototypeOf(db.table(STORE_GAMES)) as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>
+  for (const method of ['put', 'add', 'bulkPut', 'update'] as const) {
+    const raw = writeProto[method]
+    if (typeof raw !== 'function') continue
+    writeProto[method] = function (this: unknown, ...args: unknown[]) {
+      // update(键, 变更)消毒变更对象;其余方法首参为写入值(键为主键字符串/数组,原样透传)
+      if (method === 'update') {
+        if (args[1] != null) args[1] = plainForWrite(args[1])
+      } else if (args[0] != null) {
+        args[0] = plainForWrite(args[0])
+      }
+      return raw.apply(this, args)
+    }
+  }
+}

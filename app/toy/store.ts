@@ -21,7 +21,12 @@ export async function loadToySettings(): Promise<ToySettings> {
 
 export async function saveToySettings(settings: ToySettings): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  await db.table(STORE_TOY_SETTINGS).put({ key: SETTINGS_KEY, settings })
+  try {
+    await db.table(STORE_TOY_SETTINGS).put({ key: SETTINGS_KEY, settings })
+  } catch (e) {
+    // 设置保存失败只告警(写入边界已统一消毒,正常不再抛;剩下方言/配额类异常)
+    console.warn('[toy] 设备设置保存失败', e)
+  }
 }
 
 // ---- 玩家导入的插件(新版 PluginDescriptor 格式) ----

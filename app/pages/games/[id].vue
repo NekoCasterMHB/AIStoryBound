@@ -225,7 +225,7 @@ onMounted(async () => {
       await deleteGameMessagesAfter(gameId, keep.at(-1)?.idx ?? -1)
       g.msgCount = keep.length
       healed = true
-      void saveLocalGameRow(gameToRow(g, keep.length))
+      void warnLocalWrite(saveLocalGameRow(gameToRow(g, keep.length)), '自愈会话行')
       msgs.length = cut
     }
   }
@@ -802,6 +802,11 @@ let persistedMsgCount = 0
 /** optionsByMessage 只保留最近 N 条旁白的选项:回滚依赖最近存档点(50 个),窗口对齐即可,防 game 行无限膨胀 */
 const MAX_OPTION_KEYS = 60
 
+/** 本地写库兜底告警:写失败仅记录不打断游玩(IDB 写入边界已统一消毒,正常不再抛) */
+function warnLocalWrite(p: Promise<unknown>, what: string): void {
+  p.catch(e => console.warn(`[game] 本地持久化失败: ${what}`, e))
+}
+
 /** 单回合设备/调教指令上限(防退化输出刷屏式下发,持续互动应使用 wave;stop/pause 不受限) */
 const MAX_DEVICE_CMDS_PER_TURN = 16
 /** 上一回合被拒设备指令(反馈进下回合设备提示词,避免 AI 原样重发;≤8 条防提示词膨胀) */
@@ -840,8 +845,8 @@ function persist() {
   const newMessages = messages.value.slice(persistedMsgCount)
   persistedMsgCount = messages.value.length
   game.value.msgCount = messages.value.length
-  void saveLocalGameRow(gameToRow(game.value, messages.value.length))
-  void syncGameMessages(gameId, newMessages)
+  warnLocalWrite(saveLocalGameRow(gameToRow(game.value, messages.value.length)), '会话行')
+  warnLocalWrite(syncGameMessages(gameId, newMessages), '消息行')
   return snapState
 }
 
@@ -1311,7 +1316,7 @@ async function sendTurn(choice?: string) {
       if (last?.role === 'user') {
         messages.value.pop()
         // v14:消息在独立表,撤销行动须同步截断水位线以上的行,否则重进页面时该行动「复活」
-        void deleteGameMessagesAfter(gameId, messages.value.at(-1)?.idx ?? -1)
+        warnLocalWrite(deleteGameMessagesAfter(gameId, messages.value.at(-1)?.idx ?? -1), '消息截断')
         const prevNarr = [...messages.value].reverse().find(m => m.role === 'narrator')
         options.value = prevNarr ? (game.value?.optionsByMessage?.[prevNarr.id] ?? []) : []
         streamDisplay.value = ''
