@@ -300,16 +300,24 @@ class ToyController {
 
   // ---- 自动控制会话(游戏页流式内联指令编排期;面板锁定手动控制) ----
 
-  /** 进入自动控制会话(目标连接缺省 = active) */
+  /** 进入自动控制会话(缺省 = 全部连接:多设备编排期统一锁手动面板) */
   beginAutoSession(adapterId?: string): void {
-    const slot = this.slotOfImpl(adapterId)
-    if (slot) slot.state.autoActive = true
+    if (adapterId) {
+      const slot = this.slotOfImpl(adapterId)
+      if (slot) slot.state.autoActive = true
+      return
+    }
+    for (const slot of this.slots.values()) slot.state.autoActive = true
   }
 
-  /** 结束自动控制会话 */
+  /** 结束自动控制会话(缺省 = 全部连接) */
   endAutoSession(adapterId?: string): void {
-    const slot = this.slotOfImpl(adapterId)
-    if (slot) slot.state.autoActive = false
+    if (adapterId) {
+      const slot = this.slotOfImpl(adapterId)
+      if (slot) slot.state.autoActive = false
+      return
+    }
+    for (const slot of this.slots.values()) slot.state.autoActive = false
   }
 
   // ---- 调教模式(引擎内称 wave):形态波形 + 随机漫步两种姿态(手动控制验证) ----
@@ -467,7 +475,16 @@ class ToyController {
     }
     const declaredMax = fn.intensityRange?.[1] ?? DEFAULT_FUNCTION_MAX_INTENSITY
     const lim = functionLimitOf(s, fid, declaredMax, id)
-    return this.startWave(fid, [0, lim.maxIntensity], { pattern, settings: s, duration, adapterId: id })
+    // 时长与 [[dev]] 同口径钳制(0~3600s,同 validateDeviceEvent):防 AI 写超长停止定时器
+    const dur = (duration != null && Number.isFinite(duration))
+      ? Math.min(3600, Math.max(0, Math.round(duration)))
+      : undefined
+    return this.startWave(fid, [0, lim.maxIntensity], {
+      pattern,
+      settings: s,
+      ...(dur !== undefined ? { duration: dur } : {}),
+      adapterId: id
+    })
   }
 
   /** 停止调教(发停止帧归零;不停止其他功能)。adapterId 缺省 = active */

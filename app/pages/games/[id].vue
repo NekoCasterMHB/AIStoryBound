@@ -386,6 +386,9 @@ onUnmounted(() => {
   turnAbort = null
   typewriter?.dispose()
   typewriter = null
+  // 失效安全:离开页面即会话结束,全部连接停机归零——无 duration 的 [[dev]]/[[wave]] 不带出会话
+  void toyController.stopAll()
+  toyController.endAutoSession()
   for (const fn of pageCleanup) {
     try {
       fn()
@@ -798,6 +801,16 @@ let persistedMsgCount = 0
 
 /** optionsByMessage 只保留最近 N 条旁白的选项:回滚依赖最近存档点(50 个),窗口对齐即可,防 game 行无限膨胀 */
 const MAX_OPTION_KEYS = 60
+
+/** 单回合设备/调教指令上限(防退化输出刷屏式下发,持续互动应使用 wave;stop/pause 不受限) */
+const MAX_DEVICE_CMDS_PER_TURN = 16
+/** 上一回合被拒设备指令(反馈进下回合设备提示词,避免 AI 原样重发;≤8 条防提示词膨胀) */
+const rejectedDeviceCmds: string[] = []
+
+/** 记录一条被拒设备指令(下回合注入设备提示词尾部) */
+function recordRejectedDeviceCmd(desc: string, reason: string) {
+  if (rejectedDeviceCmds.length < 8) rejectedDeviceCmds.push(`${desc}(${reason})`)
+}
 function pruneOptionKeys() {
   const byMsg = game.value?.optionsByMessage
   if (!byMsg) return
@@ -983,6 +996,8 @@ async function retryOptionsPhase() {
   } catch (e) {
     if (e instanceof CancelledError) {
       turnAbort = null
+      // 失效安全:玩家停止 = 设备归零(同 sendTurn 取消路径)
+      void toyController.stopAll()
       toast.add({ title: '已停止生成', color: 'neutral' })
       return
     }
@@ -1031,7 +1046,9 @@ async function sendTurn(choice?: string) {
 
   // 本回合打字机:叙事速度(游戏内设置弹窗/个人中心)→ 限速/停顿;设备指令到句执行,自动会话回调。
   // 抽成可重入函数:叙事流失败静默重试时重建 parser/打字机并清空半截显示,保证重试从零开始
+  let deviceCmdCount = 0
   const startNarrStream = () => {
+    deviceCmdCount = 0
     typewriter?.dispose()
     narrParser = createNarrParser()
     const speedTier = narrSpeedTierOf(narrSpeed.value)
@@ -1045,9 +1062,15 @@ async function sendTurn(choice?: string) {
         // 指令分发:dev 单次事件 / wave 调教(AI 门槛+上限钳制)/ stop 停止调教。
         // 多设备:指令 token 带 adapter(插件 id)时路由到对应连接;无则走 active 连接。
         const adapterId = (cmd as { adapter?: string }).adapter
+        // 单回合设备指令上限:超出静默忽略(防退化输出刷屏;停止路径永远放行)
+        if ((cmd.kind === 'dev' || cmd.kind === 'wave') && ++deviceCmdCount > MAX_DEVICE_CMDS_PER_TURN) {
+          console.warn(`[game] 单回合设备指令超过 ${MAX_DEVICE_CMDS_PER_TURN} 条上限,已忽略`)
+          return false
+        }
         if (cmd.kind === 'wave') {
           return toyController.startWaveForAI(cmd.function, cmd.pattern, cmd.duration, toySettings.value ?? DEFAULT_TOY_SETTINGS, adapterId).then((r) => {
             if (!r.ok) {
+              recordRejectedDeviceCmd(`[[wave:${cmd.function}:${cmd.pattern}]]`, r.reason)
               toast.add({ title: '调教指令被拒绝', description: r.reason, color: 'error' })
             }
             return r.ok
@@ -1065,6 +1088,7 @@ async function sendTurn(choice?: string) {
           ...(cmd.duration != null && cmd.duration > 0 ? { duration: cmd.duration } : {})
         }, { source: 'ai', settings: toySettings.value ?? DEFAULT_TOY_SETTINGS }).then((r) => {
           if (!r.ok) {
+            recordRejectedDeviceCmd(`[[dev:${cmd.function}:${cmd.intensity}]]`, r.reason)
             toast.add({ title: '设备指令被拒绝', description: r.reason, color: 'error' })
           }
           return r.ok
@@ -1112,7 +1136,12 @@ async function sendTurn(choice?: string) {
         color: 'warning'
       })
     }
-    const deviceSpec = deviceEnabled ? narratorDeviceSpec(enabledBriefs) : ''
+    // 上一回合被拒指令反馈:附在设备提示词尾部,让 AI 知道哪条被拒/原因,避免原样重发;读后即清(本回合新产生的留给下回合)
+    const rejected = rejectedDeviceCmds.splice(0)
+    const deviceFeedback = rejected.length
+      ? `\n上一回合被拒绝的设备指令(不要原样重发,按原因修正或放弃):\n${rejected.map(r => `- ${r}`).join('\n')}`
+      : ''
+    const deviceSpec = deviceEnabled ? narratorDeviceSpec(enabledBriefs) + deviceFeedback : ''
     // 段回注:每 reinjectEvery 回合,取当前段情节 + 段起始原文窗口 + 后段走向(有细纲即启用,不依赖开局方式)
     const turnIndex = messages.value.filter(m => m.role === 'narrator').length
     const reinjectPlot = turnIndex > 0 && turnIndex % reinjectEvery.value === 0 && storylineBeats.value.length > 0
@@ -1276,6 +1305,8 @@ async function sendTurn(choice?: string) {
     if (e instanceof CancelledError) {
       // 玩家停止/页面卸载:不当作失败。未获回应的行动弹出撤销,恢复上一决策点选项
       turnAbort = null
+      // 失效安全:场景中断 = 设备归零,已下发的持续型指令/调教一并停止
+      void toyController.stopAll()
       const last = messages.value.at(-1)
       if (last?.role === 'user') {
         messages.value.pop()
