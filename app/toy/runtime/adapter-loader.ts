@@ -24,11 +24,11 @@ export function getBuiltinPlugins(): PluginDescriptor[] {
 /**
  * 内置代码适配器工厂(runtime.toy-code 且无玩家代码时按插件 id 查这里):
  * 迷路的 galaku 协议含链式加密,声明式帧模板表达不了,执行代码为内置纯函数
- * (createMiluAdapter,免沙箱);功能 id → 通道号映射(吮吸版通道语义为最佳推断,真机可校准)。
+ * (createMiluAdapter,免沙箱);功能 id → 通道号映射(真机确认:吮吸版 0=吮吸 1=震动;入体版 0=主震动 1=吮吸)。
  */
 const BUILTIN_CODE_ADAPTER_FACTORIES: Record<string, (manifest: ToyAdapterManifest) => ToyAdapter> = {
   'milu-sucking': manifest => createMiluAdapter(manifest, { suction: 0, vibration: 1 }),
-  'milu-insertable': manifest => createMiluAdapter(manifest, { 'vibration-a': 0, 'vibration-b': 1 })
+  'milu-insertable': manifest => createMiluAdapter(manifest, { 'vibration-a': 0, 'suction': 1 })
 }
 
 /** 内置适配器(由内置 PluginDescriptor 分析 + 桥接) */

@@ -50,7 +50,7 @@ export function galakuBatteryQueryFrame(): Uint8Array {
 /**
  * 迷路内置代码适配器工厂:galaku 一帧同时携带双通道强度,
  * 适配器需记住另一通道最近值(闭包状态;命令只描述单个功能)。
- * channelOf:功能 id → 通道号(0/1)。吮吸版通道语义为最佳推断,真机若颠倒调换映射即可。
+ * channelOf:功能 id → 通道号(0/1)。真机确认:吮吸版 0=吮吸 1=震动;入体版 0=主震动 1=吮吸。
  */
 export function createMiluAdapter(manifest: ToyAdapterManifest, channelOf: Record<string, number>): ToyAdapter {
   const channelValues = [0, 0]

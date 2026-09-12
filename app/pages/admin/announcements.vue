@@ -93,6 +93,30 @@ async function onSave() {
   }
 }
 
+// ---- 展示/隐藏切换 ----
+const toggleBusyId = ref<string | null>(null)
+
+/** 列表内直切发布状态(展示/隐藏):乐观更新,失败回滚;隐藏 = 客户端不再弹窗展示 */
+async function onTogglePublish(a: AnnouncementItem, on: boolean) {
+  if (toggleBusyId.value) return
+  toggleBusyId.value = a.id
+  const prev = a.published
+  a.published = on
+  try {
+    await $fetch(`/api/admin/announcements/${a.id}/publish`, { method: 'POST', body: { published: on } })
+    toast.add({
+      title: on ? `「${a.title}」已发布` : `「${a.title}」已隐藏`,
+      description: on ? '客户端将在下次访问时弹出' : '客户端不再展示该公告',
+      color: 'success'
+    })
+  } catch (e) {
+    a.published = prev
+    toast.add({ title: '切换失败', description: errText(e), color: 'error' })
+  } finally {
+    toggleBusyId.value = null
+  }
+}
+
 // ---- 删除确认 ----
 const deleteOpen = ref(false)
 const deleteTarget = ref<AnnouncementItem | null>(null)
@@ -128,7 +152,7 @@ async function onDelete() {
           公告管理
         </h1>
         <p class="text-sm text-neutral-500">
-          发布站内公告,客户端全站弹窗展示;内容支持 markdown,可保存为草稿稍后发布
+          发布站内公告,客户端全站弹窗展示;内容支持 markdown,列表内开关可随时展示/隐藏
         </p>
       </div>
       <UButton
@@ -188,13 +212,22 @@ async function onDelete() {
                 <span class="font-medium">{{ a.title }}</span>
               </td>
               <td class="py-2.5 pr-3">
-                <UBadge
-                  size="sm"
-                  :color="a.published ? 'success' : 'neutral'"
-                  variant="soft"
-                >
-                  {{ a.published ? '已发布' : '草稿' }}
-                </UBadge>
+                <div class="flex items-center gap-2">
+                  <USwitch
+                    size="sm"
+                    :model-value="a.published"
+                    :loading="toggleBusyId === a.id"
+                    :disabled="toggleBusyId != null"
+                    @update:model-value="(v: boolean) => onTogglePublish(a, v)"
+                  />
+                  <UBadge
+                    size="sm"
+                    :color="a.published ? 'success' : 'neutral'"
+                    variant="soft"
+                  >
+                    {{ a.published ? '展示中' : '已隐藏' }}
+                  </UBadge>
+                </div>
               </td>
               <td class="py-2.5 pr-3 text-xs text-neutral-500">
                 {{ fmtDateTime(a.createdAt) }}

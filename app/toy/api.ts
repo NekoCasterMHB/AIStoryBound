@@ -33,6 +33,8 @@ export interface ToyExecuteOptions {
   settings: ToySettings
   /** 目标适配器 id(多连接路由;缺省 = raw.adapter ?? 当前 active 连接) */
   targetId?: string
+  /** 调教引擎内部调用:绕过「强度 0 = 停止调教」短路(波形自身的 0 档是节奏低电平,不是停止) */
+  fromWave?: boolean
 }
 
 export type ToyConnectResult = { ok: true } | { ok: false, reason: string }
@@ -207,8 +209,9 @@ class ToyController {
 
     const limit = checkHardLimits(event, opts.settings, opts.source, caps, slot.state.adapterId)
     if (!limit.ok) return limit
-    // 强度 0 且该功能调教中:直接停止调教(归零),避免波形循环与停止指令打架
-    if (event.intensity === 0 && slot.waveTimers.has(event.function)) {
+    // 强度 0 且该功能调教中:外部指令直接停止调教(归零),避免波形循环与停止指令打架;
+    // 调教引擎自身的 0 档 tick(fromWave)是节奏低电平,不得走此短路自杀
+    if (event.intensity === 0 && opts.fromWave !== true && slot.waveTimers.has(event.function)) {
       this.stopWave(event.function, slot.state.adapterId)
       return { ok: true, event }
     }
@@ -388,8 +391,8 @@ class ToyController {
     if (pattern === 'random') {
       slot.waveTargets.set(fnId, { ...pickWaveTarget(prev, [lo, hi], undefined, rng), since: Date.now() })
     }
-    // 立即发起始值,再进入 tick
-    void this.execute({ function: fnId, intensity: prev }, { source: 'manual', settings, targetId: adapterId })
+    // 立即发起始值,再进入 tick(内部调用:0 起始值不走「0=停止调教」短路)
+    void this.execute({ function: fnId, intensity: prev }, { source: 'manual', settings, targetId: adapterId, fromWave: true })
 
     slot.waveTimers.set(fnId, setInterval(() => {
       const p = slot.wavePrev.get(fnId) ?? lo
@@ -431,7 +434,7 @@ class ToyController {
         return
       }
       slot.wavePrev.set(fnId, v)
-      void this.execute({ function: fnId, intensity: v }, { source: 'manual', settings, targetId: adapterId })
+      void this.execute({ function: fnId, intensity: v }, { source: 'manual', settings, targetId: adapterId, fromWave: true })
     }, intervalMs))
 
     const st = slot.state.functions[fnId]

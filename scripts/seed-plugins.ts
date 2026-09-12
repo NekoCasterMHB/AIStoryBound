@@ -30,7 +30,7 @@ const PLUGINS = [
   {
     id: 'milu-insertable',
     name: '迷路入体版智能联动',
-    desc: '让 AI 在剧情中自主操作 Kisstoy 迷路入体版(QCPW)智能玩具(双马达震动)。可设置强度/时长上限、AI 开关,并切换模拟测试与真实蓝牙连接。',
+    desc: '让 AI 在剧情中自主操作 Kisstoy 迷路入体版(QCPW)智能玩具(震动/吮吸双通道)。可设置强度/时长上限、AI 开关,并切换模拟测试与真实蓝牙连接。',
     price: 0,
     icon: '🧭',
     status: 'approved',

@@ -66,9 +66,9 @@ export const MILU_SUCKING_PLUGIN: PluginDescriptor = {
 export const MILU_INSERTABLE_PLUGIN: PluginDescriptor = {
   id: 'milu-insertable',
   name: '迷路入体版 (Kisstoy Lost)',
-  version: '1.0.0',
+  version: '1.0.1',
   icon: '🧭',
-  description: '让 AI 在剧情中自主操作 Kisstoy 迷路入体版(QCPW)智能玩具(双马达震动),指令与台词同步;可模拟测试或真机蓝牙直连。',
+  description: '让 AI 在剧情中自主操作 Kisstoy 迷路入体版(QCPW)智能玩具(震动/吮吸双通道),指令与台词同步;可模拟测试或真机蓝牙直连。',
   runtime: {
     type: 'toy-code',
     scanNames: ['QCPW'],
@@ -86,9 +86,9 @@ export const MILU_INSERTABLE_PLUGIN: PluginDescriptor = {
       ]
     },
     {
-      id: 'vibration-b',
-      name: '次震动',
-      description: '副马达震动强度控制(通道 1),与主震动组合营造内外夹击等节奏。intensity 越大震动越强;duration 为持续秒数(到时自动停止)。',
+      id: 'suction',
+      name: '吮吸',
+      description: '吮吸强度控制(通道 1),用于挑逗、前戏、高潮等情节。intensity 越大吸力越强;duration 为持续秒数(到时自动停止)。',
       params: [
         intensityParam('强度 0-100(0=停止)'),
         { ...DURATION_PARAM }
