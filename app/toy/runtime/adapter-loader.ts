@@ -1,6 +1,6 @@
 // app/toy/runtime/adapter-loader.ts
 // 插件注册与加载(只认新版 PluginDescriptor,放弃旧版兼容):
-// - 内置插件(啵啵贝)静态注册;
+// - 内置插件(啵啵贝 = 声明式 protocol;迷路 = 内置代码适配器)静态注册;
 // - 玩家插件通过文件选择器导入(manifest.json + 可选 adapter.js,支持 zip),
 //   强制校验后存 IndexedDB;
 //   Tier 1(声明式 protocol)→ createProtocolAdapter 零代码;Tier 2(adapter.js)→ Worker 沙箱。
@@ -9,6 +9,8 @@ import { analyzePluginDescriptor, capabilitiesToToyCaps, describePlugin } from '
 import type { PluginDescriptor, PluginSpec } from '#shared/plugin'
 import { createProtocolAdapter } from '#shared/toy'
 import type { ToyAdapter, ToyAdapterManifest } from '#shared/toy'
+import { MILU_INSERTABLE_PLUGIN, MILU_SUCKING_PLUGIN } from '../builtin/milu/plugin'
+import { createMiluAdapter } from '../builtin/milu/frames'
 import { SOSEXY_PLUGIN } from '../builtin/sosexy/plugin'
 import { deleteImportedAdapter, listImportedAdapters, saveImportedAdapter } from '../store'
 import type { ImportedPluginRecord } from '../store'
@@ -16,7 +18,17 @@ import { createSandboxedAdapter } from './worker'
 
 /** 内置插件注册表(未来新增品牌在此追加) */
 export function getBuiltinPlugins(): PluginDescriptor[] {
-  return [SOSEXY_PLUGIN]
+  return [SOSEXY_PLUGIN, MILU_SUCKING_PLUGIN, MILU_INSERTABLE_PLUGIN]
+}
+
+/**
+ * 内置代码适配器工厂(runtime.toy-code 且无玩家代码时按插件 id 查这里):
+ * 迷路的 galaku 协议含链式加密,声明式帧模板表达不了,执行代码为内置纯函数
+ * (createMiluAdapter,免沙箱);功能 id → 通道号映射(吮吸版通道语义为最佳推断,真机可校准)。
+ */
+const BUILTIN_CODE_ADAPTER_FACTORIES: Record<string, (manifest: ToyAdapterManifest) => ToyAdapter> = {
+  'milu-sucking': manifest => createMiluAdapter(manifest, { suction: 0, vibration: 1 }),
+  'milu-insertable': manifest => createMiluAdapter(manifest, { 'vibration-a': 0, 'vibration-b': 1 })
 }
 
 /** 内置适配器(由内置 PluginDescriptor 分析 + 桥接) */
@@ -61,12 +73,17 @@ export function buildAdapterFromSpec(spec: PluginSpec, code?: string): ToyAdapte
     }
   }
   if (runtime.type === 'toy-code') {
-    if (!code) return null
     const manifest: ToyAdapterManifest = {
       ...baseManifest,
       gatt: runtime.gatt,
       battery: runtime.battery,
       capabilities: caps
+    }
+    if (!code) {
+      // 无玩家代码 = 内置代码适配器(如迷路):按 id 查工厂;未注册即清单声明了不存在的执行后端
+      const factory = BUILTIN_CODE_ADAPTER_FACTORIES[descriptor.id]
+      if (!factory) return null
+      return factory(manifest)
     }
     try {
       return createSandboxedAdapter(manifest, code)

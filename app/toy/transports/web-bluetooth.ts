@@ -129,6 +129,8 @@ async function listAuthorizedDevices(): Promise<ToyTransportDevice[]> {
 export function createWebBluetoothTransport(): ToyTransport {
   let pickedDevice: RawBleDevice | null = null
   let currentChar: RawGattCharacteristic | null = null
+  /** 写入是否带响应(清单 gatt.writeWithResponse,缺省 true;galaku 等设备只支持无响应写) */
+  let writeWithResponse = true
   const disconnectHandlers = new Set<() => void>()
 
   async function attach(raw: RawBleDevice, gatt: ToyGattParams, battery?: ToyBatterySpec): Promise<void> {
@@ -149,6 +151,7 @@ export function createWebBluetoothTransport(): ToyTransport {
     // 通知必须走 startNotifications,新版 Chrome 会拦截手动写 CCCD(0x2902)
     await notifyChar.startNotifications()
     currentChar = writeChar
+    writeWithResponse = gatt.writeWithResponse !== false
     await readBattery(raw, server, battery)
     rememberDevice(raw.id, raw.name ?? '未知设备', batteryCache.get(raw.id) ?? null)
 
@@ -196,6 +199,12 @@ export function createWebBluetoothTransport(): ToyTransport {
 
     async write(bytes: Uint8Array): Promise<void> {
       if (!currentChar) throw new Error('设备未连接')
+      // 按清单声明选择写入方式(galaku 的写特征无 write 属性,带响应写会被 Chrome 拒绝)
+      if (!writeWithResponse) {
+        if (!currentChar.writeValueWithoutResponse) throw new Error('当前浏览器不支持无响应写入(请更新 Chrome)')
+        await currentChar.writeValueWithoutResponse(bytes)
+        return
+      }
       if (currentChar.writeValueWithResponse) {
         await currentChar.writeValueWithResponse(bytes)
       } else {
