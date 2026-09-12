@@ -137,17 +137,25 @@ function advancePlotBeat(reportedBeat: number | null | undefined): void {
   }
 }
 
-/** 构建段回注:当前段情节摘要 + 段起始原文窗口 + 后段走向摘要。
+/** 上次回注的段下标:同一回注周期内原文窗口只出现一次(防段首原文反复把剧情拽回段首重演) */
+let lastReinjectBeat = -1
+
+/** 构建段回注:当前段情节摘要 + 玩家弧线戏份 + 后段走向摘要;段首原文窗口仅在当前段首次回注出现一次
+ *  (此后仅结构化对照,不再重复注入段首原文——已偏离正典的剧情会被原文反复拽回段首)。
  *  v2 作品段窗口取自正典 text(v2 无法从 startChar 还原);v1 沿用全书拼接正文按 startChar 取窗。 */
 function buildBeatReinject(): { beatIndex?: number, beatTitle?: string, beatSummary?: string, window: string, nextBeat?: { title?: string, summary?: string } } | undefined {
   const beats = storylineBeats.value
   const beat = beats[plotBeat.value]
   if (!beat) return undefined
   const seg = work.value?.segments[plotBeat.value]
+  const includeWindow = lastReinjectBeat !== beat.index
+  lastReinjectBeat = beat.index
   const start = Math.max(0, beat.startChar)
-  const window = seg?.canon.text?.trim()
-    ? seg.canon.text.slice(0, REINJECT_WINDOW_CHARS)
-    : joinedText.value.slice(start, start + REINJECT_WINDOW_CHARS)
+  const window = includeWindow
+    ? (seg?.canon.text?.trim()
+        ? seg.canon.text.slice(0, REINJECT_WINDOW_CHARS)
+        : joinedText.value.slice(start, start + REINJECT_WINDOW_CHARS))
+    : ''
   const next = beats[plotBeat.value + 1]
   const nextSeg = work.value?.segments[plotBeat.value + 1]
   const nextTitle = next?.label
@@ -879,22 +887,30 @@ async function runOptionsPhase(
   narratorText: string
 ): Promise<void> {
   if (!game.value) throw new Error('会话已丢失')
+  // 段位底牌:收尾器自身没有细纲上下文,不告知当前段与后段,current_beat 只能盲猜(幻觉跳段)或省略(段位停滞)
+  const curBeat = storylineBeats.value[plotBeat.value]
+  const curSeg = work.value?.segments[plotBeat.value]
+  const nxtBeat = storylineBeats.value[plotBeat.value + 1]
+  const nxtSeg = work.value?.segments[plotBeat.value + 1]
+  const beatGround = curBeat
+    ? `\n当前细纲段:第 ${plotBeat.value + 1} 段「${curSeg?.canon.title || curBeat.label}」(情节走向:${curSeg?.canon.beat || curBeat.summary})${nxtBeat ? `\n后一段:第 ${plotBeat.value + 2} 段「${nxtSeg?.canon.title || nxtBeat.label}」(情节走向:${nxtSeg?.canon.beat || nxtBeat.summary})` : '\n(当前已是最后一段,无后段)'}`
+    : ''
   const optionsMessages = [
     {
       role: 'system' as const,
-      content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3 个下一回合的行动选项、本轮对游戏状态的增量变化(相对当前值),以及整局剧情摘要。\n输出 JSON:\n${turnOptionsSchema()}`
+      content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3 个下一回合的行动选项、本轮对游戏状态的增量变化(相对当前值),以及整局剧情摘要。\n摘要必填并每回合滚动重写(它是长程记忆,只做增量更新,不要整体省略);人物间新建立的剧情事实(关系变化、承诺约定、奖惩结果、重要物品、身份暴露等)必须写入对应角色的 character_states 字段——状态才是长期记忆,只写摘要等于遗忘。\n输出 JSON:\n${turnOptionsSchema()}`
     },
     {
       role: 'user' as const,
-      content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(stateForPrompt(state.value))}\n上文剧情:\n${(
+      content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(stateForPrompt(state.value))}${beatGround}\n上文剧情:\n${(
         // 并行调用时旁白尚未入列(见 sendTurn),显式补入,保证上下文与串行时一致
         messages.value.at(-1)?.id === narratorMsg.id
-          ? messages.value.slice(-12)
-          : [...messages.value.slice(-12), { role: 'narrator', content: narratorText }]
+          ? messages.value.slice(-30)
+          : [...messages.value.slice(-30), { role: 'narrator', content: narratorText }]
       ).map(m => m.content).join('\n')}`
     }
   ]
-  // 不设 maxTokens:高温下收尾输出(3 个选项 + state_delta + 500 字摘要)会顶到 1200 截断,
+  // 不设 maxTokens:高温下收尾输出(3 个选项 + state_delta + 800 字摘要)会顶到 1200 截断,
   // 截断点在字符串中段时 tryRepairTruncated 无法修复 → 必失败;交给模型自然收尾,平台默认上限足够
   // 收尾器独立低温:结构化 JSON 输出在叙事高温下空选项/截断概率显著上升(重试是真金 token);
   // 摘要/选项/状态增量不需要叙事的发散度
@@ -956,8 +972,14 @@ async function runOptionsPhase(
   if (options.value.length === 0) {
     toast.add({ title: '本回合没有生成选项,可重新生成或直接输入行动', color: 'warning' })
   }
-  // 卡住引导(§7.4):段内长时间无节点推进且进度 <40% 时,混入指向下一未触发节点的引导选项(仍只是建议)
-  const guidance = nodeStallGuidance(state.value, v2Segment.value?.canon.节点)
+  // 卡住引导(§7.4):段内长时间无节点推进且进度 <40% 时,混入指向下一未触发节点的引导选项;
+  // 节点全部达成后的段尾停滞,引导改为「收束进入后一段」(仍只是建议)
+  const nextBeatInfo = storylineBeats.value[plotBeat.value + 1]
+  const guidance = nodeStallGuidance(
+    state.value,
+    v2Segment.value?.canon.节点,
+    nextBeatInfo ? `${nextBeatInfo.label ? `「${nextBeatInfo.label}」` : ''}${nextBeatInfo.summary}` : null
+  )
   if (guidance && options.value.length > 0) {
     options.value = [{ idx: 0, text: guidance }, ...options.value.map((o, i) => ({ ...o, idx: i + 1 }))]
     game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(options.value))

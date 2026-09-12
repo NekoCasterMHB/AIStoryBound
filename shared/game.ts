@@ -57,11 +57,11 @@ export function turnOptionsSchema(): string {
     "desires": {"角色名": "性欲值整数增量,可为负,区间 0~100 内;或 {"delta": 增量, "kink": "本回合触发的玩法名,如 打屁股", "scene": "reward|punish,缺省 reward"}——reward=奖励/自愿(命中「喜欢」大幅加速,「厌恶」几乎不涨);punish=惩罚/强制(犯大错时故意用角色「厌恶」的玩法,羞耻与服从叠加大幅加速);无变化省略"},
     "quests": ["任务目标(string)"],
     "flags": {"flag名": true},
-    "character_states": {"角色名": {"status": "该角色当前处境/状态一句话(如「被软禁在卧室」「身份暴露,仓皇出逃」)","location": "该角色当前位置(string)","mood": "该角色当前情绪(string)","dead": true|false,"人物卡字段名": "该角色发生永久变化的人物卡字段,如 identity/appearance/personality/goals/secrets/speech_style/abilities 等(string|string[]|number,数组整体替换)"}}
+    "character_states": {"角色名": {"status": "该角色当前处境/状态一句话(如「被软禁在卧室」「身份暴露,仓皇出逃」)","location": "该角色当前位置(string)","mood": "该角色当前情绪(string)","dead": true|false,"人物卡字段名": "该角色发生永久变化的人物卡字段,如 identity/appearance/personality/goals/secrets/speech_style/abilities 等(string|string[]|number,数组整体替换)","玩法名/事实名": "剧情中新建立的事实(关系变化/承诺/约定/惩罚与奖励结果/重要物品/掌握的把柄等),值为一句话描述(string)。本回合建立的新事实必须落到对应角色的字段上——状态是长期记忆,摘要会滚动压缩,只写摘要等于遗忘"}}
   },
-  "current_beat": "剧情当前推进到的细纲段序号(1-based 整数,每回合报告;仍在同段保持同值;不确定可省略)",
+  "current_beat": "剧情当前推进到的细纲段序号(1-based 整数,每回合报告;输入会告知当前段与后一段,按剧情实际推进如实报告:剧情仍在当前段内时保持同值,已自然进入后段内容才报告后段序号;不确定时保持当前段序号,不要跳段)",
   "current_nodes": "本段已达的最大事件里程碑序号(0-based 整数,按剧情实际已发生的最后一个里程碑;本段没有里程碑清单或不确定省略)",
-  "summary": "整局剧情摘要(基于旧摘要与上文剧情压缩至 500 字左右,保留关键人物关系/伏笔/进展;无重大变化可省略)"
+  "summary": "整局剧情摘要(必填,每回合滚动重写,不许省略:基于旧摘要与上文剧情压缩至 800 字左右,必须保留:各角色当前关系与态度、已成立的承诺/约定/伏笔、重要物品与地点、玩家行动改写的既成事实、当前未决冲突;宁可精炼也不要整段省略)"
 }`
 }
 
@@ -376,12 +376,17 @@ export function applyNodeProgress(state: GameState, beat: number, reportedNode: 
 }
 
 /** 卡住引导选项文本(未达条件返回 null):连续 NODE_STALL_TURNS 回合无节点推进且段内进度 <NODE_STALL_PROGRESS。
- *  引导指向下一未触发节点,前缀「【推进剧情】」混入当轮选项;仍只是建议,玩家自由输入优先级最高。 */
-export function nodeStallGuidance(state: GameState, nodes: SegmentNode[] | undefined | null): string | null {
+ *  节点全部达成后进入段尾停滞的,引导改为「收束本段进入后一段」(nextBeatHint 提供后段提示,可空)。
+ *  引导混入当轮选项;仍只是建议,玩家自由输入优先级最高。 */
+export function nodeStallGuidance(state: GameState, nodes: SegmentNode[] | undefined | null, nextBeatHint?: string | null): string | null {
   if (!nodes?.length) return null
   const p = state.nodeProgress
   if (!p || (p.stallTurns ?? 0) < NODE_STALL_TURNS) return null
   const progress = (p.lastNode + 1) / nodes.length
+  if (p.lastNode + 1 >= nodes.length) {
+    // 段尾:全部节点已发生仍无段位推进 → 引导过渡到后一段
+    return `【推进剧情】本段情节已推进完毕,自然收束并进入下一段${nextBeatHint ? `:${clampText(nextBeatHint, 80)}` : ''}`
+  }
   if (progress >= NODE_STALL_PROGRESS) return null
   const next = nodes[p.lastNode + 1]
   if (!next?.事件?.trim()) return null
@@ -677,6 +682,11 @@ function plotTrackBlock(args: {
     const nodeBits: string[] = []
     if (reached.length) nodeBits.push(`已发生(已在本段剧情中出现过,不要重复叙述):\n${reached.map(n => `${n.n + 1}. ${clampText(n.事件, 100)}`).join('\n')}`)
     if (next) nodeBits.push(`下一节点(引导锚:剧情自然推进到该事件时展开,不要跳步提前):\n${next.n + 1}. ${next.事件}`)
+    // 段尾过渡:全部节点已达成时明确告知收束并过渡到后段,防无限滞留本段(此前段尾无任何推力)
+    if (!next && reached.length && args.currentBeat != null) {
+      const nb = [...(args.storyline ?? [])].sort((a, b) => a.startChar - b.startChar)[args.currentBeat + 1]
+      nodeBits.push(`以上里程碑已全部发生:本段情节已推进完毕,让剧情自然收束,并过渡到后一段${nb ? `「${nb.label || `第${args.currentBeat + 2}段`}」的情节:${clampText(nb.summary, 120)}` : '(当前已是最后一段,按弧线结局走向收束)'};不要继续展开本段已发生的事件`)
+    }
     if (nodeBits.length) lines.push(`本段时间点「${canon?.title || '当前段'}」的剧情里程碑(共 ${nodes.length} 个):\n${nodeBits.join('\n\n')}`)
   }
   // v2 段:各角色本段分线(段角色文件「剧情」,玩家在前;仅建有文件的角色)
@@ -915,7 +925,7 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
     if (reinjectPlot.nextBeat?.summary?.trim()) {
       reinjectParts.push(`接下来的情节走向(后段${reinjectPlot.nextBeat.title ? `「${reinjectPlot.nextBeat.title}」` : ''}):\n${reinjectPlot.nextBeat.summary}`)
     }
-    reinjectParts.push('上述内容是故事线对照参考,帮助你把握本段设定细节与人物动向;玩家自由行动已使剧情偏离故事线时,顺着玩家行动继续演绎,不要生硬跳到原文事件或把窗口里的情节硬接上来;仅在剧情自然走到对应节点时才呼应情节线。')
+    reinjectParts.push('上述内容是故事线对照参考,帮助你把握本段设定细节与人物动向;玩家自由行动已使剧情偏离故事线时,顺着玩家行动继续演绎,不要生硬跳回原文事件或把对照材料里的情节硬接上来;仅在剧情自然走到对应节点时才呼应情节线。')
     userParts.push({ label: '世界设定与剧情轨道', content: reinjectParts.join('\n\n') })
   }
   // 防人设漂移:核心人设复述在 user 尾部(长对话后注意力偏离开头 system 的设定,社区验证
