@@ -352,10 +352,11 @@ function boughtVersionItems(p: MyPurchasedNovel) {
   return items
 }
 
-/** 「我的发布」操作菜单:更新版本(绿)/ 下架(红)/ 重新上架 */
+/** 「我的发布」操作菜单:更新版本(绿)/ 更新售价 / 下架(红)/ 重新上架 */
 function publishActionsItems(p: MyPublishedNovel) {
   const items: DropdownMenuItem[] = [
-    { label: '更新版本', icon: 'i-lucide-upload', color: 'success', onSelect: () => navigateTo(`/workshop/publish?novel=${p.id}`) }
+    { label: '更新版本', icon: 'i-lucide-upload', color: 'success', onSelect: () => navigateTo(`/workshop/publish?novel=${p.id}`) },
+    { label: '更新售价', icon: 'i-lucide-coins', onSelect: () => openPriceModal(p) }
   ]
   if (p.status === 'approved') {
     items.push({ label: '下架', icon: 'i-lucide-arrow-down-circle', color: 'error', onSelect: () => onUnlist(p) })
@@ -363,6 +364,50 @@ function publishActionsItems(p: MyPublishedNovel) {
     items.push({ label: '重新上架', icon: 'i-lucide-arrow-up-circle', onSelect: () => onRelist(p) })
   }
   return items
+}
+
+// ---- 修改售价:只更新商城售价,不影响已购者、不涉及退款,仅影响之后的购买 ----
+const priceModalOpen = ref(false)
+const priceTarget = ref<MyPublishedNovel | null>(null)
+const priceDraft = ref('')
+const priceSaving = ref(false)
+
+function openPriceModal(p: MyPublishedNovel) {
+  priceTarget.value = p
+  priceDraft.value = String(p.price)
+  priceModalOpen.value = true
+}
+
+async function savePrice() {
+  const p = priceTarget.value
+  const n = Math.floor(Number(priceDraft.value))
+  if (!p || !Number.isFinite(n) || n < 0) {
+    toast.add({ title: '售价需为不小于 0 的整数 token(0 表示免费)', color: 'error' })
+    return
+  }
+  if (n === p.price) {
+    priceModalOpen.value = false
+    return
+  }
+  priceSaving.value = true
+  try {
+    await $fetch(`/api/store/novels/${p.id}/price`, { method: 'POST', body: { price: n } })
+    toast.add({
+      title: '售价已更新',
+      description: `「${p.title}」新售价 ${n.toLocaleString()} token,仅影响之后的购买;已购者不受影响`,
+      color: 'success'
+    })
+    priceModalOpen.value = false
+    await loadMine()
+  } catch (e) {
+    toast.add({
+      title: '修改售价失败',
+      description: e instanceof Error ? e.message : String(e),
+      color: 'error'
+    })
+  } finally {
+    priceSaving.value = false
+  }
 }
 
 // ---- 版本管理:查看全部版本,切换商城展示的主版本 ----
@@ -1351,6 +1396,66 @@ async function onPreview(s: StoreNovelSummary) {
             你已拥有该小说,可获取全文加入书架阅读
           </p>
         </template>
+      </template>
+    </UModal>
+
+    <!-- 修改售价:仅更新商城售价,不影响已购者、不涉及退款,仅影响之后的购买 -->
+    <UModal
+      v-model:open="priceModalOpen"
+      title="修改售价"
+    >
+      <template #body>
+        <p class="text-sm">
+          为「{{ priceTarget?.title }}」设置新的售价:
+        </p>
+        <UFormField
+          label="新售价(token)"
+          required
+          class="mt-3"
+        >
+          <UFieldGroup class="w-full">
+            <UInput
+              v-model="priceDraft"
+              type="number"
+              :min="0"
+              :step="10000"
+              class="w-full"
+              placeholder="售价"
+              aria-label="新售价"
+            />
+            <UButton
+              color="neutral"
+              variant="subtle"
+              label="tokens"
+              aria-hidden="true"
+              tabindex="-1"
+              class="pointer-events-none select-none"
+            />
+          </UFieldGroup>
+        </UFormField>
+        <p class="mt-2 text-xs text-neutral-400">
+          仅影响之后的购买;已购者不受影响,不涉及退款。0 表示免费,免费小说将获得更高展示优先级。
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton
+            color="neutral"
+            variant="soft"
+            :disabled="priceSaving"
+            @click="priceModalOpen = false"
+          >
+            取消
+          </UButton>
+          <UButton
+            color="primary"
+            icon="i-lucide-check"
+            :loading="priceSaving"
+            @click="savePrice"
+          >
+            确认修改
+          </UButton>
+        </div>
       </template>
     </UModal>
   </div>
