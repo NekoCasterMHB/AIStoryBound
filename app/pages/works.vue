@@ -839,6 +839,25 @@ const shelfTabs = ref<TabsItem[]>([
 ])
 const activeTab = ref('personal')
 
+// ---- 本地作品搜索(字段组:输入框 + 搜索按钮,点击或回车后按标题过滤) ----
+const searchDraft = ref('')
+const searchApplied = ref('')
+const filteredWorks = computed(() => {
+  const q = searchApplied.value.trim().toLowerCase()
+  if (!q) return works.value
+  return works.value.filter(w => w.title.toLowerCase().includes(q))
+})
+
+function applySearch(): void {
+  searchApplied.value = searchDraft.value
+}
+
+/** 清空输入并立即触发一次搜索(恢复完整列表) */
+function clearSearch(): void {
+  searchDraft.value = ''
+  applySearch()
+}
+
 // ---- 导入小说:上传 TXT / 粘贴文本 → 解析后直接入库(本地作品),不走 AI 生成 ----
 const toast = useToast()
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -1331,10 +1350,37 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
 
           <!-- 本地作品 -->
           <div class="mb-6">
-            <div class="mb-3 flex items-center justify-between">
+            <div class="mb-3 flex items-center justify-between gap-2">
               <h2 class="font-semibold">
                 本地作品
               </h2>
+              <UFieldGroup class="min-w-0 flex-1">
+                <UInput
+                  v-model="searchDraft"
+                  placeholder="搜索作品标题…"
+                  class="w-full"
+                  @keydown.enter="applySearch"
+                >
+                  <template #trailing>
+                    <UButton
+                      v-if="searchDraft"
+                      icon="i-lucide-x"
+                      size="xs"
+                      color="neutral"
+                      variant="ghost"
+                      aria-label="清空搜索"
+                      @click="clearSearch"
+                    />
+                  </template>
+                </UInput>
+                <UButton
+                  icon="i-lucide-search"
+                  color="neutral"
+                  variant="subtle"
+                  aria-label="搜索"
+                  @click="applySearch"
+                />
+              </UFieldGroup>
             </div>
             <div
               v-if="works.length === 0"
@@ -1345,9 +1391,15 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                 class="text-primary-500 underline"
               >生成世界</NuxtLink> 上传一本 TXT 开始
             </div>
+            <div
+              v-else-if="!filteredWorks.length"
+              class="rounded-xl border border-dashed border-neutral-300 p-6 text-center text-sm text-neutral-500 dark:border-neutral-700"
+            >
+              没有找到匹配的作品,换个关键词试试
+            </div>
             <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <UCard
-                v-for="w in works"
+                v-for="w in filteredWorks"
                 :key="w.id"
                 class="h-full flex flex-col transition hover:border-primary-500/40 hover:shadow-md dark:hover:border-primary-500/30"
               >

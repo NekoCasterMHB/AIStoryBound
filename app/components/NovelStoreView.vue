@@ -28,6 +28,29 @@ const STATUS_BADGE_COLORS: Record<NovelStatus, 'success' | 'warning' | 'error' |
 const novels = ref<StoreNovelSummary[]>([])
 // 初始即 true:避免首帧渲染出"书架还没有小说"空状态(onMounted 前 loading 为 false)
 const loading = ref(true)
+
+// ---- 搜索(字段组:输入框 + 搜索按钮,点击或回车后按书名/作者/简介过滤) ----
+const searchDraft = ref('')
+const searchApplied = ref('')
+const filteredNovels = computed(() => {
+  const q = searchApplied.value.trim().toLowerCase()
+  if (!q) return novels.value
+  return novels.value.filter(s =>
+    s.title.toLowerCase().includes(q)
+    || (s.author ?? '').toLowerCase().includes(q)
+    || s.desc.toLowerCase().includes(q)
+  )
+})
+
+function applySearch(): void {
+  searchApplied.value = searchDraft.value
+}
+
+/** 清空输入并立即触发一次搜索(恢复完整列表) */
+function clearSearch(): void {
+  searchDraft.value = ''
+  applySearch()
+}
 const mineLoading = ref(true)
 const mine = ref<{ purchased: MyPurchasedNovel[], published: MyPublishedNovel[] }>({ purchased: [], published: [] })
 
@@ -525,6 +548,33 @@ async function onPreview(s: StoreNovelSummary) {
     >
       <!-- 全部:小说卡片 -->
       <template #all>
+        <UFieldGroup class="mb-4 flex w-full">
+          <UInput
+            v-model="searchDraft"
+            placeholder="搜索书名 / 作者 / 简介…"
+            class="w-full"
+            @keydown.enter="applySearch"
+          >
+            <template #trailing>
+              <UButton
+                v-if="searchDraft"
+                icon="i-lucide-x"
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                aria-label="清空搜索"
+                @click="clearSearch"
+              />
+            </template>
+          </UInput>
+          <UButton
+            icon="i-lucide-search"
+            color="neutral"
+            variant="subtle"
+            aria-label="搜索"
+            @click="applySearch"
+          />
+        </UFieldGroup>
         <div
           v-if="loading"
           class="flex items-center justify-center gap-2 py-10 text-sm text-neutral-500"
@@ -542,11 +592,17 @@ async function onPreview(s: StoreNovelSummary) {
           书架还没有小说,成为第一个发布者吧
         </div>
         <div
+          v-else-if="!filteredNovels.length"
+          class="py-10 text-center text-sm text-neutral-500"
+        >
+          没有找到匹配的小说,换个关键词试试
+        </div>
+        <div
           v-else
           class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
         >
           <UCard
-            v-for="s in novels"
+            v-for="s in filteredNovels"
             :key="s.id"
             class="flex flex-col"
             :ui="{ body: 'flex-1' }"

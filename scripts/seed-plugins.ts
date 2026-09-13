@@ -13,7 +13,7 @@ const PLUGINS = [
     id: 'sosexy',
     name: '啵啵贝智能联动',
     desc: '让 AI 在剧情中自主操作啵啵贝智能玩具(吮吸/震动/微电流)。可设置强度/时长上限、AI 开关,并切换模拟测试与真实蓝牙连接。',
-    price: 0,
+    price: 500000,
     icon: '🫧',
     status: 'approved',
     featured: 1
@@ -22,7 +22,7 @@ const PLUGINS = [
     id: 'milu-sucking',
     name: '迷路吮吸版智能联动',
     desc: '让 AI 在剧情中自主操作 Kisstoy 迷路吮吸版(QCSW)智能玩具(吮吸/震动双通道)。可设置强度/时长上限、AI 开关,并切换模拟测试与真实蓝牙连接。',
-    price: 0,
+    price: 500000,
     icon: '🧭',
     status: 'approved',
     featured: 1
@@ -31,7 +31,7 @@ const PLUGINS = [
     id: 'milu-insertable',
     name: '迷路入体版智能联动',
     desc: '让 AI 在剧情中自主操作 Kisstoy 迷路入体版(QCPW)智能玩具(震动/吮吸双通道)。可设置强度/时长上限、AI 开关,并切换模拟测试与真实蓝牙连接。',
-    price: 0,
+    price: 500000,
     icon: '🧭',
     status: 'approved',
     featured: 1

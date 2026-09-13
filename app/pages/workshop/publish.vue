@@ -41,17 +41,20 @@ const price = ref('')
 const currentPrice = ref(0)
 const previewChars = ref('')
 
-// ---- 正文:上传 TXT 或粘贴文本,统一转 File 走同一校验 ----
+// ---- 正文:多选 TXT 按序合并(或粘贴文本),统一转 File 走同一校验 ----
 const mode = ref<'file' | 'paste'>('file')
-const uploadFile = ref<File | null>(null)
+const uploadFiles = ref<File[]>([])
 const pasted = ref('')
+/** 逐文件转码后按当前排序合并出的单一 TXT(单文件即原文件);null = 未选文件或校验失败 */
+const mergedFile = ref<File | null>(null)
+
 const fileData = computed<File | null>(() => {
   if (mode.value === 'paste') {
     const t = pasted.value
     if (!t.trim()) return null
     return new File([t], `${title.value.trim() || 'novel'}.txt`, { type: 'text/plain' })
   }
-  return uploadFile.value
+  return mergedFile.value
 })
 
 /** 正文预校验结果(与服务端一致,尽早提示)+ 编码自动识别/预览 */
@@ -100,6 +103,82 @@ watch(fileData, (file) => {
       fileMeta.value.error = (err as Error).message
     }
   })
+})
+
+// ---- 多文件:选择/拖放添加,拖动行排序,逐文件转码后按顺序合并成一个 TXT ----
+const fileInput = ref<HTMLInputElement | null>(null)
+/** 正在拖拽的文件行下标(null = 无拖拽) */
+const dragIndex = ref<number | null>(null)
+
+function isTxt(f: File): boolean {
+  return NOVEL_TXT_EXTENSIONS.includes(f.name.slice(f.name.lastIndexOf('.')).toLowerCase())
+}
+
+function addFiles(list: File[]): void {
+  const txt = list.filter(isTxt)
+  if (list.length && !txt.length) {
+    fileMeta.value.error = '请选择 .txt 文本文件'
+    return
+  }
+  uploadFiles.value = [...uploadFiles.value, ...txt]
+}
+
+function onPickFiles(e: Event): void {
+  addFiles(Array.from((e.target as HTMLInputElement).files ?? []))
+  ;(e.target as HTMLInputElement).value = ''
+}
+
+function onDropFiles(e: DragEvent): void {
+  addFiles(Array.from(e.dataTransfer?.files ?? []))
+}
+
+function removeFile(i: number): void {
+  uploadFiles.value = uploadFiles.value.filter((_, idx) => idx !== i)
+}
+
+function onDragStart(i: number): void {
+  dragIndex.value = i
+}
+
+function onDropAt(i: number): void {
+  const from = dragIndex.value
+  dragIndex.value = null
+  if (from == null || from === i) return
+  const next = [...uploadFiles.value]
+  const moved = next.splice(from, 1)[0]
+  if (moved) next.splice(i, 0, moved)
+  uploadFiles.value = next
+}
+
+/** 逐文件识别编码转 UTF-8,按当前排序合并成一个 TXT;合并后交给下方 watch(fileData) 统一校验 */
+watch(uploadFiles, async (files) => {
+  mergedFile.value = null
+  fileMeta.value = { totalChars: 0, error: '', encoding: '', garbled: false, preview: '' }
+  if (!files.length) return
+  const texts: string[] = []
+  let totalBytes = 0
+  for (const f of files) {
+    if (!isTxt(f)) {
+      fileMeta.value.error = `「${f.name}」不是 .txt 文本文件`
+      return
+    }
+    totalBytes += f.size
+    if (totalBytes > MAX_NOVEL_TXT_BYTES) {
+      fileMeta.value.error = `合并后正文超过 ${MAX_NOVEL_TXT_BYTES / 1024 / 1024}MB 上限`
+      return
+    }
+    try {
+      texts.push(detectNovelEncoding(new Uint8Array(await f.arrayBuffer())).text)
+    } catch (err) {
+      fileMeta.value.error = `「${f.name}」读取失败:${(err as Error).message}`
+      return
+    }
+  }
+  mergedFile.value = new File(
+    [new TextEncoder().encode(texts.join('\n'))],
+    `${title.value.trim() || 'novel'}.txt`,
+    { type: 'text/plain' }
+  )
 })
 
 if (isUpdate) {
@@ -359,17 +438,73 @@ async function submit() {
               />
             </span>
           </template>
-          <UFileUpload
-            v-if="mode === 'file'"
-            v-model="uploadFile"
-            :accept="NOVEL_TXT_EXTENSIONS.join(',')"
-            position="inside"
-            layout="list"
-            label="点击选择或拖拽 .txt 文件到此处"
-            :description="`自动识别编码并转为 UTF-8(支持 GBK / Big5 / UTF-16 等),大小不超过 ${MAX_NOVEL_TXT_BYTES / 1024 / 1024}MB,至少 ${MIN_NOVEL_CHARS} 字`"
-            class="w-full"
-            :ui="{ base: 'min-h-48' }"
-          />
+          <!-- 多选选择区:点击或拖放均可添加多个 txt;下方列表可拖动排序,按顺序自动合并 -->
+          <template v-if="mode === 'file'">
+            <div
+              class="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-neutral-300 p-6 text-center text-sm text-neutral-500 transition hover:border-primary-400 dark:border-neutral-700"
+              @click="fileInput?.click()"
+              @dragover.prevent
+              @drop.prevent="onDropFiles"
+            >
+              <UIcon
+                name="i-lucide-file-up"
+                class="size-6 text-neutral-400"
+              />
+              <p>点击选择或拖拽 .txt 文件到此处(支持多选)</p>
+              <p class="text-xs text-neutral-400">
+                多个文件按下方排序自动合并成一个 TXT;自动识别编码并转为
+                UTF-8(支持 GBK / Big5 / UTF-16 等),合并后不超过
+                {{ MAX_NOVEL_TXT_BYTES / 1024 / 1024 }}MB,至少 {{ MIN_NOVEL_CHARS }} 字
+              </p>
+            </div>
+            <input
+              ref="fileInput"
+              type="file"
+              multiple
+              :accept="NOVEL_TXT_EXTENSIONS.join(',')"
+              class="hidden"
+              @change="onPickFiles"
+            >
+
+            <!-- 文件排序列表:拖动手柄调整合并顺序 -->
+            <div
+              v-if="uploadFiles.length"
+              class="mt-2 flex flex-col gap-1"
+            >
+              <div
+                v-for="(f, i) in uploadFiles"
+                :key="`${f.name}-${f.size}-${f.lastModified}`"
+                draggable="true"
+                class="flex cursor-grab items-center gap-2 rounded-lg border border-neutral-200 bg-white px-2 py-1.5 text-xs active:cursor-grabbing dark:border-neutral-700 dark:bg-neutral-900"
+                :class="{ 'opacity-50': dragIndex === i }"
+                @dragstart="onDragStart(i)"
+                @dragover.prevent
+                @drop.prevent="onDropAt(i)"
+              >
+                <UIcon
+                  name="i-lucide-grip-vertical"
+                  class="shrink-0 size-4 text-neutral-400"
+                />
+                <span class="min-w-0 flex-1 truncate">
+                  {{ i + 1 }}. {{ f.name }}
+                </span>
+                <span class="shrink-0 tabular-nums text-neutral-400">
+                  {{ (f.size / 1024).toFixed(0) }}KB
+                </span>
+                <UButton
+                  icon="i-lucide-x"
+                  size="xs"
+                  color="neutral"
+                  variant="ghost"
+                  aria-label="移除该文件"
+                  @click.stop="removeFile(i)"
+                />
+              </div>
+              <p class="text-xs text-neutral-400">
+                拖动文件行可调整合并顺序;将按当前顺序自动合并为一个 TXT
+              </p>
+            </div>
+          </template>
           <UTextarea
             v-else
             v-model="pasted"
