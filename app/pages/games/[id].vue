@@ -1452,6 +1452,15 @@ function sendInput() {
   void sendTurn(v)
 }
 
+/** 自由输入框回车发送(输入法选词的合成回车不触发);Shift+Enter 换行 */
+function onFreeInputKeyDown(e: KeyboardEvent): void {
+  if (e.key === 'Enter') {
+    if (e.isComposing || e.shiftKey) return
+    e.preventDefault()
+    sendInput()
+  }
+}
+
 // ---- 选项编辑:点编辑图标把该选项变成可编辑输入框,确认后作为行动发送 ----
 
 /** 正在编辑的选项 idx(null = 无编辑态)与其草稿 */
@@ -2709,12 +2718,16 @@ watch([messages, streamDisplay], async () => {
               本回合暂无生成的选项，可直接自由输入行动。
             </p>
             <div class="flex gap-2 border-t border-neutral-200 pt-2 dark:border-neutral-800">
-              <UInput
+              <UTextarea
                 v-model="input"
-                class="flex-1"
+                autoresize
+                size="md"
+                :rows="1"
+                :maxrows="6"
+                class="min-w-0 flex-1"
                 :placeholder="started ? '自由输入你的行动…' : '开始故事后即可输入行动'"
                 :disabled="!started || streaming"
-                @keydown.enter="sendInput"
+                @keydown="onFreeInputKeyDown"
               />
               <UButton
                 icon="i-lucide-send"
@@ -2722,7 +2735,7 @@ watch([messages, streamDisplay], async () => {
                 :disabled="!started || !input.trim() || streaming"
                 @click="sendInput"
               >
-                行动
+                <span class="hidden sm:inline">行动</span>
               </UButton>
             </div>
 
