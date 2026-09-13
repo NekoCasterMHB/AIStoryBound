@@ -1452,13 +1452,32 @@ function sendInput() {
   void sendTurn(v)
 }
 
-/** 自由输入框回车发送(输入法选词的合成回车不触发);Shift+Enter 换行 */
+/** 触屏设备判定(业界通行方案:桌面回车=发送/Shift+回车=换行;手机平板回车=换行,发送靠按钮——
+ *  微信/Telegram/ChatGPT 移动端同款;虚拟键盘按「换行」却发出消息是聊天应用最大吐槽点) */
+const isCoarsePointer = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches
+
+/** 自由输入框回车发送(输入法选词的合成回车不触发);Shift+Enter 换行;触屏设备回车一律换行 */
 function onFreeInputKeyDown(e: KeyboardEvent): void {
   if (e.key === 'Enter') {
-    if (e.isComposing || e.shiftKey) return
+    if (e.isComposing || e.shiftKey || isCoarsePointer) return
     e.preventDefault()
     sendInput()
   }
+}
+
+/** 全屏输入模态框开关 */
+const fullscreenInputOpen = ref(false)
+
+// 全屏输入模态框关闭后自动回到行动抽屉(发送场景除外:回合开始时抽屉本就该收起)
+watch(fullscreenInputOpen, (open) => {
+  if (!open && !streaming.value) optionsDrawerOpen.value = true
+})
+
+/** 全屏模式发送:关闭模态框并走统一发送链 */
+function sendFromFullscreen(): void {
+  if (!input.value.trim()) return
+  fullscreenInputOpen.value = false
+  sendInput()
 }
 
 // ---- 选项编辑:点编辑图标把该选项变成可编辑输入框,确认后作为行动发送 ----
@@ -1485,10 +1504,10 @@ function sendEditedOption(): void {
   void sendTurn(v)
 }
 
-/** 编辑框回车发送(输入法选词的合成回车不触发);Esc 取消由模板绑定 */
+/** 编辑框回车发送(输入法选词的合成回车不触发);Shift+Enter 换行;触屏设备回车一律换行;Esc 取消由模板绑定 */
 function onEditKeyDown(e: KeyboardEvent): void {
   if (e.key === 'Enter') {
-    if (e.isComposing || e.shiftKey) return
+    if (e.isComposing || e.shiftKey || isCoarsePointer) return
     e.preventDefault()
     sendEditedOption()
   } else if (e.key === 'Escape') {
@@ -2710,33 +2729,52 @@ watch([messages, streamDisplay], async () => {
               </template>
             </div>
 
-            <!-- 自由输入:与选项并列的行动入口(无生成选项时也可直接输入) -->
+            <!-- 自由输入:textarea 右下角悬浮「发送 / 全屏」按钮(无生成选项时也可直接输入) -->
             <p
               v-if="!options.length"
               class="text-xs text-neutral-400"
             >
               本回合暂无生成的选项，可直接自由输入行动。
             </p>
-            <div class="flex gap-2 border-t border-neutral-200 pt-2 dark:border-neutral-800">
-              <UTextarea
-                v-model="input"
-                autoresize
-                size="md"
-                :rows="1"
-                :maxrows="6"
-                class="min-w-0 flex-1"
-                :placeholder="started ? '自由输入你的行动…' : '开始故事后即可输入行动'"
-                :disabled="!started || streaming"
-                @keydown="onFreeInputKeyDown"
-              />
-              <UButton
-                icon="i-lucide-send"
-                color="primary"
-                :disabled="!started || !input.trim() || streaming"
-                @click="sendInput"
-              >
-                <span class="hidden sm:inline">行动</span>
-              </UButton>
+            <div class="border-t border-neutral-200 pt-2 dark:border-neutral-800">
+              <div class="relative">
+                <UTextarea
+                  v-model="input"
+                  autoresize
+                  size="md"
+                  :rows="1"
+                  :maxrows="6"
+                  class="min-w-0 w-full"
+                  :ui="{ base: 'pr-3 pb-11' }"
+                  :placeholder="started ? '自由输入你的行动…' : '开始故事后即可输入行动'"
+                  :disabled="!started || streaming"
+                  @keydown="onFreeInputKeyDown"
+                />
+                <div class="absolute bottom-2 right-2 flex flex-col gap-1">
+                  <UButton
+                    icon="i-lucide-maximize"
+                    size="xs"
+                    color="neutral"
+                    variant="soft"
+                    aria-label="全屏输入"
+                    :disabled="!started || streaming"
+                    @click="fullscreenInputOpen = true"
+                  />
+                  <UButton
+                    icon="i-lucide-send"
+                    size="xs"
+                    color="primary"
+                    aria-label="发送行动"
+                    :disabled="!started || !input.trim() || streaming"
+                    @click="sendInput"
+                  />
+                </div>
+              </div>
+
+              <!-- 换行提示:按设备类型给出对应键位 -->
+              <p class="mt-1 text-xs text-neutral-400">
+                {{ isCoarsePointer ? '回车可以换行' : 'Shift + 回车可以换行' }}
+              </p>
             </div>
 
             <!-- 收起:抽屉最下部 -->
@@ -2752,6 +2790,42 @@ watch([messages, streamDisplay], async () => {
           </div>
         </template>
       </UDrawer>
+
+      <!-- 全屏输入模态框:输入区占满宽高,键位规则与抽屉输入一致 -->
+      <UModal
+        v-model:open="fullscreenInputOpen"
+        fullscreen
+        title="自由输入行动"
+        :ui="{ body: 'min-h-0 flex-1 overflow-hidden' }"
+      >
+        <template #body>
+          <div class="flex h-full flex-col gap-3">
+            <UTextarea
+              v-model="input"
+              class="min-h-0 w-full flex-1"
+              size="lg"
+              :rows="12"
+              :ui="{ base: 'h-full resize-none' }"
+              :placeholder="started ? '自由输入你的行动…' : '开始故事后即可输入行动'"
+              :disabled="!started || streaming"
+              @keydown="onFreeInputKeyDown"
+            />
+            <div class="flex items-center justify-between gap-2">
+              <p class="text-xs text-neutral-400">
+                {{ isCoarsePointer ? '回车可以换行，输完点「发送行动」' : 'Shift + 回车可以换行，回车直接发送' }}
+              </p>
+              <UButton
+                icon="i-lucide-send"
+                color="primary"
+                :disabled="!started || !input.trim() || streaming"
+                @click="sendFromFullscreen"
+              >
+                发送行动
+              </UButton>
+            </div>
+          </div>
+        </template>
+      </UModal>
 
       <!-- 回滚菜单 -->
       <Teleport to="body">
