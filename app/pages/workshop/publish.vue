@@ -14,7 +14,7 @@ import { detectNovelEncoding } from '#shared/novel-encoding'
 import { SELLER_RATIO } from '#shared/store-skill'
 import { TOKEN_CNY_PER_M } from '#shared/quota-packages'
 
-// /workshop/publish — 发布 / 更新小说(创意工坊「书架」,需登录;上传 TXT 或粘贴文本)。
+// /workshop/publish — 发布 / 更新小说(创意工坊「书架」,需登录;上传 TXT/DOCX 文件或粘贴文本)。
 // 售出后发布者得售价 80%,平台收 20% 手续费,收益先挂账、在个人中心「收益」领取后到账;提交后进入管理员审核。
 // 可预览字数由发布者决定:买家未购买时可免费试读正文前 N 字(0=不开放试读)。
 // ?novel=<id> 为更新模式:提交新版本(版本号自动递增),审核通过前书架商城继续售卖现有版本。
@@ -98,7 +98,7 @@ watch(fileData, (file) => {
       fileMeta.value.totalChars = totalChars
       fileMeta.value.encoding = detected.encoding === 'utf-8' ? '' : detected.label
       fileMeta.value.garbled = detected.confidence === 'low'
-      fileMeta.value.preview = [...text].slice(0, 300).join('')
+      fileMeta.value.preview = text
     } catch (err) {
       fileMeta.value.error = (err as Error).message
     }
@@ -109,18 +109,26 @@ watch(fileData, (file) => {
 const fileInput = ref<HTMLInputElement | null>(null)
 /** 正在拖拽的文件行下标(null = 无拖拽) */
 const dragIndex = ref<number | null>(null)
+/** Word 文档扩展名(.docx 走 mammoth 提取;旧版二进制 .doc 无法在浏览器可靠解析,提交时给出转存提示) */
+const WORD_EXTENSIONS = ['.doc', '.docx']
+/** 文件选择器接受的全部扩展名 */
+const uploadExtensions = [...NOVEL_TXT_EXTENSIONS, ...WORD_EXTENSIONS]
 
-function isTxt(f: File): boolean {
-  return NOVEL_TXT_EXTENSIONS.includes(f.name.slice(f.name.lastIndexOf('.')).toLowerCase())
+function fileExt(f: File): string {
+  return f.name.slice(f.name.lastIndexOf('.')).toLowerCase()
+}
+
+function isAccepted(f: File): boolean {
+  return NOVEL_TXT_EXTENSIONS.includes(fileExt(f)) || WORD_EXTENSIONS.includes(fileExt(f))
 }
 
 function addFiles(list: File[]): void {
-  const txt = list.filter(isTxt)
-  if (list.length && !txt.length) {
-    fileMeta.value.error = '请选择 .txt 文本文件'
+  const ok = list.filter(isAccepted)
+  if (list.length && !ok.length) {
+    fileMeta.value.error = '请选择 .txt / .docx 文本文件'
     return
   }
-  uploadFiles.value = [...uploadFiles.value, ...txt]
+  uploadFiles.value = [...uploadFiles.value, ...ok]
 }
 
 function onPickFiles(e: Event): void {
@@ -150,7 +158,21 @@ function onDropAt(i: number): void {
   uploadFiles.value = next
 }
 
-/** 逐文件识别编码转 UTF-8,按当前排序合并成一个 TXT;合并后交给下方 watch(fileData) 统一校验 */
+/** 单文件 → 纯文本:txt 走编码识别;docx 走 mammoth 提取;旧版 .doc 浏览器端无法可靠解析 */
+async function fileToText(f: File): Promise<string> {
+  const ext = fileExt(f)
+  if (ext === '.doc') {
+    throw new Error(`「${f.name}」是旧版 .doc 格式,浏览器无法可靠解析;请用 Word 另存为 .docx 或 .txt 后重新添加`)
+  }
+  if (WORD_EXTENSIONS.includes(ext)) {
+    const mammoth = await import('mammoth')
+    const res = await mammoth.extractRawText({ arrayBuffer: await f.arrayBuffer() })
+    return res.value
+  }
+  return detectNovelEncoding(new Uint8Array(await f.arrayBuffer())).text
+}
+
+/** 逐文件提取纯文本(txt 识别编码 / docx 提取正文),按当前排序合并成一个 TXT;合并后交给 watch(fileData) 统一校验 */
 watch(uploadFiles, async (files) => {
   mergedFile.value = null
   fileMeta.value = { totalChars: 0, error: '', encoding: '', garbled: false, preview: '' }
@@ -158,8 +180,8 @@ watch(uploadFiles, async (files) => {
   const texts: string[] = []
   let totalBytes = 0
   for (const f of files) {
-    if (!isTxt(f)) {
-      fileMeta.value.error = `「${f.name}」不是 .txt 文本文件`
+    if (!isAccepted(f)) {
+      fileMeta.value.error = `「${f.name}」不是支持的格式(.txt / .docx)`
       return
     }
     totalBytes += f.size
@@ -168,9 +190,9 @@ watch(uploadFiles, async (files) => {
       return
     }
     try {
-      texts.push(detectNovelEncoding(new Uint8Array(await f.arrayBuffer())).text)
+      texts.push(await fileToText(f))
     } catch (err) {
-      fileMeta.value.error = `「${f.name}」读取失败:${(err as Error).message}`
+      fileMeta.value.error = (err as Error).message
       return
     }
   }
@@ -241,7 +263,7 @@ async function submit() {
     return
   }
   if (!fileData.value) {
-    toast.add({ title: mode.value === 'paste' ? '请粘贴小说正文' : '请选择要上传的 TXT 文件', color: 'error' })
+    toast.add({ title: mode.value === 'paste' ? '请粘贴小说正文' : '请选择要上传的文件', color: 'error' })
     return
   }
   if (fileMeta.value.error) {
@@ -295,7 +317,7 @@ async function submit() {
           将提交为 v{{ nextVersion }}:审核通过后替换书架商城版本;审核期间商城继续展示现有版本,已购者仍可下载旧版本
         </template>
         <template v-else>
-          上传 TXT 或粘贴文本即可上架售卖;可自由设定买家免费试读的字数,审核通过后进入书架商城
+          上传文件(TXT / DOCX)或粘贴文本即可上架售卖;可自由设定买家免费试读的字数,审核通过后进入书架商城
         </template>
       </p>
     </div>
@@ -430,7 +452,7 @@ async function submit() {
               <URadioGroup
                 v-model="mode"
                 :items="[
-                  { label: '上传 TXT', value: 'file' },
+                  { label: '上传文件', value: 'file' },
                   { label: '粘贴文本', value: 'paste' }
                 ]"
                 orientation="horizontal"
@@ -450,18 +472,18 @@ async function submit() {
                 name="i-lucide-file-up"
                 class="size-6 text-neutral-400"
               />
-              <p>点击选择或拖拽 .txt 文件到此处(支持多选)</p>
+              <p>点击选择或拖拽 .txt / .docx 文件到此处(支持多选)</p>
               <p class="text-xs text-neutral-400">
-                多个文件按下方排序自动合并成一个 TXT;自动识别编码并转为
-                UTF-8(支持 GBK / Big5 / UTF-16 等),合并后不超过
-                {{ MAX_NOVEL_TXT_BYTES / 1024 / 1024 }}MB,至少 {{ MIN_NOVEL_CHARS }} 字
+                <span class="block">Word 文档自动提取正文,多个文件按下方排序自动合并成一个 TXT</span>
+                <span class="block">txt 自动识别编码转为 UTF-8(支持 GBK / Big5 / UTF-16 等)</span>
+                <span class="block">合并后不超过 {{ MAX_NOVEL_TXT_BYTES / 1024 / 1024 }}MB,至少 {{ MIN_NOVEL_CHARS }} 字</span>
               </p>
             </div>
             <input
               ref="fileInput"
               type="file"
               multiple
-              :accept="NOVEL_TXT_EXTENSIONS.join(',')"
+              :accept="uploadExtensions.join(',')"
               class="hidden"
               @change="onPickFiles"
             >
@@ -547,7 +569,7 @@ async function submit() {
               class="mt-2 rounded-lg border border-neutral-200 dark:border-neutral-800"
             >
               <summary class="cursor-pointer px-3 py-1.5 text-xs text-neutral-500 select-none">
-                正文开头预览(前 300 字,请确认无乱码)
+                正文预览(请确认无乱码)
               </summary>
               <p class="max-h-48 overflow-y-auto border-t border-neutral-200 px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap text-neutral-700 dark:border-neutral-800 dark:text-neutral-300">
                 {{ fileMeta.preview }}
