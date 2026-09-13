@@ -306,7 +306,7 @@ function flushOpeningGenCost() {
 }
 const costModalOpen = ref(false)
 /** 顶部状态面板(地点/时间等 6 项)折叠开关 */
-const statsOpen = ref(true)
+const statsOpen = ref(false)
 /** 饼图色板(按序循环取色;与阶段/细项共用,保证图例颜色一致) */
 const PIE_COLORS = ['#60a5fa', '#f472b6', '#fbbf24', '#34d399', '#a78bfa', '#f87171', '#22d3ee', '#fb923c', '#a3e635', '#f472b6', '#2dd4bf', '#c084fc']
 /** 由 token 数值生成 conic-gradient(跳过 ≤0 的扇区;全 0 返回中性色环) */
@@ -882,11 +882,15 @@ async function savePointNow(snapState = snapshotState()) {
  * 选项为空时自动补生成(最多再补 2 次),不打扰玩家;补生成的用量同样如实入账。
  * 402 余额不足/400 参数错误重试必然复现,直接放行报错;取消(CancelledError)向上抛,不重试。
  */
-async function runOptionsPhase(
+/**
+ * 选项阶段的消息组装(收尾与「换一波选项」共用):
+ * 段位底牌 + 摘要/状态/上文剧情;flavor 为额外的风格指令(如换一波的加猛要求)。
+ */
+function buildOptionsPhaseMessages(
   narratorMsg: LocalGame['messages'][number],
-  narratorText: string
-): Promise<void> {
-  if (!game.value) throw new Error('会话已丢失')
+  narratorText: string,
+  flavor = ''
+): { role: 'system' | 'user', content: string }[] {
   // 段位底牌:收尾器自身没有细纲上下文,不告知当前段与后段,current_beat 只能盲猜(幻觉跳段)或省略(段位停滞)
   const curBeat = storylineBeats.value[plotBeat.value]
   const curSeg = work.value?.segments[plotBeat.value]
@@ -895,14 +899,14 @@ async function runOptionsPhase(
   const beatGround = curBeat
     ? `\n当前细纲段:第 ${plotBeat.value + 1} 段「${curSeg?.canon.title || curBeat.label}」(情节走向:${curSeg?.canon.beat || curBeat.summary})${nxtBeat ? `\n后一段:第 ${plotBeat.value + 2} 段「${nxtSeg?.canon.title || nxtBeat.label}」(情节走向:${nxtSeg?.canon.beat || nxtBeat.summary})` : '\n(当前已是最后一段,无后段)'}`
     : ''
-  const optionsMessages = [
+  return [
     {
       role: 'system' as const,
-      content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3~6 个下一回合的行动选项(数量按剧情节奏灵活定:重大抉择/多线分岔取 5~6 个,常规推进取 3~4 个;不为凑数硬编无意义选项)、本轮对游戏状态的增量变化(相对当前值),以及整局剧情摘要。\n摘要必填并每回合滚动重写(它是长程记忆,只做增量更新,不要整体省略);人物间新建立的剧情事实(关系变化、承诺约定、奖惩结果、重要物品、身份暴露等)必须写入对应角色的 character_states 字段——状态才是长期记忆,只写摘要等于遗忘。\n输出 JSON:\n${turnOptionsSchema()}`
+      content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3~6 个下一回合的行动选项(数量按剧情节奏灵活定:重大抉择/多线分岔取 5~6 个,常规推进取 3~4 个;不为凑数硬编无意义选项)、本轮对游戏状态的增量变化(相对当前值),以及整局剧情摘要。${flavor}\n摘要必填并每回合滚动重写(它是长程记忆,只做增量更新,不要整体省略);人物间新建立的剧情事实(关系变化、承诺约定、奖惩结果、重要物品、身份暴露等)必须写入对应角色的 character_states 字段——状态才是长期记忆,只写摘要等于遗忘。\n输出 JSON:\n${turnOptionsSchema()}`
     },
     {
       role: 'user' as const,
-      content: `当前剧情摘要:${game.value.summary?.text ?? '无'}\n当前状态:${JSON.stringify(stateForPrompt(state.value))}${beatGround}\n上文剧情:\n${(
+      content: `当前剧情摘要:${game.value?.summary?.text ?? '无'}\n当前状态:${JSON.stringify(stateForPrompt(state.value))}${beatGround}\n上文剧情:\n${(
         // 并行调用时旁白尚未入列(见 sendTurn),显式补入,保证上下文与串行时一致
         messages.value.at(-1)?.id === narratorMsg.id
           ? messages.value.slice(-30)
@@ -910,6 +914,22 @@ async function runOptionsPhase(
       ).map(m => m.content).join('\n')}`
     }
   ]
+}
+
+/**
+ * 选项 + 状态变化 + 剧情摘要(结构化收尾)。独立成可重入函数:
+ * 收尾失败/选项为空时的重试只需补跑本阶段,不重发叙事(旁白已上屏,不重复扣费)。
+ * 收尾输出偶尔不是合法 JSON(模型在字符串里夹带未转义引号等):此时该次调用已消耗 token,
+ * 静默重试一次(玩家只看到骨架屏多等几秒);失败尝试与重试的用量都入账,避免少扣。
+ * 选项为空时自动补生成(最多再补 2 次),不打扰玩家;补生成的用量同样如实入账。
+ * 402 余额不足/400 参数错误重试必然复现,直接放行报错;取消(CancelledError)向上抛,不重试。
+ */
+async function runOptionsPhase(
+  narratorMsg: LocalGame['messages'][number],
+  narratorText: string
+): Promise<void> {
+  if (!game.value) throw new Error('会话已丢失')
+  const optionsMessages = buildOptionsPhaseMessages(narratorMsg, narratorText)
   // 不设 maxTokens:高温下收尾输出(3~6 个选项 + state_delta + 800 字摘要)会顶到 1200 截断,
   // 截断点在字符串中段时 tryRepairTruncated 无法修复 → 必失败;交给模型自然收尾,平台默认上限足够
   // 收尾器独立低温:结构化 JSON 输出在叙事高温下空选项/截断概率显著上升(重试是真金 token);
@@ -972,18 +992,8 @@ async function runOptionsPhase(
   if (options.value.length === 0) {
     toast.add({ title: '本回合没有生成选项,可重新生成或直接输入行动', color: 'warning' })
   }
-  // 卡住引导(§7.4):段内长时间无节点推进且进度 <40% 时,混入指向下一未触发节点的引导选项;
-  // 节点全部达成后的段尾停滞,引导改为「收束进入后一段」(仍只是建议)
-  const nextBeatInfo = storylineBeats.value[plotBeat.value + 1]
-  const guidance = nodeStallGuidance(
-    state.value,
-    v2Segment.value?.canon.节点,
-    nextBeatInfo ? `${nextBeatInfo.label ? `「${nextBeatInfo.label}」` : ''}${nextBeatInfo.summary}` : null
-  )
-  if (guidance && options.value.length > 0) {
-    options.value = [{ idx: 0, text: guidance }, ...options.value.map((o, i) => ({ ...o, idx: i + 1 }))]
-    game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(options.value))
-  }
+  // 卡住引导(§7.4):段内长时间无节点推进时混入引导选项(详见 prependStallGuidance)
+  prependStallGuidance(narratorMsg.id)
 
   // 消耗统计:追加选项收尾大项(真实 usage,含重试;叙事/开场/播种大项已先行写入)
   const optTotal = retryTokens + (optRes.usage?.totalTokens ?? 0)
@@ -1001,6 +1011,69 @@ async function runOptionsPhase(
   // 在这里 persist 会把「结算已写入、旁白缺失」的错位快照固化——续玩恢复时末条行动看似未获回应,
   // 「重试本回合」会对已结算回合二次应用 state_delta,导致后续剧情失控。落盘统一由调用方在
   // 旁白入列后的回合闭环处执行(sendTurn / retryOptionsPhase)。
+}
+
+/** 卡住引导(§7.4):段内长时间无节点推进且进度 <40% 时,混入指向下一未触发节点的引导选项;
+ *  节点全部达成后的段尾停滞,引导改为「收束进入后一段」(仍只是建议)。收尾与换一波共用。 */
+function prependStallGuidance(narratorMsgId: string): void {
+  if (!game.value) return
+  const nextBeatInfo = storylineBeats.value[plotBeat.value + 1]
+  const guidance = nodeStallGuidance(
+    state.value,
+    v2Segment.value?.canon.节点,
+    nextBeatInfo ? `${nextBeatInfo.label ? `「${nextBeatInfo.label}」` : ''}${nextBeatInfo.summary}` : null
+  )
+  if (guidance && options.value.length > 0) {
+    options.value = [{ idx: 0, text: guidance }, ...options.value.map((o, i) => ({ ...o, idx: i + 1 }))]
+    if (!game.value.optionsByMessage) game.value.optionsByMessage = {}
+    game.value.optionsByMessage[narratorMsgId] = JSON.parse(JSON.stringify(options.value))
+  }
+}
+
+/** 「换一波选项」进行中(按钮转圈,选项/编辑按钮禁点) */
+const regeneratingOptions = ref(false)
+
+/**
+ * 换一波选项:只重生成选项,不重跑状态合并/摘要/段位推进(收尾已应用过 state_delta,
+ * 重跑会二次应用)。加猛提示词 + 高温,要求与上一批明显不同;失败 toast 且保留原选项。
+ */
+async function regenerateOptions() {
+  if (streaming.value || regeneratingOptions.value || !game.value) return
+  const narratorMsg = messages.value.at(-1)
+  if (!narratorMsg || narratorMsg.role !== 'narrator') return
+  regeneratingOptions.value = true
+  try {
+    const prevList = options.value.map(o => o.text).join('\n')
+    const messages2 = buildOptionsPhaseMessages(
+      narratorMsg,
+      narratorMsg.content,
+      `\n本批为「加猛版」:在既有剧情走向内生成更激进、更大胆、更出格的选项——更激烈的冲突与对抗、更越界的挑逗与支配、更冒险的赌注与更接近不可逆的决定;思路要出人意料,可以引入上一批完全没有的方向。仍须贴合当前剧情与人物关系,不写剧情无法成立的内容。\n上一批选项(全部不要重复,也不要换皮重复):\n${prevList}`
+    )
+    const res = await aiChatJson<TurnStructured>(messages2, { temperature: 0.9 }, {
+      onLive: (info) => {
+        liveTokens.value = info.tokens
+        liveSpeed.value = info.speed
+      }
+    })
+    if (game.value) void addWorkTokensSmart(game.value.workId, res.usage?.totalTokens ?? 0)
+    const opts = res.ok
+      ? (res.data?.options ?? []).filter(t => typeof t === 'string' && t.trim()).map((t, i) => ({ idx: i, text: String(t) }))
+      : []
+    if (!opts.length) {
+      toast.add({ title: '换一波失败', description: res.ok ? '没有生成出有效选项,已保留原选项' : res.message, color: 'error' })
+      return
+    }
+    options.value = opts
+    if (game.value) {
+      if (!game.value.optionsByMessage) game.value.optionsByMessage = {}
+      game.value.optionsByMessage[narratorMsg.id] = JSON.parse(JSON.stringify(opts))
+    }
+    prependStallGuidance(narratorMsg.id)
+  } catch (e) {
+    toast.add({ title: '换一波失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    regeneratingOptions.value = false
+  }
 }
 
 /** 收尾失败/选项为空后的重试:旁白已上屏,只补跑选项阶段 */
@@ -1415,8 +1488,37 @@ function onEditKeyDown(e: KeyboardEvent): void {
   }
 }
 
-// 选项刷新(新回合/停止生成/回滚重建)时退出编辑态,避免 idx 撞上新一轮选项误入编辑模式
-watch(options, () => cancelEditOption())
+/** 行动选项抽屉(底部滑出;新选项就绪自动展开,回合生成中收起) */
+const optionsDrawerOpen = ref(false)
+
+// 选项刷新(新回合/换一波/回滚重建)时退出编辑态,避免 idx 撞上新一轮选项误入编辑模式;
+// 有选项即自动展开抽屉,选项清空则收起
+watch(options, (list) => {
+  cancelEditOption()
+  optionsDrawerOpen.value = list.length > 0
+})
+
+// 回合开始生成时收起抽屉(旧选项已失效;新选项就绪后 watch(options) 会再展开)
+watch(streaming, (on) => {
+  if (on) optionsDrawerOpen.value = false
+})
+
+// 点击抽屉外部自动收起(:modal="false" 不拦截外部交互,自行监听;抽屉内部与「开始行动」触发按钮除外)
+function onDocPointerDown(e: PointerEvent): void {
+  const target = e.target as Element | null
+  if (!target) return
+  if (target.closest('[data-options-drawer]') || target.closest('[data-options-drawer-trigger]')) return
+  optionsDrawerOpen.value = false
+}
+
+watch(optionsDrawerOpen, (open) => {
+  if (typeof document === 'undefined') return
+  if (open) document.addEventListener('pointerdown', onDocPointerDown)
+  else document.removeEventListener('pointerdown', onDocPointerDown)
+})
+onUnmounted(() => {
+  if (typeof document !== 'undefined') document.removeEventListener('pointerdown', onDocPointerDown)
+})
 
 // ---- 回滚(纯本地:存盘点恢复) ----
 
@@ -2434,105 +2536,23 @@ watch([messages, streamDisplay], async () => {
         </template>
       </div>
 
-      <!-- 底部固定:选项或「行动中」占位 + 自由输入 -->
+      <!-- 底部固定:开始行动(打开行动抽屉)/ 生成中停止 + 异常恢复入口 -->
       <footer class="shrink-0 space-y-2 pb-3 pt-3">
-        <!-- 选项按钮:每项带编辑入口,编辑态原地变成输入框(回车发送 / Esc 取消) -->
+        <!-- 上一条行动未获回应(叙事失败):重试入口 -->
         <div
-          v-if="options.length && !streaming"
-          class="grid gap-2"
-        >
-          <template
-            v-for="(o, i) in options"
-            :key="o.idx"
-          >
-            <!-- 编辑态:autoresize 随内容自动增高,超过 6 行内部滚动 -->
-            <div
-              v-if="editingOption === o.idx"
-              class="flex items-stretch gap-1"
-            >
-              <UTextarea
-                v-model="editingText"
-                autoresize
-                autofocus
-                size="md"
-                :rows="1"
-                :maxrows="6"
-                class="min-w-0 flex-1"
-                @keydown="onEditKeyDown"
-              />
-              <UButton
-                icon="i-lucide-x"
-                color="neutral"
-                variant="soft"
-                aria-label="取消编辑"
-                @click="cancelEditOption"
-              />
-              <UButton
-                icon="i-lucide-send"
-                color="primary"
-                :disabled="!editingText.trim()"
-                aria-label="发送修改后的行动"
-                @click="sendEditedOption"
-              />
-            </div>
-            <!-- 展示态 -->
-            <div
-              v-else
-              class="flex items-stretch gap-1"
-            >
-              <UButton
-                color="neutral"
-                variant="soft"
-                class="min-w-0 flex-1 h-auto py-2.5 leading-snug option-fade-in"
-                :style="{ animationDelay: `${i * 120}ms` }"
-                @click="pickOption(o.text)"
-              >
-                <span class="flex w-full items-center gap-2">
-                  <span class="shrink-0 font-semibold text-neutral-400">&gt;</span>
-                  <span class="min-w-0 flex-1 whitespace-pre-line text-left">{{ o.text }}</span>
-                  <UIcon
-                    name="i-lucide-arrow-right"
-                    class="size-4 shrink-0 text-neutral-400"
-                  />
-                </span>
-              </UButton>
-              <UButton
-                icon="i-lucide-pencil"
-                color="neutral"
-                variant="soft"
-                class="shrink-0"
-                aria-label="编辑此选项"
-                @click="startEditOption(o.idx, o.text)"
-              />
-            </div>
-          </template>
-        </div>
-
-        <!-- 无选项时占位:区分「AI 生成中」「等你行动」「行动未获回应」三种状态 -->
-        <div
-          v-else
+          v-if="pendingAction && !streaming"
           class="flex h-11 items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-300 text-sm text-neutral-400 dark:border-neutral-700"
         >
-          <template v-if="streaming">
-            <UIcon
-              name="i-lucide-loader-circle"
-              class="size-4 animate-spin"
-            />
-            {{ awaitingOptions ? '正在生成选项…' : '生成剧情中…' }}
-          </template>
-          <template v-else>
-            <UIcon name="i-lucide-hourglass" />
-            {{ pendingAction ? '上一条行动未获回应' : '请选择行动或自由输入' }}
-            <UButton
-              v-if="pendingAction"
-              label="重试本回合"
-              icon="i-lucide-refresh-cw"
-              size="xs"
-              color="neutral"
-              variant="soft"
-              @click="retryFailedTurn"
-            />
-          </template>
+          <UIcon name="i-lucide-hourglass" />
+          上一条行动未获回应
+          <UButton
+            label="重试本回合"
+            icon="i-lucide-refresh-cw"
+            size="xs"
+            color="neutral"
+            variant="soft"
+            @click="retryFailedTurn"
+          />
         </div>
 
         <!-- 旁白已上屏但选项缺失/为空:重新生成选项 -->
@@ -2554,33 +2574,171 @@ watch([messages, streamDisplay], async () => {
           点击自己的行动气泡，可回滚到该行动之前重新选择。
         </p>
 
-        <div class="flex gap-2">
-          <UInput
-            v-model="input"
-            class="flex-1"
-            :placeholder="started ? '自由输入你的行动…' : '开始故事后即可输入行动'"
-            :disabled="!started || streaming"
-            @keydown.enter="sendInput"
-          />
-          <UButton
-            v-if="streaming"
-            :label="narrReady ? '快进' : '停止'"
-            :icon="narrReady ? 'i-lucide-chevrons-right' : 'i-lucide-square'"
-            :color="narrReady ? 'primary' : 'error'"
-            variant="outline"
-            @click="stopTurn"
-          />
-          <UButton
-            v-else
-            icon="i-lucide-send"
-            color="primary"
-            :disabled="!started || !input.trim()"
-            @click="sendInput"
-          >
-            行动
-          </UButton>
-        </div>
+        <!-- 开始行动:打开行动抽屉(选项 + 自由输入),样式同行动发送按钮;生成中切换为停止/快进 -->
+        <UButton
+          v-if="!streaming"
+          block
+          icon="i-lucide-send"
+          color="primary"
+          :disabled="!started"
+          data-options-drawer-trigger
+          @click="optionsDrawerOpen = true"
+        >
+          开始行动
+        </UButton>
+        <UButton
+          v-else
+          block
+          :label="narrReady ? '快进' : '停止'"
+          :icon="narrReady ? 'i-lucide-chevrons-right' : 'i-lucide-square'"
+          :color="narrReady ? 'primary' : 'error'"
+          variant="outline"
+          @click="stopTurn"
+        />
       </footer>
+
+      <!-- 行动选项抽屉:底部滑出、无覆盖层、不锁定页面交互;新选项就绪自动展开 -->
+      <UDrawer
+        v-model:open="optionsDrawerOpen"
+        :overlay="false"
+        :modal="false"
+      >
+        <template #content>
+          <div
+            data-options-drawer
+            class="flex max-h-[60vh] flex-col gap-2 p-3"
+          >
+            <!-- 标题行:行动选项 + 换一波 -->
+            <div class="flex items-center justify-between">
+              <p class="flex items-center gap-1.5 text-xs font-semibold text-neutral-500 dark:text-neutral-400">
+                <UIcon
+                  name="i-lucide-list-checks"
+                  class="size-3.5"
+                />
+                行动选项
+              </p>
+              <UButton
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                icon="i-lucide-dices"
+                :loading="regeneratingOptions"
+                :disabled="regeneratingOptions"
+                @click="regenerateOptions"
+              >
+                换一波选项
+              </UButton>
+            </div>
+
+            <!-- 选项按钮:每项带编辑入口,编辑态原地变成输入框(回车发送 / Esc 取消);超高内部滚动 -->
+            <div class="grid gap-2 overflow-y-auto">
+              <template
+                v-for="(o, i) in options"
+                :key="o.idx"
+              >
+                <!-- 编辑态:autoresize 随内容自动增高,超过 6 行内部滚动 -->
+                <div
+                  v-if="editingOption === o.idx"
+                  class="flex items-stretch gap-1"
+                >
+                  <UTextarea
+                    v-model="editingText"
+                    autoresize
+                    autofocus
+                    size="md"
+                    :rows="1"
+                    :maxrows="6"
+                    class="min-w-0 flex-1"
+                    @keydown="onEditKeyDown"
+                  />
+                  <UButton
+                    icon="i-lucide-x"
+                    color="neutral"
+                    variant="soft"
+                    aria-label="取消编辑"
+                    @click="cancelEditOption"
+                  />
+                  <UButton
+                    icon="i-lucide-send"
+                    color="primary"
+                    :disabled="!editingText.trim()"
+                    aria-label="发送修改后的行动"
+                    @click="sendEditedOption"
+                  />
+                </div>
+                <!-- 展示态 -->
+                <div
+                  v-else
+                  class="flex items-stretch gap-1"
+                >
+                  <UButton
+                    color="neutral"
+                    variant="soft"
+                    :disabled="regeneratingOptions"
+                    class="min-w-0 flex-1 h-auto py-2.5 leading-snug option-fade-in"
+                    :style="{ animationDelay: `${i * 120}ms` }"
+                    @click="pickOption(o.text)"
+                  >
+                    <span class="flex w-full items-center gap-2">
+                      <span class="shrink-0 font-semibold text-neutral-400">&gt;</span>
+                      <span class="min-w-0 flex-1 whitespace-pre-line text-left">{{ o.text }}</span>
+                      <UIcon
+                        name="i-lucide-arrow-right"
+                        class="size-4 shrink-0 text-neutral-400"
+                      />
+                    </span>
+                  </UButton>
+                  <UButton
+                    icon="i-lucide-pencil"
+                    color="neutral"
+                    variant="soft"
+                    class="shrink-0"
+                    :disabled="regeneratingOptions"
+                    aria-label="编辑此选项"
+                    @click="startEditOption(o.idx, o.text)"
+                  />
+                </div>
+              </template>
+            </div>
+
+            <!-- 自由输入:与选项并列的行动入口(无生成选项时也可直接输入) -->
+            <p
+              v-if="!options.length"
+              class="text-xs text-neutral-400"
+            >
+              本回合暂无生成的选项，可直接自由输入行动。
+            </p>
+            <div class="flex gap-2 border-t border-neutral-200 pt-2 dark:border-neutral-800">
+              <UInput
+                v-model="input"
+                class="flex-1"
+                :placeholder="started ? '自由输入你的行动…' : '开始故事后即可输入行动'"
+                :disabled="!started || streaming"
+                @keydown.enter="sendInput"
+              />
+              <UButton
+                icon="i-lucide-send"
+                color="primary"
+                :disabled="!started || !input.trim() || streaming"
+                @click="sendInput"
+              >
+                行动
+              </UButton>
+            </div>
+
+            <!-- 收起:抽屉最下部 -->
+            <UButton
+              block
+              color="primary"
+              variant="subtle"
+              trailing-icon="i-lucide-chevron-down"
+              @click="optionsDrawerOpen = false"
+            >
+              收起
+            </UButton>
+          </div>
+        </template>
+      </UDrawer>
 
       <!-- 回滚菜单 -->
       <Teleport to="body">
