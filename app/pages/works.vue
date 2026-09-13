@@ -4,7 +4,7 @@ import type { TabsItem, DropdownMenuItem } from '@nuxt/ui'
 import { listWorks, getWork, saveWork, deleteWork, parseLocalNovel, toContentSegments, isLegacyChapteredWork } from '../utils/worldGen'
 import { listBook2, loadBook2AsWork, deleteBook2, loadBook2RawZip, importBook2Zip, loadWorkView, updateBook2World } from '../utils/bookStoreV2'
 import { NOVEL_ENCODING_LABELS } from '#shared/novel-encoding'
-import { listLocalGames, deleteLocalGame } from '../utils/gameStore'
+import { listLocalGames, deleteLocalGame, listGameMessages } from '../utils/gameStore'
 import { deleteGamePoints } from '../utils/gameSaveStore'
 import { importWorkFromZip, downloadWorkAsZip } from '../utils/shareZip'
 import { downloadWorkAsTxt, downloadGameAsTxt } from '../utils/exportStory'
@@ -402,23 +402,44 @@ const exportSessionGroups = computed(() => {
   return [...byChar.entries()].map(([name, list]) => ({ name, list }))
 })
 
-/** 会话回合数 = 旁白条数(每回合一条旁白) */
-function turnsOf(g: LocalGame): number {
-  return g.messages.filter(m => m.role !== 'user').length
+/** 会话消息缓存(导出弹窗打开时从 game-messages 表按会话拉取;回合数展示与导出共用) */
+const exportSessionMsgs = ref<Record<string, LocalGame['messages']>>({})
+
+/** 消息行 → 完整消息形状(game-messages 行剥离 gameId/换 msgId) */
+function rowsToMessages(rows: Awaited<ReturnType<typeof listGameMessages>>): LocalGame['messages'] {
+  return rows.map(r => ({ id: r.msgId, idx: r.idx, role: r.role, speaker: r.speaker, content: r.content })) as LocalGame['messages']
+}
+
+/** 打开导出弹窗时拉取该作品全部会话的消息(v14 起消息在独立表,列表行不带消息体) */
+async function loadExportSessionMessages(workId: string): Promise<void> {
+  const gs = games.value.filter(g => g.workId === workId)
+  const entries = await Promise.all(gs.map(async (g) => {
+    const rows = await listGameMessages(g.id)
+    return [g.id, rowsToMessages(rows)] as const
+  }))
+  exportSessionMsgs.value = Object.fromEntries(entries)
+}
+
+/** 会话回合标签 = 旁白条数(每回合一条旁白);消息未加载完成时显示省略号 */
+function turnsLabel(g: LocalGame): string {
+  const msgs = exportSessionMsgs.value[g.id]
+  return msgs ? `${msgs.filter(m => m.role !== 'user').length} 回合` : '…'
 }
 
 function openExportSession(w: BookView) {
   exportSessionWork.value = w
   exportSessionOpen.value = true
+  void loadExportSessionMessages(w.id)
 }
 
-function exportSessionTxt(g: LocalGame) {
+async function exportSessionTxt(g: LocalGame) {
   const work = exportSessionWork.value
   if (!work) return
+  const messages = exportSessionMsgs.value[g.id] ?? rowsToMessages(await listGameMessages(g.id))
   const ok = downloadGameAsTxt({
     title: work.title,
     playerName: g.characterName,
-    messages: g.messages
+    messages
   })
   if (!ok) toast.add({ title: '该会话还没有可导出的剧情', description: '先产生一段旁白后再导出', color: 'warning' })
 }
@@ -1826,7 +1847,7 @@ async function saveImported(title: string, chapters: ChapterSegment[], encoding?
                 @click="exportSessionTxt(g)"
               >
                 <span class="shrink-0 text-xs tabular-nums text-neutral-500">
-                  {{ turnsOf(g) }} 回合
+                  {{ turnsLabel(g) }}
                 </span>
                 <span class="min-w-0 flex-1 truncate text-right text-xs text-neutral-500">
                   {{ fmtTime(g.updatedAt) }}
