@@ -785,7 +785,7 @@ export interface GameOptionRow {
   effects: string | null
 }
 
-/** 单回合结构化输出:3 个选项 + 状态变化(轻量引擎按白名单合并) */
+/** 单回合结构化输出:3~6 个选项 + 状态变化(轻量引擎按白名单合并) */
 export interface TurnStructured {
   options: string[]
   state_delta: {

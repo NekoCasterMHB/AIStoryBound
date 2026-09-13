@@ -47,7 +47,7 @@ function clamp(v: number, min: number, max: number): number {
  */
 export function turnOptionsSchema(): string {
   return `{
-  "options": ["选项1", "选项2", "选项3"],
+  "options": ["选项1", "选项2", "选项3", "...(共 3~6 个,数量按剧情需要灵活定)"],
   "state_delta": {
     "location": "地点是否变化(string,无变化省略)",
     "time": "时间描述是否变化(string,无变化省略)",

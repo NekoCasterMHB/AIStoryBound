@@ -898,7 +898,7 @@ async function runOptionsPhase(
   const optionsMessages = [
     {
       role: 'system' as const,
-      content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3 个下一回合的行动选项、本轮对游戏状态的增量变化(相对当前值),以及整局剧情摘要。\n摘要必填并每回合滚动重写(它是长程记忆,只做增量更新,不要整体省略);人物间新建立的剧情事实(关系变化、承诺约定、奖惩结果、重要物品、身份暴露等)必须写入对应角色的 character_states 字段——状态才是长期记忆,只写摘要等于遗忘。\n输出 JSON:\n${turnOptionsSchema()}`
+      content: `你是回合收尾器。基于玩家的行动与上文剧情,给出 3~6 个下一回合的行动选项(数量按剧情节奏灵活定:重大抉择/多线分岔取 5~6 个,常规推进取 3~4 个;不为凑数硬编无意义选项)、本轮对游戏状态的增量变化(相对当前值),以及整局剧情摘要。\n摘要必填并每回合滚动重写(它是长程记忆,只做增量更新,不要整体省略);人物间新建立的剧情事实(关系变化、承诺约定、奖惩结果、重要物品、身份暴露等)必须写入对应角色的 character_states 字段——状态才是长期记忆,只写摘要等于遗忘。\n输出 JSON:\n${turnOptionsSchema()}`
     },
     {
       role: 'user' as const,
@@ -910,7 +910,7 @@ async function runOptionsPhase(
       ).map(m => m.content).join('\n')}`
     }
   ]
-  // 不设 maxTokens:高温下收尾输出(3 个选项 + state_delta + 800 字摘要)会顶到 1200 截断,
+  // 不设 maxTokens:高温下收尾输出(3~6 个选项 + state_delta + 800 字摘要)会顶到 1200 截断,
   // 截断点在字符串中段时 tryRepairTruncated 无法修复 → 必失败;交给模型自然收尾,平台默认上限足够
   // 收尾器独立低温:结构化 JSON 输出在叙事高温下空选项/截断概率显著上升(重试是真金 token);
   // 摘要/选项/状态增量不需要叙事的发散度
@@ -1379,6 +1379,45 @@ function sendInput() {
   void sendTurn(v)
 }
 
+// ---- 选项编辑:点编辑图标把该选项变成可编辑输入框,确认后作为行动发送 ----
+
+/** 正在编辑的选项 idx(null = 无编辑态)与其草稿 */
+const editingOption = ref<number | null>(null)
+const editingText = ref('')
+
+function startEditOption(idx: number, text: string): void {
+  editingOption.value = idx
+  editingText.value = text
+}
+
+function cancelEditOption(): void {
+  editingOption.value = null
+  editingText.value = ''
+}
+
+function sendEditedOption(): void {
+  const v = editingText.value.trim()
+  if (!v) return
+  cancelEditOption()
+  input.value = ''
+  void sendTurn(v)
+}
+
+/** 编辑框回车发送(输入法选词的合成回车不触发);Esc 取消由模板绑定 */
+function onEditKeyDown(e: KeyboardEvent): void {
+  if (e.key === 'Enter') {
+    if (e.isComposing || e.shiftKey) return
+    e.preventDefault()
+    sendEditedOption()
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    cancelEditOption()
+  }
+}
+
+// 选项刷新(新回合/停止生成/回滚重建)时退出编辑态,避免 idx 撞上新一轮选项误入编辑模式
+watch(options, () => cancelEditOption())
+
 // ---- 回滚(纯本地:存盘点恢复) ----
 
 interface RollbackMenuState { x: number, y: number, msgId: string }
@@ -1438,6 +1477,11 @@ async function rollbackAction() {
   // 回填恢复点最后一条旁白挂载的选项:回滚后可直接继续选择,不必只能自由输入
   const restoredNarr = [...messages.value].reverse().find(m => m.role === 'narrator')
   options.value = restoredNarr ? (game.value?.optionsByMessage?.[restoredNarr.id] ?? []) : []
+  // 回滚的行动是自定义输入(不在这步的选项里)时,把原文回填输入框,方便修改后重发;
+  // 选项点击的行动不回填(选项已原样恢复,重选即可)
+  if (msg.content.trim() && !options.value.some(o => o.text === msg.content)) {
+    input.value = msg.content
+  }
   // 回滚到开局(历史清空)时重建首回合的段首原文窗口:beatText 已在首回合后瘦身,
   // 不重建的话重演首回合只剩细纲摘要,丢失【段首原文】锚点
   if (messages.value.length === 0) rebuildOpeningWindow()
@@ -2392,29 +2436,76 @@ watch([messages, streamDisplay], async () => {
 
       <!-- 底部固定:选项或「行动中」占位 + 自由输入 -->
       <footer class="shrink-0 space-y-2 pb-3 pt-3">
-        <!-- 选项按钮 -->
+        <!-- 选项按钮:每项带编辑入口,编辑态原地变成输入框(回车发送 / Esc 取消) -->
         <div
           v-if="options.length && !streaming"
           class="grid gap-2"
         >
-          <UButton
+          <template
             v-for="(o, i) in options"
             :key="o.idx"
-            color="neutral"
-            variant="soft"
-            class="h-auto py-2.5 leading-snug option-fade-in"
-            :style="{ animationDelay: `${i * 120}ms` }"
-            @click="pickOption(o.text)"
           >
-            <span class="flex w-full items-center gap-2">
-              <span class="shrink-0 font-semibold text-neutral-400">&gt;</span>
-              <span class="min-w-0 flex-1 whitespace-pre-line text-left">{{ o.text }}</span>
-              <UIcon
-                name="i-lucide-arrow-right"
-                class="size-4 shrink-0 text-neutral-400"
+            <!-- 编辑态:autoresize 随内容自动增高,超过 6 行内部滚动 -->
+            <div
+              v-if="editingOption === o.idx"
+              class="flex items-stretch gap-1"
+            >
+              <UTextarea
+                v-model="editingText"
+                autoresize
+                autofocus
+                size="md"
+                :rows="1"
+                :maxrows="6"
+                class="min-w-0 flex-1"
+                @keydown="onEditKeyDown"
               />
-            </span>
-          </UButton>
+              <UButton
+                icon="i-lucide-x"
+                color="neutral"
+                variant="soft"
+                aria-label="取消编辑"
+                @click="cancelEditOption"
+              />
+              <UButton
+                icon="i-lucide-send"
+                color="primary"
+                :disabled="!editingText.trim()"
+                aria-label="发送修改后的行动"
+                @click="sendEditedOption"
+              />
+            </div>
+            <!-- 展示态 -->
+            <div
+              v-else
+              class="flex items-stretch gap-1"
+            >
+              <UButton
+                color="neutral"
+                variant="soft"
+                class="min-w-0 flex-1 h-auto py-2.5 leading-snug option-fade-in"
+                :style="{ animationDelay: `${i * 120}ms` }"
+                @click="pickOption(o.text)"
+              >
+                <span class="flex w-full items-center gap-2">
+                  <span class="shrink-0 font-semibold text-neutral-400">&gt;</span>
+                  <span class="min-w-0 flex-1 whitespace-pre-line text-left">{{ o.text }}</span>
+                  <UIcon
+                    name="i-lucide-arrow-right"
+                    class="size-4 shrink-0 text-neutral-400"
+                  />
+                </span>
+              </UButton>
+              <UButton
+                icon="i-lucide-pencil"
+                color="neutral"
+                variant="soft"
+                class="shrink-0"
+                aria-label="编辑此选项"
+                @click="startEditOption(o.idx, o.text)"
+              />
+            </div>
+          </template>
         </div>
 
         <!-- 无选项时占位:区分「AI 生成中」「等你行动」「行动未获回应」三种状态 -->
