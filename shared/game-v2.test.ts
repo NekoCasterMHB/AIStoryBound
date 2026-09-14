@@ -6,12 +6,13 @@ import {
   applyNodeProgress,
   applySegmentCharacter,
   buildTurnPromptParts,
+  cardBrief,
   effectiveCard,
   nodeStallGuidance,
   NODE_STALL_TURNS
 } from './game'
 import type { SegmentDir } from './novel-v2'
-import type { CharacterCard, GameState } from './novel'
+import type { CharacterCard, CharacterDynamicState, GameState } from './novel'
 
 const baseCard: CharacterCard = {
   name: '何清玲',
@@ -172,4 +173,20 @@ test('prompt:无 v2 段数据时降级(v1 行为不变)', () => {
   assert.doesNotMatch(text, /【NPC 对手戏角色/)
   // 卡摘要仍是基础卡
   assert.match(text, /学生/)
+})
+
+test('人物卡列表字段被 LLM patch 写成字符串时不崩溃(effectiveCard 归一 + cardBrief 防御)', () => {
+  // 旧存档 characterStates.patch 里 LLM 曾把 secrets 写成字符串:effectiveCard 应用补丁后必须归一
+  const card: CharacterCard = { ...baseCard, secrets: ['讨厌数学'] }
+  // 真实场景该数据来自 IndexedDB 反序列化(无类型约束),故与运行时同样绕过类型直接构造
+  const dyn = { patch: { secrets: '她其实一直喜欢同桌' } } as unknown as CharacterDynamicState
+  const eff = effectiveCard(card, null, dyn)
+  assert.deepEqual(eff.secrets, ['她其实一直喜欢同桌'])
+  // cardBrief 不再抛 (t.secrets ?? []).filter is not a function
+  const brief = cardBrief(eff, dyn)
+  assert.match(brief, /秘密:她其实一直喜欢同桌/)
+  // 补丁把整个列表字段写成数值/布尔也容忍(归一为空数组,不崩)
+  const eff2 = effectiveCard(card, null, { patch: { goals: 42 } } as unknown as CharacterDynamicState)
+  assert.doesNotThrow(() => cardBrief(eff2))
+  assert.deepEqual(eff2.goals, [])
 })

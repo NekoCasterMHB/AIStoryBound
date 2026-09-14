@@ -1516,19 +1516,20 @@ function onEditKeyDown(e: KeyboardEvent): void {
   }
 }
 
-/** 行动选项抽屉(底部滑出;新选项就绪自动展开,回合生成中收起) */
+/** 行动选项抽屉(底部滑出;回合完整结束后自动展开,回合开始/进行中一律收起) */
 const optionsDrawerOpen = ref(false)
 
-// 选项刷新(新回合/换一波/回滚重建)时退出编辑态,避免 idx 撞上新一轮选项误入编辑模式;
-// 有选项即自动展开抽屉,选项清空则收起
+// 选项刷新(新回合/换一波/回滚重建)时退出编辑态,避免 idx 撞上新一轮选项误入编辑模式。
+// 抽屉展开时机 = 回合完整结束(streaming=false)且选项就绪:选项收尾与打字机播放并行,
+// 选项先到也不能抢跑——文本还在播放就弹抽屉会打断阅读,并盖住底部「快进」按钮。
 watch(options, (list) => {
   cancelEditOption()
-  optionsDrawerOpen.value = list.length > 0
+  if (!streaming.value) optionsDrawerOpen.value = list.length > 0
 })
 
-// 回合开始生成时收起抽屉(旧选项已失效;新选项就绪后 watch(options) 会再展开)
+// 回合开始生成时收起抽屉;回合完整结束(打字机播完 + 收尾结算)后按选项就绪情况展开
 watch(streaming, (on) => {
-  if (on) optionsDrawerOpen.value = false
+  optionsDrawerOpen.value = !on && options.value.length > 0
 })
 
 // 点击抽屉外部自动收起(:modal="false" 不拦截外部交互,自行监听;抽屉内部与「开始行动」触发按钮除外)
@@ -2602,7 +2603,8 @@ watch([messages, streamDisplay], async () => {
           点击自己的行动气泡，可回滚到该行动之前重新选择。
         </p>
 
-        <!-- 开始行动:打开行动抽屉(选项 + 自由输入),样式同行动发送按钮;生成中切换为停止/快进 -->
+        <!-- 开始行动:打开行动抽屉(选项 + 自由输入),样式同行动发送按钮;生成中按阶段切换:
+             叙事流接收中 = 停止 / 流结束→打字机播完 = 快进(占用开始行动位置) / 播完→选项结算 = 生成选项中 -->
         <UButton
           v-if="!streaming"
           block
@@ -2617,8 +2619,8 @@ watch([messages, streamDisplay], async () => {
         <UButton
           v-else
           block
-          :label="narrReady ? '快进' : '停止'"
-          :icon="narrReady ? 'i-lucide-chevrons-right' : 'i-lucide-square'"
+          :label="narrReady ? '快进' : (awaitingOptions ? '生成选项中…' : '停止')"
+          :icon="narrReady ? 'i-lucide-chevrons-right' : (awaitingOptions ? 'i-lucide-loader-circle' : 'i-lucide-square')"
           :color="narrReady ? 'primary' : 'error'"
           variant="outline"
           @click="stopTurn"

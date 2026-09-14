@@ -243,9 +243,28 @@ export function parseState(raw: string | null | undefined): GameState {
   }
 }
 
-/** 应用部分补丁到人物卡(sex 逐键浅合并,其余字段整体替换) */
+/** 应用部分补丁到人物卡(sex 逐键浅合并,其余字段整体替换)。
+ *  LLM patch/旧存档可能把列表字段(secrets 等)写成字符串甚至数值——应用前统一归一为
+ *  字符串数组,防止 cardBrief 等消费点对列表字段 .filter 时崩溃(旧档迁移后复现的
+ *  「(t.secrets ?? []).filter is not a function」即此因:patch 历史值污染 + 消费点无防御)。 */
+const CARD_LIST_KEYS = ['personality', 'speech_style', 'abilities', 'goals', 'fears', 'secrets'] as const
+
+function cardList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === 'string').map(x => x.trim()).filter(Boolean)
+  if (typeof v === 'string') {
+    const s = v.trim()
+    return s ? s.split(/[、，,;；\n]/).map(x => x.trim()).filter(Boolean) : []
+  }
+  return []
+}
+
 function applyCardPatch(card: CharacterCard, patch: Partial<CharacterCard>): CharacterCard {
   const next: CharacterCard = { ...card, ...patch }
+  for (const k of CARD_LIST_KEYS) {
+    next[k] = cardList(next[k])
+  }
+  if (!Array.isArray(next.relationships)) next.relationships = card.relationships
+  if (!Array.isArray(next.kinks)) next.kinks = card.kinks
   if (patch.sex) next.sex = { ...(card.sex ?? {}), ...patch.sex } as NonNullable<CharacterCard['sex']>
   return next
 }
@@ -426,20 +445,21 @@ export function cardBrief(c: CharacterCard, dyn?: CharacterDynamicState): string
   // age 旧数据可能被模型写成数字,统一转字符串再判断
   if (c.age != null && String(c.age).trim()) bits.push(`年龄:${String(c.age)}`)
   if (c.appearance?.trim()) bits.push(`外貌:${c.appearance}`)
-  const personality = (c.personality ?? []).filter(Boolean)
+  // 列表字段统一经 cardList 归一(旧档 patch/迁移数据可能把列表写成字符串,直接 .filter 会崩)
+  const personality = cardList(c.personality)
   if (personality.length) bits.push(`性格:${personality.join('/')}`)
-  const speech = (c.speech_style ?? []).filter(Boolean)
+  const speech = cardList(c.speech_style)
   if (speech.length) bits.push(`说话风格:${speech.join('/')}`)
   if (c.background?.trim()) bits.push(`背景:${c.background}`)
-  const abilities = (c.abilities ?? []).filter(Boolean)
+  const abilities = cardList(c.abilities)
   if (abilities.length) bits.push(`能力:${abilities.join('/')}`)
-  const goals = (c.goals ?? []).filter(Boolean)
+  const goals = cardList(c.goals)
   if (goals.length) bits.push(`目标:${goals.join('/')}`)
-  const fears = (c.fears ?? []).filter(Boolean)
+  const fears = cardList(c.fears)
   if (fears.length) bits.push(`恐惧:${fears.join('/')}`)
-  const secrets = (c.secrets ?? []).filter(Boolean)
+  const secrets = cardList(c.secrets)
   if (secrets.length) bits.push(`秘密:${secrets.join('/')}`)
-  const rels = (c.relationships ?? []).filter(r => r.name?.trim())
+  const rels = (Array.isArray(c.relationships) ? c.relationships : []).filter(r => r.name?.trim())
   if (rels.length) bits.push(`关系:${rels.map(r => `${r.name.trim()}(${r.type?.trim() || '未知'},${r.value >= 0 ? '+' : ''}${r.value})`).join('、')}`)
   if (c.first_appearance?.trim()) bits.push(`首次出场:${c.first_appearance}`)
   if (c.dead) bits.push('已死亡')
@@ -453,7 +473,7 @@ export function cardBrief(c: CharacterCard, dyn?: CharacterDynamicState): string
   if (dyn?.status?.trim()) bits.push(`当前状态:${dyn.status.trim()}`)
   if (dyn?.mood?.trim()) bits.push(`当前情绪:${dyn.mood.trim()}`)
   if (dyn?.location?.trim()) bits.push(`当前位置:${dyn.location.trim()}`)
-  const kinks = (c.kinks ?? [])
+  const kinks = (Array.isArray(c.kinks) ? c.kinks : [])
     .filter(k => k.theme?.trim())
     .map(k => `${k.theme}${k.view ? `·${k.view}` : ''}${k.role ? `/${k.role}` : ''}${k.detail ? `(${k.detail})` : ''}`)
   if (kinks.length) bits.push(`嗜好:${kinks.join(' / ')}`)
