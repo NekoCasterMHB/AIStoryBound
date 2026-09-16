@@ -47,6 +47,12 @@ export default defineNuxtConfig({
       privateKey: '',
       publicKey: ''
     },
+    // 语音合成中转(见 server/api/tts.post.ts):NUXT_TTS_BASE_URL / NUXT_TTS_API_KEY,
+    // 或 wrangler vars(TTS_BASE_URL)+ secret(TTS_API_KEY);未配置时语音接口 503
+    tts: {
+      baseUrl: '',
+      apiKey: ''
+    },
     // 管理员身份(兑换码等管理接口):NUXT_ADMIN_EMAIL,或 wrangler vars(ADMIN_EMAIL)
     // 留空 = 管理接口对所有人 403,保证未配置时无管理员权限可被利用
     admin: {

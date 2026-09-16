@@ -25,6 +25,11 @@ export interface TypewriterOptions {
   onAutoStart?: () => void
   /** 自动控制会话结束(自然播完/flush 收尾后) */
   onAutoEnd?: () => void
+  /**
+   * 显示门(可选):每次即将显示新内容前调用;返回 pending 的 Promise 时打字机暂停,
+   * 落定后继续。用于配音跟读(段落文字上屏后等音频播完再显示下一段)。flush(快进)后不再调用。
+   */
+  waitFor?: (display: string, fullText: string) => Promise<unknown> | null | undefined
 }
 
 const TICK_MS = 50
@@ -83,6 +88,8 @@ export function createTypewriter(opts: TypewriterOptions): Typewriter {
   let flushed = false
   let disposed = false
   let naturallyDone = false
+  /** 显示门挂起中(waitFor 返回的 Promise 未落定):tick 直接让位 */
+  let gateActive = false
   /** done() 的等待方(游戏页流式结束后等待自然播完);自然收尾仅在有待等方时触发 */
   let doneResolvers: (() => void)[] = []
 
@@ -133,6 +140,19 @@ export function createTypewriter(opts: TypewriterOptions): Typewriter {
     if (disposed || flushed) return
     const now = Date.now()
     if (now < holdUntil) return
+
+    // 显示门:跟读等外部等待(如段落音频播放);挂起期间 tick 让位,落定后下一 tick 继续
+    if (opts.waitFor && !gateActive) {
+      const gate = opts.waitFor(displayText, fullText)
+      if (gate) {
+        gateActive = true
+        void Promise.resolve(gate).then(() => {
+          gateActive = false
+        })
+        return
+      }
+    }
+    if (gateActive) return
 
     // 取下一个 token(控制指令立即执行后继续取;pause 等待)
     while (!current && tokens.length) {

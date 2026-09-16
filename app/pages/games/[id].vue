@@ -29,6 +29,10 @@ import { createNarrParser } from '../../utils/narrStream'
 import { createTypewriter } from '../../utils/typewriter'
 import type { NarrParser } from '../../utils/narrStream'
 import type { Typewriter } from '../../utils/typewriter'
+import { buildSpeechSegments, estimateTtsTokens } from '#shared/tts'
+import type { SpeechSegment } from '#shared/tts'
+import { ttsPlayer } from '../../utils/ttsPlayer'
+import { loadVoiceConfig, type WorkVoiceConfig } from '../../utils/ttsPrefs'
 
 useHead({ title: 'AI Word2World · 游戏' })
 // 沉浸式游戏布局:无导航栏/页脚,整页禁滚动(占满视口),内部区域自行滚动
@@ -83,6 +87,63 @@ const sceneMsg = ref<{ kind: 'ok' | 'err', text: string } | null>(null)
 function submitScenePrefs() {
   saveScenePrefs({ prefer: scenePrefs.prefer, avoid: scenePrefs.avoid })
   sceneMsg.value = { kind: 'ok', text: '已保存,新回合生效' }
+}
+
+// ---- 配音(剧情朗读):旁白 + 引号对白多音色;逐角色音色设置存本浏览器 IndexedDB ----
+const voiceModalOpen = ref(false)
+/** 弹窗关闭时刻:点透防护——弹窗卸载后浏览器合成的 click 可能落在页面「配音」按钮上导致立即重开 */
+let voiceClosedAt = 0
+watch(voiceModalOpen, (v) => {
+  if (!v) voiceClosedAt = Date.now()
+})
+function openVoiceSettings() {
+  if (Date.now() - voiceClosedAt < 500) return
+  voiceModalOpen.value = true
+}
+const voiceConfig = ref<WorkVoiceConfig>({ narratorVoice: '', speed: 1, autoSpeak: true, characters: {} })
+/** 跟读进度:本回合流式文本中已被朗读过的字符数(与打字机 waitFor 门配对使用) */
+let spokenLen = 0
+/** 跟读分段缓存(按流式全文长度失效;同长度内分段稳定,免每 tick 重算) */
+let segCache: { srcLen: number, segs: SpeechSegment[] } | null = null
+/** 本回合配音已消耗的 TTS token(客户端与 server/api/tts.post.ts 同公式估算;服务端为计费真源) */
+const turnTtsTokens = ref(0)
+
+/** 角色清单(配音设置弹窗行 + 说话人归属) */
+const voiceCharacters = computed(() => cards.value.map(c => ({ name: c.name, role: c.role, identity: c.identity })))
+
+/** 旁白文本 → 多音色片段(引号对白按说话人归属;未设置音色的角色回退旁白音色) */
+function speechSegmentsOf(text: string): SpeechSegment[] {
+  const cfg = voiceConfig.value
+  return buildSpeechSegments(text, {
+    narratorVoice: cfg.narratorVoice,
+    speakerNames: cards.value.map(c => c.name),
+    voiceOf: n => cfg.characters[n] || undefined
+  })
+}
+
+/** 该消息是否正在朗读(播放中/加载中/暂停都算) */
+function isVoiceActiveFor(msgId: string): boolean {
+  return ttsPlayer.currentSource.value?.id === msgId
+    && !['idle', 'error'].includes(ttsPlayer.state.value)
+}
+
+/** 播放/停止一条旁白消息的剧情朗读 */
+function toggleNarratorVoiceover(msgId: string, content: string) {
+  if (isVoiceActiveFor(msgId)) {
+    ttsPlayer.stopTts()
+    return
+  }
+  void ttsPlayer.playTtsSource(
+    { id: msgId, label: '剧情朗读', segments: speechSegmentsOf(content) },
+    { speed: voiceConfig.value.speed }
+  ).catch((e: unknown) => {
+    toast.add({ title: '语音合成失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  })
+}
+
+/** 配音设置弹窗保存回传(下一条消息的朗读即用新配置) */
+function onVoiceConfigSaved(cfg: WorkVoiceConfig) {
+  voiceConfig.value = cfg
 }
 
 /** 段回注间隔(每 N 回合重新注入当前段情节 + 段首原文窗口;本地偏好,即时保存,新回合生效) */
@@ -240,7 +301,15 @@ onMounted(async () => {
   game.value = g
   // 作品读取:loadWorkView 统一入口(book2 真源;works 行仅强制自动迁移前的过渡)
   work.value = g.workId ? await loadWorkView(g.workId) : null
-  if (g.workId) void touchWorkSmart(g.workId)
+  if (g.workId) {
+    void touchWorkSmart(g.workId)
+    // 配音设置(本浏览器 IndexedDB):异步加载,加载完成前后默认晓晓/1.0x
+    void loadVoiceConfig(g.workId).then((cfg) => {
+      voiceConfig.value = cfg
+    })
+    // 离开页面时停止朗读(播放器是全局单例,不能把声音带去别的页面)
+    pageCleanup.push(() => ttsPlayer.stopTts())
+  }
   state.value = ensureDesires(g.state, cards.value)
   messages.value = msgs
   persistedMsgCount = msgs.length
@@ -286,7 +355,7 @@ let liveStartedAt = 0
 const turnUsage = ref<string | null>(null)
 /** 本回合 token 消耗统计(模态框展示;各阶段真实 usage + 叙事输入细项估算) */
 interface TurnCostPart { label: string, tokens: number }
-interface TurnCostItem { stage: 'opening' | 'narrative' | 'options' | 'desires', label: string, prompt: number, completion: number, total: number, details?: TurnCostPart[] }
+interface TurnCostItem { stage: 'opening' | 'narrative' | 'options' | 'desires' | 'tts', label: string, prompt: number, completion: number, total: number, details?: TurnCostPart[] }
 const turnCostReport = ref<TurnCostItem[] | null>(null)
 /** 开场设定生成(AI 开场模式,确认开局前那笔):已入账作品累计,暂存供首回合消耗统计展示 */
 const openingGenCost = ref<{ prompt: number, completion: number, total: number } | null>(null)
@@ -305,6 +374,25 @@ function flushOpeningGenCost() {
   }]
 }
 const costModalOpen = ref(false)
+/** 累加本回合配音消耗进回合统计(TTS 按音频秒数估算:1 秒 = 10 token,与 server/api/tts.post.ts 计费同公式;服务端为计费真源) */
+function addTurnTtsTokens(text: string, speed: number) {
+  const n = estimateTtsTokens(text, speed)
+  if (n <= 0) return
+  turnTtsTokens.value += n
+  // 报告还不存在(旁白关闭时跟读可能早于叙事大项入账)也创建,保证配音消耗可见
+  const prior = (turnCostReport.value ?? []).filter(c => c.stage !== 'tts')
+  turnCostReport.value = [...prior, {
+    stage: 'tts',
+    label: '配音朗读(TTS 估算)',
+    prompt: 0,
+    completion: 0,
+    total: turnTtsTokens.value
+  }]
+  // 顶部「本回合 N tokens」徽标在收尾时定格;此后配音消耗继续累加时同步刷新
+  if (turnUsage.value) {
+    turnUsage.value = `本回合 ${turnCostReport.value.reduce((s, c) => s + c.total, 0).toLocaleString()} tokens`
+  }
+}
 /** 顶部状态面板(地点/时间等 6 项)折叠开关 */
 const statsOpen = ref(false)
 /** 饼图色板(按序循环取色;与阶段/细项共用,保证图例颜色一致) */
@@ -385,6 +473,8 @@ const narrReady = ref(false)
 
 /** 点击流式文本 → 立即显示全文(剩余设备指令顺序执行,停顿跳过,自动会话收尾) */
 function flushStream() {
+  // 快进 = 跳过剩余文字显示,跟读音频一并停止(快速模式下打字机门不再触发)
+  ttsPlayer.stopTts()
   typewriter?.flush()
 }
 
@@ -1149,12 +1239,49 @@ async function sendTurn(choice?: string) {
   let deviceCmdCount = 0
   const startNarrStream = () => {
     deviceCmdCount = 0
+    spokenLen = 0
+    segCache = null
+    turnTtsTokens.value = 0
+    ttsPlayer.stopTts()
     typewriter?.dispose()
     narrParser = createNarrParser()
     const speedTier = narrSpeedTierOf(narrSpeed.value)
     typewriter = createTypewriter({
       cps: narrSpeed.value,
       pauseScale: speedTier.pauseScale,
+      // 配音跟读门:段落文字完整上屏即朗读该段(打字机暂停等音频),播完继续显示下一段;
+      // 仅在叙事流结束后预取剩余段(流式期间段文本还在增长,预取必然缓存失效,纯浪费);
+      // 关闭跟读/失败时门放行,不阻塞文字显示
+      waitFor: (display, full) => {
+        const cfg = voiceConfig.value
+        if (!cfg.autoSpeak || !full) return null
+        if (segCache?.srcLen !== full.length) {
+          segCache = { srcLen: full.length, segs: speechSegmentsOf(full) }
+        }
+        let start = 0
+        for (const seg of segCache.segs) {
+          const end = start + seg.text.length
+          if (end > spokenLen) {
+            if (display.length < end) {
+              if (narrReady.value) ttsPlayer.prefetchTts(seg.text, seg.voice, cfg.speed)
+              return null
+            }
+            return ttsPlayer.playTtsSource({ id: 'tts-live', label: '剧情跟读', segments: [seg] }, { speed: cfg.speed })
+              .then(() => {
+                spokenLen = end
+                // 播放成功 = 服务端已按段计费:计入回合统计(失败会退款,不计)
+                addTurnTtsTokens(seg.text, cfg.speed)
+              })
+              .catch((e: unknown) => {
+                // 失败同样推进游标:门不放行会死循环重试同一失败段;文字显示永不被配音卡死
+                spokenLen = end
+                toast.add({ title: '语音合成失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+              })
+          }
+          start = end
+        }
+        return null
+      },
       onDisplay: (t) => {
         streamDisplay.value = t
       },
@@ -1379,6 +1506,7 @@ async function sendTurn(choice?: string) {
       const stop = () => {
         sig?.removeEventListener('abort', stop)
         typewriter?.dispose()
+        ttsPlayer.stopTts()
         if (optionsOk || optionsErr) resolve()
         else reject(new CancelledError())
       }
@@ -1740,6 +1868,14 @@ watch([messages, streamDisplay], async () => {
               variant="outline"
               size="sm"
               @click="openSkillManager"
+            />
+            <UButton
+              label="配音"
+              icon="i-lucide-audio-lines"
+              color="neutral"
+              variant="outline"
+              size="sm"
+              @click="openVoiceSettings"
             />
             <UButton
               label="设置"
@@ -2322,6 +2458,14 @@ watch([messages, streamDisplay], async () => {
         </template>
       </UModal>
 
+      <!-- 配音设置:旁白音色/语速 + 逐角色音色(本浏览器 IndexedDB;即时保存) -->
+      <VoiceSettingsModal
+        v-model:open="voiceModalOpen"
+        :scope-id="game?.workId ?? ''"
+        :characters="voiceCharacters"
+        @saved="onVoiceConfigSaved"
+      />
+
       <!-- 本回合 token 消耗统计:点击顶部「本回合 N tokens」打开;阶段真实占比 + 叙事输入构成(估算) -->
       <UModal
         :open="costModalOpen"
@@ -2542,12 +2686,29 @@ watch([messages, streamDisplay], async () => {
                 {{ m.content }}
               </p>
             </div>
-            <p
+            <div
               v-else
-              class="whitespace-pre-line leading-relaxed text-neutral-700 dark:text-neutral-200"
+              class="group relative pr-7"
             >
-              {{ m.content }}
-            </p>
+              <p class="whitespace-pre-line leading-relaxed text-neutral-700 dark:text-neutral-200">
+                {{ m.content }}
+              </p>
+              <!-- 剧情朗读:旁白 + 引号对白按角色音色分段播报(配音设置见顶栏「配音」) -->
+              <button
+                type="button"
+                class="absolute right-0 top-0 rounded p-1 transition"
+                :class="isVoiceActiveFor(m.id)
+                  ? 'text-primary-500 opacity-100'
+                  : 'text-neutral-400 opacity-50 hover:text-primary-500 hover:opacity-100 md:opacity-0 md:group-hover:opacity-100'"
+                :title="isVoiceActiveFor(m.id) ? '停止朗读' : '朗读本段'"
+                @click="toggleNarratorVoiceover(m.id, m.content)"
+              >
+                <UIcon
+                  :name="isVoiceActiveFor(m.id) ? 'i-lucide-square' : 'i-lucide-volume-2'"
+                  class="size-4"
+                />
+              </button>
+            </div>
           </div>
 
           <div

@@ -5,6 +5,10 @@
 import { loadWorkView, touchWorkSmart } from '../../../utils/bookStoreV2'
 import { loadPresetChapters } from '../../../utils/chapters'
 import { getReadingProgress, saveReadingProgress } from '../../../utils/readingStore'
+import { ttsPlayer } from '../../../utils/ttsPlayer'
+import { loadVoiceConfig, type WorkVoiceConfig } from '../../../utils/ttsPrefs'
+import { buildSpeechSegments } from '#shared/tts'
+import type { SpeechSegment } from '#shared/tts'
 import {
   readingKey, DEFAULT_READER_SETTINGS, READER_FONT_SIZES, READER_LINE_HEIGHTS
 } from '#shared/novel'
@@ -19,6 +23,33 @@ const id = String(route.params.id)
 const key = readingKey(src === 'work' ? 'work' : 'preset', id)
 /** 本地作品已生成世界(有人物卡):顶栏显示「进入世界」直达选角页 */
 const hasWorld = ref(false)
+
+// ---- 听书(TTS):朗读当前章,读完自动连播下一章;旁白/逐角色音色与游戏配音共用同一份本机设置 ----
+const readerCharacters = ref<{ name: string, role?: string | null, identity?: string | null }[] | null>(null)
+const ttsConfig = ref<WorkVoiceConfig>({ narratorVoice: '', speed: 1, autoSpeak: true, characters: {} })
+const ttsConfigOpen = ref(false)
+/** 弹窗关闭时刻:点透防护(同游戏页配音弹窗) */
+let ttsConfigClosedAt = 0
+watch(ttsConfigOpen, (v) => {
+  if (!v) ttsConfigClosedAt = Date.now()
+})
+function openTtsSettings() {
+  if (Date.now() - ttsConfigClosedAt < 500) return
+  ttsConfigOpen.value = true
+}
+const ttsScope = computed(() => (src === 'work' ? id : `preset:${id}`))
+const ttsState = ttsPlayer.state
+/** 是否处于听书中(播放器来源是阅读器) */
+const listening = computed(() => !!ttsPlayer.currentSource.value?.id.startsWith('read:'))
+const ttsLabel = computed(() => {
+  const s = ttsPlayer.currentSource.value
+  if (!s) return ''
+  return ttsPlayer.totalSegments.value > 1
+    ? `${s.label} · ${ttsPlayer.currentIndex.value + 1}/${ttsPlayer.totalSegments.value}`
+    : s.label
+})
+/** 自动连播触发的切章不停播(手动切章才停) */
+let ttsAutoAdvancing = false
 
 // ---- 加载 ----
 const chapters = ref<ChapterSegment[]>([])
@@ -68,6 +99,8 @@ async function loadBook() {
       chapters.value = [{ title: '', content: view.fulltext }]
       bookTitle.value = view.title
       hasWorld.value = view.characters.length > 0
+      // 听书说话人归属:带上人物卡(逐角色音色在配音设置里配置过才生效)
+      readerCharacters.value = view.characters.map(c => ({ name: c.name, role: c.role, identity: c.identity }))
       void touchWorkSmart(id)
     } else {
       const loaded = await loadPresetChapters(id)
@@ -75,6 +108,10 @@ async function loadBook() {
       bookTitle.value = loaded.title
     }
     loadingState.value = 'ready'
+    // 配音设置(本浏览器 IndexedDB,与游戏页同 scope = 作品 id)
+    void loadVoiceConfig(ttsScope.value).then((cfg) => {
+      ttsConfig.value = cfg
+    })
     const restored = await restoreProgress()
     // 自动隐藏开启时:进入默认显示工具条 + 引导提示;始终显示模式无需提示
     uiVisible.value = true
@@ -153,9 +190,68 @@ watch(chapterIndex, () => {
   scrollRatio.value = 0
   void nextTick(() => applyScrollRatio(0))
   flushSave()
+  // 手动切章停止听书(自动连播的切章带豁免标记,不停)
+  if (listening.value && !ttsAutoAdvancing) ttsPlayer.stopTts()
 })
 
 watch(settings, () => flushSave(), { deep: true })
+
+// ---- 听书实现:本章文本切多音色片段(对白按角色归属)→ 播放器顺序播 → 读完自动连播下一章 ----
+
+/** 章节文本 → 多音色片段 */
+function speechSegmentsFor(text: string): SpeechSegment[] {
+  const cfg = ttsConfig.value
+  const chars = readerCharacters.value
+  return buildSpeechSegments(text, {
+    narratorVoice: cfg.narratorVoice,
+    speakerNames: chars?.map(c => c.name) ?? [],
+    voiceOf: chars ? n => cfg.characters[n] || undefined : undefined
+  })
+}
+
+/** 朗读指定章(播完自动连下一章;最后一章自然收束) */
+function listenChapter(idx: number) {
+  const ch = chapters.value[idx]
+  if (!ch) return
+  void ttsPlayer.playTtsSource(
+    { id: `read:${idx}`, label: chapLabel(idx), segments: speechSegmentsFor(ch.content) },
+    {
+      speed: ttsConfig.value.speed,
+      onFinished: () => {
+        if (idx >= chapters.value.length - 1) return
+        ttsAutoAdvancing = true
+        chapterIndex.value = idx + 1
+        void nextTick(() => {
+          ttsAutoAdvancing = false
+          listenChapter(idx + 1)
+        })
+      }
+    }
+  ).catch((e: unknown) => showToast(`语音合成失败:${e instanceof Error ? e.message : String(e)}`))
+}
+
+/** 顶栏听书按钮:开始本章朗读 / 停止 */
+function toggleListen() {
+  if (listening.value) {
+    ttsPlayer.stopTts()
+    return
+  }
+  if (!ttsConfig.value.narratorVoice) {
+    showToast('旁白配音已关闭,请到「配音设置」选择旁白音色')
+    ttsConfigOpen.value = true
+    return
+  }
+  listenChapter(chapterIndex.value)
+}
+
+/** 迷你条暂停/恢复(加载阶段点它 = 暂停在段间,恢复后续播) */
+function toggleTtsPause() {
+  if (ttsState.value === 'playing') ttsPlayer.pauseTts()
+  else if (ttsState.value === 'paused') ttsPlayer.resumeTts()
+}
+
+/** 离开阅读页停播(播放器是全局单例,不能把声音带去别的页面) */
+onBeforeUnmount(() => ttsPlayer.stopTts())
 
 // ---- UI 显隐(设置「自动隐藏」开:轻点屏幕呼出/收起,超时自动隐藏;关:始终显示) ----
 const uiVisible = ref(false)
@@ -670,6 +766,16 @@ useSeoMeta({ title: pageTitle })
         <button
           type="button"
           class="reader-icon-btn"
+          :class="{ 'is-active': listening }"
+          :aria-label="listening ? '停止听书' : '听书'"
+          :title="listening ? '停止听书' : '听书(朗读本章,读完自动连播)'"
+          @click="toggleListen"
+        >
+          <UIcon :name="listening ? 'i-lucide-square' : 'i-lucide-headphones'" />
+        </button>
+        <button
+          type="button"
+          class="reader-icon-btn"
           aria-label="设置"
           @click="settingsOpen = true"
         >
@@ -856,6 +962,44 @@ useSeoMeta({ title: pageTitle })
           </button>
         </div>
       </footer>
+    </Transition>
+
+    <!-- 听书迷你条:暂停/恢复 · 进度 · 配音设置 · 停止 -->
+    <Transition name="reader-fade">
+      <div
+        v-if="listening"
+        class="tts-bar"
+      >
+        <button
+          type="button"
+          class="reader-icon-btn"
+          :aria-label="ttsState === 'playing' ? '暂停' : '继续'"
+          @click="toggleTtsPause"
+        >
+          <UIcon
+            :name="ttsState === 'loading'
+              ? 'i-lucide-loader-circle animate-spin'
+              : (ttsState === 'playing' ? 'i-lucide-pause' : 'i-lucide-play')"
+          />
+        </button>
+        <span class="tts-label">{{ ttsLabel }}</span>
+        <button
+          type="button"
+          class="reader-icon-btn"
+          aria-label="配音设置"
+          @click="openTtsSettings"
+        >
+          <UIcon name="i-lucide-settings-2" />
+        </button>
+        <button
+          type="button"
+          class="reader-icon-btn"
+          aria-label="停止听书"
+          @click="ttsPlayer.stopTts()"
+        >
+          <UIcon name="i-lucide-x" />
+        </button>
+      </div>
     </Transition>
 
     <!-- 目录抽屉 -->
@@ -1239,10 +1383,48 @@ useSeoMeta({ title: pageTitle })
         {{ toast }}
       </div>
     </Transition>
+
+    <!-- 配音设置(与游戏页同一份本机设置;作品带人物卡时可逐角色配置) -->
+    <VoiceSettingsModal
+      v-model:open="ttsConfigOpen"
+      :scope-id="ttsScope"
+      :characters="readerCharacters ?? undefined"
+    />
   </div>
 </template>
 
 <style scoped>
+/* ---- 听书迷你条(底部居中悬浮胶囊) ---- */
+.tts-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 76px;
+  z-index: 40;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100% - 32px);
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--reader-bg);
+  border: 1px solid var(--reader-border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+.tts-bar .tts-label {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--reader-text);
+  opacity: 0.8;
+}
+.reader-icon-btn.is-active {
+  color: #f97316;
+}
+
 /* ---- 阅读页基础布局与配色(颜色变量由 .reader-theme-* 全局类提供) ---- */
 .reader-root {
   -webkit-tap-highlight-color: transparent;
