@@ -12,56 +12,56 @@ export interface TtsVoiceOption {
 
 /**
  * 全部可选音色(值与 Edge TTS Worker WebUI 实测列表一致)。
- * 表项:[展示名, 音色值, 语言]。下拉文案只保留「名字 · 语言」。
+ * 表项:[展示名, 音色值, 语言, 性别]。下拉文案只保留「名字 · 性别 · 语言」。
  */
-const VOICE_DEFS: Array<[name: string, value: string, lang: string]> = [
+const VOICE_DEFS: Array<[name: string, value: string, lang: string, gender: string]> = [
   // 普通话
-  ['晓晓', 'zh-CN-XiaoxiaoNeural', '普通话'],
-  ['云扬', 'zh-CN-YunyangNeural', '普通话'],
-  ['晓伊', 'zh-CN-XiaoyiNeural', '普通话'],
-  ['晓辰', 'zh-CN-XiaochenNeural', '普通话'],
-  ['晓涵', 'zh-CN-XiaohanNeural', '普通话'],
-  ['晓柔', 'zh-CN-XiaorouNeural', '普通话'],
-  ['晓颜', 'zh-CN-XiaoyanNeural', '普通话'],
-  ['晓秋', 'zh-CN-XiaoqiuNeural', '普通话'],
-  ['晓甄', 'zh-CN-XiaozhenNeural', '普通话'],
-  ['晓梦', 'zh-CN-XiaomengNeural', '普通话'],
-  ['晓墨', 'zh-CN-XiaomoNeural', '普通话'],
-  ['晓睿', 'zh-CN-XiaoruiNeural', '普通话'],
-  ['云希', 'zh-CN-YunxiNeural', '普通话'],
-  ['云健', 'zh-CN-YunjianNeural', '普通话'],
-  ['云杰', 'zh-CN-YunjieNeural', '普通话'],
-  ['云枫', 'zh-CN-YunfengNeural', '普通话'],
-  ['云皓', 'zh-CN-YunhaoNeural', '普通话'],
-  ['云泽', 'zh-CN-YunzeNeural', '普通话'],
-  ['云野', 'zh-CN-YunyeNeural', '普通话'],
-  ['晓双', 'zh-CN-XiaoshuangNeural', '普通话'],
-  ['晓悠', 'zh-CN-XiaoyouNeural', '普通话'],
-  ['云夏', 'zh-CN-YunxiaNeural', '普通话'],
+  ['晓晓', 'zh-CN-XiaoxiaoNeural', '普通话', '女'],
+  ['云扬', 'zh-CN-YunyangNeural', '普通话', '男'],
+  ['晓伊', 'zh-CN-XiaoyiNeural', '普通话', '女'],
+  ['晓辰', 'zh-CN-XiaochenNeural', '普通话', '女'],
+  ['晓涵', 'zh-CN-XiaohanNeural', '普通话', '女'],
+  ['晓柔', 'zh-CN-XiaorouNeural', '普通话', '女'],
+  ['晓颜', 'zh-CN-XiaoyanNeural', '普通话', '女'],
+  ['晓秋', 'zh-CN-XiaoqiuNeural', '普通话', '女'],
+  ['晓甄', 'zh-CN-XiaozhenNeural', '普通话', '女'],
+  ['晓梦', 'zh-CN-XiaomengNeural', '普通话', '女'],
+  ['晓墨', 'zh-CN-XiaomoNeural', '普通话', '女'],
+  ['晓睿', 'zh-CN-XiaoruiNeural', '普通话', '女'],
+  ['云希', 'zh-CN-YunxiNeural', '普通话', '男'],
+  ['云健', 'zh-CN-YunjianNeural', '普通话', '男'],
+  ['云杰', 'zh-CN-YunjieNeural', '普通话', '男'],
+  ['云枫', 'zh-CN-YunfengNeural', '普通话', '男'],
+  ['云皓', 'zh-CN-YunhaoNeural', '普通话', '男'],
+  ['云泽', 'zh-CN-YunzeNeural', '普通话', '男'],
+  ['云野', 'zh-CN-YunyeNeural', '普通话', '男'],
+  ['晓双', 'zh-CN-XiaoshuangNeural', '普通话', '女'],
+  ['晓悠', 'zh-CN-XiaoyouNeural', '普通话', '女'],
+  ['云夏', 'zh-CN-YunxiaNeural', '普通话', '男'],
   // 方言
-  ['晓北', 'zh-CN-liaoning-XiaobeiNeural', '辽宁话'],
-  ['云彪', 'zh-CN-liaoning-YunbiaoNeural', '辽宁话'],
-  ['晓妮', 'zh-CN-shaanxi-XiaoniNeural', '陕西话'],
-  ['云登', 'zh-CN-henan-YundengNeural', '河南话'],
-  ['云翔', 'zh-CN-shandong-YunxiangNeural', '山东话'],
-  ['云琦', 'zh-CN-guangxi-YunqiNeural', '广西话'],
+  ['晓北', 'zh-CN-liaoning-XiaobeiNeural', '辽宁话', '女'],
+  ['云彪', 'zh-CN-liaoning-YunbiaoNeural', '辽宁话', '男'],
+  ['晓妮', 'zh-CN-shaanxi-XiaoniNeural', '陕西话', '女'],
+  ['云登', 'zh-CN-henan-YundengNeural', '河南话', '男'],
+  ['云翔', 'zh-CN-shandong-YunxiangNeural', '山东话', '男'],
+  ['云琦', 'zh-CN-guangxi-YunqiNeural', '广西话', '男'],
   // 粤语 / 台湾
-  ['曉佳', 'zh-HK-HiuGaaiNeural', '粤语'],
-  ['曉曼', 'zh-HK-HiuMaanNeural', '粤语'],
-  ['雲龍', 'zh-HK-WanLungNeural', '粤语'],
-  ['曉臻', 'zh-TW-HsiaoChenNeural', '台湾国语'],
-  ['曉雨', 'zh-TW-HsiaoYuNeural', '台湾国语'],
-  ['雲哲', 'zh-TW-YunJheNeural', '台湾国语'],
+  ['曉佳', 'zh-HK-HiuGaaiNeural', '粤语', '女'],
+  ['曉曼', 'zh-HK-HiuMaanNeural', '粤语', '女'],
+  ['雲龍', 'zh-HK-WanLungNeural', '粤语', '男'],
+  ['曉臻', 'zh-TW-HsiaoChenNeural', '台湾国语', '女'],
+  ['曉雨', 'zh-TW-HsiaoYuNeural', '台湾国语', '女'],
+  ['雲哲', 'zh-TW-YunJheNeural', '台湾国语', '男'],
   // 英语
-  ['Jenny', 'en-US-JennyNeural', '英语'],
-  ['Aria', 'en-US-AriaNeural', '英语'],
-  ['Guy', 'en-US-GuyNeural', '英语'],
-  ['Christopher', 'en-US-ChristopherNeural', '英语']
+  ['Jenny', 'en-US-JennyNeural', '英语', '女'],
+  ['Aria', 'en-US-AriaNeural', '英语', '女'],
+  ['Guy', 'en-US-GuyNeural', '英语', '男'],
+  ['Christopher', 'en-US-ChristopherNeural', '英语', '男']
 ]
 
-export const TTS_VOICES: TtsVoiceOption[] = VOICE_DEFS.map(([name, value, lang]) => ({
+export const TTS_VOICES: TtsVoiceOption[] = VOICE_DEFS.map(([name, value, lang, gender]) => ({
   value,
-  label: `${name} · ${lang}`
+  label: `${name} · ${gender} · ${lang}`
 }))
 
 /** 默认旁白音色(晓晓) */
