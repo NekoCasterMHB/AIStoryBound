@@ -26,7 +26,7 @@
             name="i-lucide-zap"
             class="size-3 text-primary-500 dark:text-primary-400"
           />
-          本回合 128 tokens
+          本回合 2,437 tokens
         </span>
       </div>
 
@@ -38,39 +38,39 @@
             variant="soft"
             icon="i-lucide-map-pin"
           >
-            第三章 · 烟雨楼
+            第 12 章 · 留堂之后
           </UBadge>
           <UBadge
             color="neutral"
             variant="soft"
             icon="i-lucide-book-open"
           >
-            原著《长夜行》
+            原著《她永远不乖》
           </UBadge>
           <UBadge
             color="neutral"
             variant="soft"
             icon="i-lucide-history"
           >
-            已回滚 2 次
+            已回滚 3 次
           </UBadge>
         </div>
 
         <!-- 角色卡 -->
         <div class="mb-4 flex items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-100/70 p-3 dark:border-white/10 dark:bg-white/5">
           <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-primary-400/40 to-primary-500/40 text-xl">
-            🧙
+            👔
           </div>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
-              <span class="text-sm font-semibold text-neutral-900 dark:text-white">青璃</span>
-              <span class="truncate text-xs text-neutral-500 dark:text-neutral-400">宗门弟子 · 忠于门派</span>
+              <span class="text-sm font-semibold text-neutral-900 dark:text-white">夏远安</span>
+              <span class="truncate text-xs text-neutral-500 dark:text-neutral-400">日语老师 · 你的专属管教者</span>
             </div>
             <div class="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
-              <span>耐心 <span class="font-mono text-neutral-800 dark:text-neutral-300">72</span></span>
-              <span>心软 <span class="font-mono text-neutral-800 dark:text-neutral-300">58</span></span>
-              <span>警惕 <span class="font-mono text-neutral-800 dark:text-neutral-300">81</span></span>
-              <span class="text-primary-600/90 dark:text-primary-400/90">⦿ 正派阵营</span>
+              <span>威严 <span class="font-mono text-neutral-800 dark:text-neutral-300">92</span></span>
+              <span>耐心 <span class="font-mono text-neutral-800 dark:text-neutral-300">18</span></span>
+              <span>欲望 <span class="font-mono text-neutral-800 dark:text-neutral-300">37</span></span>
+              <span class="text-rose-600/90 dark:text-rose-400/90">⦿ 支配阵营 · 管教中</span>
             </div>
           </div>
           <UIcon
@@ -80,28 +80,30 @@
         </div>
 
         <!-- 叙事气泡 -->
-        <div class="rounded-xl rounded-tl-sm border border-neutral-200 bg-neutral-100/70 px-4 py-3 text-sm leading-relaxed text-neutral-700 dark:border-white/10 dark:bg-white/5 dark:text-neutral-200">
-          掌柜压低了声音:「三更之后,码头东边会有一艘不发一灯的船。」他看了看你,把热酒轻轻推到你面前,<span class="text-primary-600 dark:text-primary-300">等待你的回答</span>。
+        <div class="space-y-2.5 rounded-xl rounded-tl-sm border border-neutral-200 bg-neutral-100/70 px-4 py-3 text-sm leading-relaxed text-neutral-700 dark:border-white/10 dark:bg-white/5 dark:text-neutral-200">
+          <p>「作业的事,留堂再说。」放学后的教室只剩你们两人,夕阳把课桌的影子拉得很长。</p>
+          <p>夏远安拉过椅子坐下,拍了拍自己的膝盖,示意你过去;戒尺在他掌心敲了两下,不重,却让你的心跳漏了一拍。</p>
+          <p>「规矩你都还记得——趴好,不许躲,自己数数,数错了加一。」他看着你,声音低而稳,像在讲一道再普通不过的语法题;你挪过去的每一步,耳根都在发烫——<span class="text-primary-600 dark:text-primary-300">今晚的规矩,你自己清楚</span>。</p>
         </div>
 
         <!-- 选项 -->
         <div class="mt-3 space-y-2">
           <div class="flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg border border-primary-500/40 bg-primary-500/10 px-4 py-2.5 text-left text-sm text-primary-700 transition hover:border-primary-500/70 hover:bg-primary-500/15 dark:border-primary-400/30 dark:bg-primary-400/10 dark:text-primary-100 dark:hover:border-primary-400/60 dark:hover:bg-primary-400/15">
-            <span>对他点点头,决定今夜去码头一看究竟。</span>
+            <span>红着脸走过去趴好,小声认错求轻罚。</span>
             <UIcon
               name="i-lucide-arrow-right"
               class="size-4 shrink-0 text-primary-500 dark:text-primary-400"
             />
           </div>
           <div class="flex w-full items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-neutral-100/70 px-4 py-2.5 text-left text-sm text-neutral-700 dark:border-white/10 dark:bg-white/5 dark:text-neutral-200">
-            <span>旁敲侧击,打听那艘船的来历。</span>
+            <span>咬着唇一言不发,倔强地绷紧身体。</span>
             <UIcon
               name="i-lucide-arrow-right"
               class="size-4 shrink-0 text-neutral-400 dark:text-neutral-500"
             />
           </div>
           <div class="flex w-full items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-neutral-100/70 px-4 py-2.5 text-left text-sm text-neutral-700 dark:border-white/10 dark:bg-white/5 dark:text-neutral-200">
-            <span>假装没听见,回房把门窗闩好。</span>
+            <span>轻声说出安全词「红灯」,试探他的底线。</span>
             <UIcon
               name="i-lucide-arrow-right"
               class="size-4 shrink-0 text-neutral-400 dark:text-neutral-500"

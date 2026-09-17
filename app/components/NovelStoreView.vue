@@ -652,10 +652,14 @@ async function onPreview(s: StoreNovelSummary) {
             class="flex flex-col"
             :ui="{ body: 'flex-1' }"
           >
-            <!-- 第一行:方形圆角图标 + 书名 + 版本/推荐徽章 -->
+            <!-- 第一行:方形圆角图标(固定默认图,同 Skill 卡)+ 书名 + 版本/推荐徽章 -->
             <div class="flex items-start gap-3">
-              <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-                <span class="text-2xl leading-none">📖</span>
+              <div class="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-amber-100 dark:bg-amber-400/15">
+                <img
+                  src="/pwa/图标.png"
+                  alt=""
+                  class="h-full w-full object-cover mix-blend-screen"
+                >
               </div>
               <div class="min-w-0 flex-1">
                 <p class="flex items-center gap-2 font-semibold">
