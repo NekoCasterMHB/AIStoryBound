@@ -59,10 +59,10 @@ async function onStartGenerate() {
           color="neutral"
           variant="outline"
           size="lg"
-          icon="i-lucide-arrow-right"
-          to="#how"
+          icon="i-lucide-gem"
+          to="/workshop"
         >
-          看看怎么玩
+          前往创意工坊
         </UButton>
       </div>
 

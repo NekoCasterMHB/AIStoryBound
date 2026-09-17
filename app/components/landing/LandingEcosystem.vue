@@ -51,7 +51,10 @@ const blocks = [
 </script>
 
 <template>
-  <section class="border-t border-neutral-200/70 dark:border-neutral-800/70">
+  <section
+    id="workshop"
+    class="border-t border-neutral-200/70 dark:border-neutral-800/70"
+  >
     <div class="mx-auto max-w-6xl px-4 py-20">
       <div class="mb-10 text-center">
         <p class="text-xs font-semibold tracking-widest text-primary-600 dark:text-primary-400">
