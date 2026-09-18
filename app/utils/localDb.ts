@@ -324,6 +324,7 @@ export interface GameSavePointRow {
   idx: number
   state?: unknown
   currentBeat?: number | null
+  reinject?: unknown
   summary?: unknown
   savedAt: string
 }

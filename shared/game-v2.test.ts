@@ -190,3 +190,72 @@ test('人物卡列表字段被 LLM patch 写成字符串时不崩溃(effectiveCa
   assert.doesNotThrow(() => cardBrief(eff2))
   assert.deepEqual(eff2.goals, [])
 })
+
+test('prompt:细纲已演过的段标注「已发生,勿重演」并压缩,当前段起保持全量', () => {
+  const longSummary = '这一段情节非常漫长,包含了大量的铺垫与转折,人物关系错综复杂,结局出人意料,许多细节值得回味'
+  const text = buildTurnPromptParts({
+    title: '资料室之行',
+    playerName: '林凡',
+    playerCard: oldProtagonist,
+    cards: [oldProtagonist],
+    state: stateWith({}),
+    history: [],
+    stageIndex: 2,
+    storyline: [
+      { index: 0, startChar: 0, label: '相遇', summary: longSummary, cast: [] },
+      { index: 1, startChar: 100, label: '试探', summary: longSummary, cast: [] },
+      { index: 2, startChar: 200, label: '恋爱期', summary: '两人关系升温', cast: [] },
+      { index: 3, startChar: 300, label: '波折', summary: longSummary, cast: [] }
+    ]
+  }).map(p => p.content).join('\n')
+  // 当前段之前的段:压成一行骨架 + 已发生标记(不再以全量摘要形式当「待演剧本」注入)
+  assert.match(text, /\[段1\]\(已发生,勿重演\)/)
+  assert.match(text, /\[段2\]\(已发生,勿重演\)/)
+  // 当前段与近窗后段保持全量(无已发生标记)
+  assert.match(text, /\[段3\] 两人关系升温/)
+  assert.match(text, /\[段4\] /)
+  assert.doesNotMatch(text, /\[段4\]\(已发生/)
+  // currentBeat 未知(旧存档)时全部全量,行为不变
+  const legacy = buildTurnPromptParts({
+    title: '资料室之行',
+    playerName: '林凡',
+    playerCard: oldProtagonist,
+    cards: [oldProtagonist],
+    state: stateWith({}),
+    history: [],
+    storyline: [{ index: 0, startChar: 0, label: '相遇', summary: longSummary, cast: [] }]
+  }).map(p => p.content).join('\n')
+  assert.match(legacy, /\[段1\] 这一段情节非常漫长/)
+  assert.doesNotMatch(legacy, /已发生,勿重演/)
+})
+
+test('prompt:回注块标明「未演绎的前瞻参考」并禁止回段首重演;剧情回顾声明均已发生', () => {
+  const text = buildTurnPromptParts({
+    title: '资料室之行',
+    playerName: '林凡',
+    playerCard: oldProtagonist,
+    cards: [oldProtagonist],
+    state: stateWith({}),
+    history: [],
+    choice: '去图书馆',
+    stageIndex: 2,
+    storyline: [{ index: 2, startChar: 0, label: '恋爱期', summary: '两人关系升温', cast: [] }],
+    summaryText: '此前剧情要点',
+    reinjectPlot: {
+      beatIndex: 2,
+      beatTitle: '恋爱期',
+      beatSummary: '两人关系升温并确立关系',
+      window: '「借过。」',
+      nextBeat: { title: '波折', summary: '误会与和解' }
+    }
+  }).map(p => p.content).join('\n')
+  // 原文窗口改为「未演绎部分」的前瞻参考,不再要求对段首「重新演绎」
+  assert.match(text, /尚未演绎到的后续原文/)
+  assert.match(text, /不要回头重演此前已发生过的情节/)
+  assert.doesNotMatch(text, /视角重新演绎/)
+  // 段走向标注已发生/未发生分界;页脚禁止回段首重演
+  assert.match(text, /已演过的不要重演,从未演到处继续/)
+  assert.match(text, /不要回到段首重演/)
+  // 剧情回顾标头声明均为已发生事实,防止摘要里的旧事件被当成待演剧情
+  assert.match(text, /【剧情回顾\(以下均为已发生的事实/)
+})

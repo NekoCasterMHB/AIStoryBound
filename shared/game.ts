@@ -15,8 +15,8 @@ export interface ChatMsg { role: AiRole, content: string }
 
 export interface TurnSummary { idx: number, text: string }
 
-/** 回注窗口单段字数:当前段"剩余部分"原文窗口,900 字锚定场景足够(远期由剧情回顾/近段细纲兜底)。
- *  回注间隔为玩家设置(见 app/utils/reinjectPrefs.ts,默认 8 回合) */
+/** 回注窗口单段字数:窗口从持久化水位处向前取(同段原文不重复注入,耗尽后仅结构化对照),
+ *  900 字锚定场景足够(远期由剧情回顾/近段细纲兜底)。回注间隔为玩家设置(见 app/utils/reinjectPrefs.ts,默认 8 回合) */
 export const REINJECT_WINDOW_CHARS = 900
 
 /** 游玩系统提示:明确允许成人向虚构内容,禁止拒写/回避/说教中断叙事 */
@@ -533,7 +533,7 @@ export interface TurnPromptArgs {
   deviceSpec?: string
   /** 每回合生成字数(个人中心滑动条设置):回合正文目标篇幅;缺省维持原有段落字数约束 */
   narrLength?: number
-  /** 章节回注(每 N 回合):当前段情节 + 段起始原文窗口,由页面按细纲段定位计算后传入 */
+  /** 章节回注(每 N 回合):当前段情节 + 水位之后的原文窗口(未演绎部分),由页面按细纲段定位与回注水位计算后传入 */
   reinjectPlot?: { beatIndex?: number | null, beatTitle?: string, beatSummary?: string, window: string, nextBeat?: { title?: string, summary?: string } }
   /** 当前阶段段下标(0-based,细纲段):据此给人物卡叠加阶段变体(段差异化卡);缺省不叠加 */
   stageIndex?: number | null
@@ -565,7 +565,9 @@ const TRACK_WINDOW_RADIUS = 2
 /** 远段一行骨架的字数上限 */
 const TRACK_FAR_SUMMARY_CHARS = 24
 
-/** 细纲/弧线按当前段窗口化:近窗(±TRACK_WINDOW_RADIUS)段保留完整摘要与注记,远段压成一行骨架。
+/** 细纲/弧线按当前段窗口化:当前段起的近窗(±TRACK_WINDOW_RADIUS)段保留完整摘要与注记,
+ *  更远的段压成一行骨架;当前段之前的段(已演绎过)同样压成骨架并标注「已发生」——
+ *  与未来段同格式全量注入会被当成待演剧本,诱导模型回头重演已发生的情节(剧情回退重复)。
  *  当前段未知(旧存档/未传)时全部全量,行为不变。 */
 function trackLines(
   beats: { index: number, summary: string, note?: string }[],
@@ -573,6 +575,9 @@ function trackLines(
 ): string[] {
   if (!beats.length) return []
   return beats.map((b) => {
+    if (currentBeat != null && b.index < currentBeat) {
+      return `[段${b.index + 1}](已发生,勿重演) ${clampText(b.summary, TRACK_FAR_SUMMARY_CHARS)}`
+    }
     const full = currentBeat == null || Math.abs(b.index - currentBeat) <= TRACK_WINDOW_RADIUS
     const body = full ? b.summary : clampText(b.summary, TRACK_FAR_SUMMARY_CHARS)
     return `[段${b.index + 1}] ${body}${full && b.note ? `（${b.note}）` : ''}`
@@ -881,9 +886,10 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
     }).join('\n') })
   }
   // 剧情回顾(收尾器每回合整段重写,属易变数据)放已成文的历史之后:历史消息回合间逐字节不变,
-  // 是 user 段前缀缓存的主体;摘要若置前,每次重写都会让整段 user 从头断开缓存
+  // 是 user 段前缀缓存的主体;摘要若置前,每次重写都会让整段 user 从头断开缓存。
+  // 标头明确「均已发生」:长局后细节只活在摘要里,不声明会被当成待演剧情重新演绎一遍
   if (summaryText) {
-    userParts.push({ label: '剧情回顾与历史消息', content: `【剧情回顾】${summaryText}` })
+    userParts.push({ label: '剧情回顾与历史消息', content: `【剧情回顾(以下均为已发生的事实,只作衔接基础,不要重新演绎)】${summaryText}` })
   }
   // 首回合(无摘要/无历史)的开场:按开局设定注入对应背景,缺省维持原有自由开场
   if (!hasStoryContext) {
@@ -922,12 +928,13 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
       userParts.push({ label: '剧情回顾与历史消息', content: `【开场】故事刚开始,请描写玩家「${playerName}」所处的开场场景,引入剧情与第一个矛盾。` })
     }
   }
-  // 段回注(每 N 回合):按细纲段注入当前段情节 + 段起始原文窗口,防止长局偏离故事线
+  // 段回注(每 N 回合):按细纲段注入当前段情节 + 水位后的原文窗口(未演绎部分),防止长局偏离故事线;
+  // 窗口文案须防「重演回退」:标明是未演绎的前瞻参考,已发生情节不得重演
   if (reinjectPlot?.window?.trim() || reinjectPlot?.beatSummary?.trim()) {
     const reinjectParts: string[] = []
     const arc = playerArc(characterArcs, playerArcCharacter || playerName)
     if (reinjectPlot.beatSummary?.trim()) {
-      reinjectParts.push(`【当前段情节对照(回注)】剧情当前处于细纲「${reinjectPlot.beatTitle || '当前段'}」,本段情节走向:\n${reinjectPlot.beatSummary}`)
+      reinjectParts.push(`【当前段情节对照(回注)】剧情当前处于细纲「${reinjectPlot.beatTitle || '当前段'}」,本段情节走向(含已发生与未发生部分:已演过的不要重演,从未演到处继续):\n${reinjectPlot.beatSummary}`)
     }
     if (arc && reinjectPlot.beatIndex != null) {
       const arcBeat = arc.beats.find(b => b.beatIndex === reinjectPlot.beatIndex)
@@ -940,12 +947,12 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
       }
     }
     if (reinjectPlot.window?.trim()) {
-      reinjectParts.push(`本段原文片段(对照参考;原著以主角视角书写,仅作场景与人物参考,须以玩家角色「${playerName}」的视角重新演绎):\n${reinjectPlot.window}`)
+      reinjectParts.push(`本段尚未演绎到的后续原文(前瞻参考;不要回头重演此前已发生过的情节,剧情自然推进到该处时再以其为参考继续;原著以主角视角书写,演绎时须以玩家角色「${playerName}」的视角展开):\n${reinjectPlot.window}`)
     }
     if (reinjectPlot.nextBeat?.summary?.trim()) {
       reinjectParts.push(`接下来的情节走向(后段${reinjectPlot.nextBeat.title ? `「${reinjectPlot.nextBeat.title}」` : ''}):\n${reinjectPlot.nextBeat.summary}`)
     }
-    reinjectParts.push('上述内容是故事线对照参考,帮助你把握本段设定细节与人物动向;玩家自由行动已使剧情偏离故事线时,顺着玩家行动继续演绎,不要生硬跳回原文事件或把对照材料里的情节硬接上来;仅在剧情自然走到对应节点时才呼应情节线。')
+    reinjectParts.push('上述内容是故事线对照参考,帮助你把握本段设定细节与人物动向;本段开头部分已在之前回合演绎完成,不要回到段首重演或重述已发生的事件,从当前进度继续向前推进;玩家自由行动已使剧情偏离故事线时,顺着玩家行动继续演绎,不要生硬跳回原文事件或把对照材料里的情节硬接上来;仅在剧情自然走到对应节点时才呼应情节线。')
     userParts.push({ label: '世界设定与剧情轨道', content: reinjectParts.join('\n\n') })
   }
   // 防人设漂移:核心人设复述在 user 尾部(长对话后注意力偏离开头 system 的设定,社区验证

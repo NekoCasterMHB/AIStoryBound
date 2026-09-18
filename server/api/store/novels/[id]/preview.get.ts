@@ -57,8 +57,9 @@ export default defineEventHandler(async (event) => {
   }
 
   const text = decodeNovelText(new Uint8Array(await object.arrayBuffer()))
-  // 预览字数以版本快照为准;正文实际字数与快照不一致(理论上同一次提交)时按快照截取
-  const preview = takeNovelPreview(text, saleRow.previewChars)
+  // 预览字数以版本快照为准;正文实际字数与快照不一致(理论上同一次提交)时按快照截取。
+  // 可看全文者(免费商品/已购买/发布者/管理员):preview 字段直接返回全文——免费小说自动开放全文试读
+  const preview = canViewAll ? text : takeNovelPreview(text, saleRow.previewChars)
 
   return {
     id: novel.id,
@@ -69,7 +70,7 @@ export default defineEventHandler(async (event) => {
     previewChars: saleRow.previewChars,
     totalChars: saleRow.totalChars,
     canViewAll,
-    /** 前 previewChars 字正文(未付费可读部分) */
+    /** 试读正文(免费/已购/发布者/管理员 = 全文;未付费 = 前 previewChars 字) */
     preview
   }
 })

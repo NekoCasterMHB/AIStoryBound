@@ -1043,7 +1043,7 @@ function applyNarrSpeedCustom(): void {
   narrSpeedCustom.value = ''
 }
 
-/** 段回注间隔(本地偏好,默认 5 回合):每 N 回合重新注入当前段情节 + 段首原文窗口,即时保存,新回合生效 */
+/** 段回注间隔(本地偏好,默认 8 回合):每 N 回合重新注入当前段情节 + 水位后的原文窗口,即时保存,新回合生效 */
 const reinjectEvery = ref(loadReinjectInterval())
 watch(reinjectEvery, v => saveReinjectInterval(clampReinjectInterval(v)))
 
@@ -1710,7 +1710,7 @@ watch(narrLength, v => saveNarrLength(v))
                 防跑偏频率
               </p>
               <p class="text-xs text-neutral-500">
-                AI 会越写越偏离原著。设置每隔几个回合把当前段落的原著原文重新对照一次,把剧情拉回正轨;数字越小越贴原文、消耗略增,默认 5 回合,新回合生效
+                AI 会越写越偏离原著。设置每隔几个回合把当前段落的原著原文重新对照一次,把剧情拉回正轨;数字越小越贴原文、消耗略增,默认 8 回合,新回合生效
               </p>
             </div>
             <div class="flex items-center gap-4">
@@ -1806,18 +1806,18 @@ watch(narrLength, v => saveNarrLength(v))
       <template #plugins>
         <div class="mt-4 space-y-3">
           <!-- 功能插件:已购插件与玩家导入的适配器,统一卡片形式;导入/接入文档在顶部工具栏 -->
-          <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex flex-col gap-2">
             <p class="text-sm text-neutral-500">
               已解锁插件与本地导入的适配器;未解锁的插件可到
               <NuxtLink
                 to="/workshop?tab=plugins"
                 class="text-primary underline"
               >创意工坊 → 功能插件</NuxtLink>
-              解锁(限时免费中)。
+              解锁。
             </p>
-            <div class="flex items-center gap-2">
+            <div class="grid grid-cols-2 gap-2">
               <!-- AI 自主控制总开关(全局):放在插件列表层,游戏内 AI 是否可以操作设备由此决定 -->
-              <div class="flex items-center gap-2 rounded-lg border border-gray-200 px-2.5 py-1 dark:border-gray-700">
+              <div class="flex items-center justify-center gap-2 rounded-lg border border-gray-200 px-2.5 py-1 dark:border-gray-700">
                 <UIcon
                   name="i-lucide-bot"
                   class="size-4 text-neutral-500"
@@ -1830,6 +1830,7 @@ watch(narrLength, v => saveNarrLength(v))
                 />
               </div>
               <UButton
+                block
                 size="xs"
                 color="primary"
                 variant="soft"
@@ -1839,6 +1840,7 @@ watch(narrLength, v => saveNarrLength(v))
                 测试能力
               </UButton>
               <UButton
+                block
                 size="xs"
                 variant="soft"
                 icon="i-lucide-book-open"
@@ -1847,6 +1849,7 @@ watch(narrLength, v => saveNarrLength(v))
                 制作指南
               </UButton>
               <UButton
+                block
                 size="xs"
                 color="primary"
                 icon="i-lucide-upload"

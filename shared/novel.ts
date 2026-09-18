@@ -674,6 +674,9 @@ export interface LocalGame {
   msgCount?: number
   /** 剧情当前推进到的细纲段下标(0-based;由收尾器按回回报,用于阶段变体与回注;旧存档无此字段) */
   currentBeat?: number | null
+  /** 段回注水位(防剧情回退重演):beat=上次回注的段下标,pos=该段已注入过的字符偏移(相对段首)。
+   *  回注原文窗口只从水位处向前取,同一段原文至多注入一次;旧存档无此字段,加载时初始化 */
+  reinject?: { beat: number, pos: number } | null
   summary?: { idx: number, text: string } | null
   /** @deprecated 云端增量同步已退役,全仓无读写(仅旧档可能残留);保留键位避免类型破坏 */
   lastSyncedIdx?: number

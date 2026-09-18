@@ -146,7 +146,7 @@ function onVoiceConfigSaved(cfg: WorkVoiceConfig) {
   voiceConfig.value = cfg
 }
 
-/** 段回注间隔(每 N 回合重新注入当前段情节 + 段首原文窗口;本地偏好,即时保存,新回合生效) */
+/** 段回注间隔(每 N 回合重新注入当前段情节 + 水位后的原文窗口;本地偏好,即时保存,新回合生效) */
 const reinjectEvery = ref(loadReinjectInterval())
 watch(reinjectEvery, v => saveReinjectInterval(clampReinjectInterval(v)))
 
@@ -155,7 +155,7 @@ function clampReinjectInterval(v: number): number {
   return Math.min(REINJECT_INTERVAL_MAX, Math.max(REINJECT_INTERVAL_MIN, Math.round(v)))
 }
 
-// ---- 段回注定位(每 N 回合把当前段情节 + 段起始原文窗口重新注入提示词;不依赖章节) ----
+// ---- 段回注定位(每 N 回合把当前段情节 + 水位后的原文窗口重新注入提示词;不依赖章节) ----
 
 /** 剧情当前推进到的细纲段下标(0-based;收尾器按回报推进,阶段变体与回注共用) */
 const plotBeat = ref(0)
@@ -198,25 +198,40 @@ function advancePlotBeat(reportedBeat: number | null | undefined): void {
   }
 }
 
-/** 上次回注的段下标:同一回注周期内原文窗口只出现一次(防段首原文反复把剧情拽回段首重演) */
-let lastReinjectBeat = -1
+/** 段回注水位(随存档持久化,见 LocalGame.reinject):beat=水位所属段下标,pos=该段已注入过的字符偏移。
+ *  旧实现每次回注都重注入段首 900 字原文——段首在开局回合已被逐句演绎过,反复注入会把剧情拽回段首重演
+ *  (剧情回退重复的主因);现在窗口只从水位处向前取,同一段原文至多注入一次,耗尽后仅结构化对照 */
+const REINJECT_OPENING_SKIP_CHARS = 1000
 
-/** 构建段回注:当前段情节摘要 + 玩家弧线戏份 + 后段走向摘要;段首原文窗口仅在当前段首次回注出现一次
- *  (此后仅结构化对照,不再重复注入段首原文——已偏离正典的剧情会被原文反复拽回段首)。
- *  v2 作品段窗口取自正典 text(v2 无法从 startChar 还原);v1 沿用全书拼接正文按 startChar 取窗。 */
+/** 按当前段位重算回注水位:beat 开局且当前段=开局段时跳过开场已演绎的段首(对齐开场块 slice(0,1000)),
+ *  其余段从段首起算 */
+function freshReinjectWatermark(): { beat: number, pos: number } {
+  const op = game.value?.opening
+  if (op?.mode === 'beat' && op.beatIndex != null && op.beatIndex === plotBeat.value) {
+    return { beat: plotBeat.value, pos: REINJECT_OPENING_SKIP_CHARS }
+  }
+  return { beat: plotBeat.value, pos: 0 }
+}
+
+/** 构建段回注:当前段情节摘要 + 玩家弧线戏份 + 后段走向;原文窗口从持久化水位处向前取
+ *  (同段原文不重复注入;窗口为空 = 本段原文已耗尽,仅结构化对照)。
+ *  v2 作品段窗口取自正典 text(v2 无法从 startChar 还原);v1 沿用全书拼接正文按 startChar+水位取窗。 */
 function buildBeatReinject(): { beatIndex?: number, beatTitle?: string, beatSummary?: string, window: string, nextBeat?: { title?: string, summary?: string } } | undefined {
   const beats = storylineBeats.value
   const beat = beats[plotBeat.value]
-  if (!beat) return undefined
+  if (!beat || !game.value) return undefined
   const seg = work.value?.segments[plotBeat.value]
-  const includeWindow = lastReinjectBeat !== beat.index
-  lastReinjectBeat = beat.index
+  // 段切换(或旧档无水位)时重算:新一段从段首起算;开局段跳过开场已演绎的段首
+  const wm = (!game.value.reinject || game.value.reinject.beat !== plotBeat.value)
+    ? freshReinjectWatermark()
+    : { ...game.value.reinject }
   const start = Math.max(0, beat.startChar)
-  const window = includeWindow
-    ? (seg?.canon.text?.trim()
-        ? seg.canon.text.slice(0, REINJECT_WINDOW_CHARS)
-        : joinedText.value.slice(start, start + REINJECT_WINDOW_CHARS))
-    : ''
+  const raw = seg?.canon.text?.trim()
+    ? seg.canon.text.slice(wm.pos, wm.pos + REINJECT_WINDOW_CHARS)
+    : joinedText.value.slice(start + wm.pos, start + wm.pos + REINJECT_WINDOW_CHARS)
+  // 水位越过段尾:本段原文已注入完,窗口置空;水位照常写回,防止下回合重算归零导致重复注入
+  const window = raw.trim() ? raw : ''
+  game.value.reinject = { beat: plotBeat.value, pos: wm.pos + REINJECT_WINDOW_CHARS }
   const next = beats[plotBeat.value + 1]
   const nextSeg = work.value?.segments[plotBeat.value + 1]
   const nextTitle = next?.label
@@ -317,6 +332,10 @@ onMounted(async () => {
   plotBeat.value = (typeof g.currentBeat === 'number' && g.currentBeat >= 0)
     ? g.currentBeat
     : resolveInitialBeat()
+  // 回注水位:旧档无此字段(或段下标越界)时按当前段位初始化,随后续 persist 落盘
+  if (!g.reinject || g.reinject.beat < 0 || g.reinject.beat >= storylineBeats.value.length) {
+    g.reinject = freshReinjectWatermark()
+  }
   const last = msgs.at(-1)
   options.value = last ? (g.optionsByMessage?.[last.id] ?? []) : []
   if (healed) {
@@ -958,6 +977,7 @@ async function savePointNow(snapState = snapshotState()) {
     idx: last?.idx ?? -1,
     state: snapState,
     currentBeat: plotBeat.value,
+    reinject: game.value?.reinject ?? null,
     summary: game.value?.summary ?? null,
     savedAt: new Date().toISOString()
   }).catch(() => {})
@@ -981,7 +1001,8 @@ function buildOptionsPhaseMessages(
   narratorText: string,
   flavor = ''
 ): { role: 'system' | 'user', content: string }[] {
-  // 段位底牌:收尾器自身没有细纲上下文,不告知当前段与后段,current_beat 只能盲猜(幻觉跳段)或省略(段位停滞)
+  // 段位锚:给收尾器当前段与后段的标题与走向(不给完整细纲,省上下文),current_beat 按此回报;
+  // 漏报会导致段位停滞(回注/轨道块滞留旧段),幻觉跳段由 advancePlotBeat 的「向前且 ≤2 段」上限兜底
   const curBeat = storylineBeats.value[plotBeat.value]
   const curSeg = work.value?.segments[plotBeat.value]
   const nxtBeat = storylineBeats.value[plotBeat.value + 1]
@@ -1369,7 +1390,7 @@ async function sendTurn(choice?: string) {
       ? `\n上一回合被拒绝的设备指令(不要原样重发,按原因修正或放弃):\n${rejected.map(r => `- ${r}`).join('\n')}`
       : ''
     const deviceSpec = deviceEnabled ? narratorDeviceSpec(enabledBriefs) + deviceFeedback : ''
-    // 段回注:每 reinjectEvery 回合,取当前段情节 + 段起始原文窗口 + 后段走向(有细纲即启用,不依赖开局方式)
+    // 段回注:每 reinjectEvery 回合,取当前段情节 + 水位之后的原文窗口 + 后段走向(有细纲即启用,不依赖开局方式)
     const turnIndex = messages.value.filter(m => m.role === 'narrator').length
     const reinjectPlot = turnIndex > 0 && turnIndex % reinjectEvery.value === 0 && storylineBeats.value.length > 0
       ? buildBeatReinject()
@@ -1714,6 +1735,13 @@ async function rollbackAction() {
     && (target as { currentBeat?: number | null }).currentBeat! >= 0)
     ? (target as { currentBeat: number }).currentBeat
     : (beatFromLegacyLabel((target as { currentChapter?: string | null }).currentChapter) ?? 0)
+  // 回注水位随存档点回滚(旧存档点无此字段 → 按回滚后段位重算):不回滚的话水位超前于已回退的剧情,
+  // 回注窗口会跳过回滚后需要重新演绎的原文
+  if (game.value) {
+    game.value.reinject = (target.reinject && target.reinject.beat === plotBeat.value)
+      ? { ...target.reinject }
+      : freshReinjectWatermark()
+  }
   // 剧情摘要随存档点一并回滚(旧存档点无 summary 字段 → 置空):不回滚的话摘要仍指向回滚点之后的剧情,
   // 【剧情回顾】超前于已回退的历史,会污染回滚后继续玩的叙事上下文
   if (game.value) game.value.summary = target.summary ?? null
@@ -2394,13 +2422,13 @@ watch([messages, streamDisplay], async () => {
               </div>
             </div>
 
-            <!-- 防跑偏频率(段回注间隔):定期把当前段落原著原文重新注入,防止剧情越写越偏 -->
+            <!-- 防跑偏频率(段回注间隔):定期把当前段落未演绎到的原著原文重新注入,防止剧情越写越偏 -->
             <div class="flex flex-col gap-2">
               <p class="text-sm font-semibold">
                 防跑偏频率
               </p>
               <p class="text-xs text-neutral-500">
-                AI 会越写越偏离原著。设置每隔几个回合把当前段落的原著原文重新对照一次,把剧情拉回正轨;数字越小越贴原文、消耗略增,默认 5 回合,新回合生效
+                AI 会越写越偏离原著。设置每隔几个回合把当前段落的原著原文重新对照一次,把剧情拉回正轨;数字越小越贴原文、消耗略增,默认 8 回合,新回合生效
               </p>
               <div class="flex items-center gap-4">
                 <USlider

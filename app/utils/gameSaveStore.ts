@@ -16,6 +16,8 @@ export interface GameSavePoint {
   state: GameState
   /** 剧情当前推进到的细纲段下标(0-based;旧存档点为已废弃的 currentChapter 字符串) */
   currentBeat: number | null
+  /** 段回注水位(随点回滚;旧存档点无此字段,读回 undefined → 按回滚后段位重算) */
+  reinject?: LocalGame['reinject']
   /** 存盘点时刻的整局剧情摘要(回滚时随点恢复;旧存档点无此字段,读回 undefined → 按无摘要处理) */
   summary?: LocalGame['summary'] | null
   savedAt: string

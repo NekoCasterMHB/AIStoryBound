@@ -706,7 +706,17 @@ async function onPreview(s: StoreNovelSummary) {
                   {{ s.downloadCount }}
                 </span>
                 <UBadge
-                  v-if="s.previewChars > 0"
+                  v-if="s.price === 0"
+                  color="info"
+                  variant="soft"
+                  size="sm"
+                  icon="i-lucide-eye"
+                  leading
+                >
+                  免费开放全文试读
+                </UBadge>
+                <UBadge
+                  v-else-if="s.previewChars > 0"
                   color="info"
                   variant="soft"
                   size="sm"
@@ -761,7 +771,20 @@ async function onPreview(s: StoreNovelSummary) {
             <template #footer>
               <div class="flex items-center justify-between gap-2">
                 <div class="flex items-center gap-2">
+                  <!-- 已购买且已安装到本地:该位置显示「阅读全文」直达阅读页;否则为「试读」 -->
                   <UButton
+                    v-if="s.owned && installed[s.id]?.work"
+                    size="md"
+                    variant="outline"
+                    color="neutral"
+                    icon="i-lucide-book-open"
+                    aria-label="阅读全文"
+                    :to="`/read/work/${installed[s.id]?.workId}`"
+                  >
+                    阅读全文
+                  </UButton>
+                  <UButton
+                    v-else
                     size="md"
                     variant="outline"
                     color="neutral"
@@ -814,15 +837,6 @@ async function onPreview(s: StoreNovelSummary) {
                 </UButton>
                 <template v-else-if="s.owned">
                   <template v-if="installed[s.id]?.work">
-                    <UButton
-                      :to="`/read/work/${installed[s.id]?.workId}`"
-                      color="success"
-                      variant="soft"
-                      size="sm"
-                      icon="i-lucide-book-open"
-                    >
-                      阅读
-                    </UButton>
                     <UButton
                       :to="`/generate?from=work&id=${installed[s.id]?.workId}`"
                       color="neutral"
@@ -1357,7 +1371,15 @@ async function onPreview(s: StoreNovelSummary) {
             </span>
             <span v-else>免费</span>
             <UBadge
-              v-if="previewData.previewChars > 0"
+              v-if="previewData.price === 0"
+              color="info"
+              variant="soft"
+              size="sm"
+            >
+              本作品免费 · 已开放全文试读
+            </UBadge>
+            <UBadge
+              v-else-if="previewData.previewChars > 0"
               color="info"
               variant="soft"
               size="sm"
