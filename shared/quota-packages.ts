@@ -1,15 +1,11 @@
 // shared/quota-packages.ts
-// Token 加油包定义(前后端共用,纯 TS):固定三档,价格 = DeepSeek V4 flash 输出价 ×2 向上取整(元)。
+// Token 加油包定义(前后端共用,纯 TS):固定五档,价格 = DeepSeek V4 flash 输出价 ×2 向上取整(元)。
 // 金额永远以服务端这里的表为准(价格服务端权威,前端传 packageId 即可)。
-// 三档均为促销优惠价:priceYuan 为实付价,originalPriceYuan 为划线原价(按基准公式算出)。
+// 各档均为促销优惠价:priceYuan 为实付价,originalPriceYuan 为划线原价(按基准公式算出)。
 export interface TokenPackage {
   id: string
   label: string
   shortLabel: string
-  /** 第一行说明(如世界生成次数) */
-  description: string
-  /** 第二行说明(如文字对话字数) */
-  description2: string
   tokens: number
   /** 单位:元(整数,已向上取整) */
   priceYuan: number
@@ -41,8 +37,6 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     id: 'tokens_1m_once',
     label: '新人特惠 1M',
     shortLabel: '新人1M',
-    description: '新人福利 · 每人限购 1 次',
-    description2: '约 10+ 次世界生成 · 170 万字对话',
     tokens: 1_000_000,
     priceYuan: 6,
     originalPriceYuan: packPriceYuan(1),
@@ -53,19 +47,33 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     id: 'tokens_1m',
     label: '1M tokens',
     shortLabel: '1M',
-    description: '约 10+ 次完整世界生成',
-    description2: '文字对话约 170 万字',
     tokens: 1_000_000,
     priceYuan: 12,
     originalPriceYuan: packPriceYuan(1),
     discountLabel: '6 折'
   },
   {
+    id: 'tokens_3m',
+    label: '3M tokens',
+    shortLabel: '3M',
+    tokens: 3_000_000,
+    priceYuan: 32,
+    originalPriceYuan: packPriceYuan(3),
+    discountLabel: '5.5 折'
+  },
+  {
+    id: 'tokens_6m',
+    label: '6M tokens',
+    shortLabel: '6M',
+    tokens: 6_000_000,
+    priceYuan: 62,
+    originalPriceYuan: packPriceYuan(6),
+    discountLabel: '5.4 折'
+  },
+  {
     id: 'tokens_10m',
     label: '10M tokens',
     shortLabel: '10M',
-    description: '约 100+ 次完整世界生成',
-    description2: '文字对话约 1700 万字',
     tokens: 10_000_000,
     priceYuan: 100,
     originalPriceYuan: packPriceYuan(10),
@@ -75,8 +83,6 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     id: 'tokens_50m',
     label: '50M tokens',
     shortLabel: '50M',
-    description: '约 500+ 次完整世界生成',
-    description2: '文字对话约 8500 万字',
     tokens: 50_000_000,
     priceYuan: 400,
     originalPriceYuan: packPriceYuan(50),
@@ -87,8 +93,6 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     id: 'tokens_2m_once',
     label: '双倍 2M',
     shortLabel: '双倍2M',
-    description: '首充双倍 · 每人限购 1 次',
-    description2: '约 20+ 次完整世界生成',
     tokens: 2_000_000,
     priceYuan: 12,
     originalPriceYuan: packPriceYuan(2),
@@ -97,11 +101,31 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     doublePack: true
   },
   {
+    id: 'tokens_6m_once',
+    label: '双倍 6M',
+    shortLabel: '双倍6M',
+    tokens: 6_000_000,
+    priceYuan: 32,
+    originalPriceYuan: packPriceYuan(6),
+    discountLabel: '2.8 折',
+    oneTimeOnly: true,
+    doublePack: true
+  },
+  {
+    id: 'tokens_12m_once',
+    label: '双倍 12M',
+    shortLabel: '双倍12M',
+    tokens: 12_000_000,
+    priceYuan: 62,
+    originalPriceYuan: packPriceYuan(12),
+    discountLabel: '2.7 折',
+    oneTimeOnly: true,
+    doublePack: true
+  },
+  {
     id: 'tokens_20m_once',
     label: '双倍 20M',
     shortLabel: '双倍20M',
-    description: '首充双倍 · 每人限购 1 次',
-    description2: '约 200+ 次完整世界生成',
     tokens: 20_000_000,
     priceYuan: 100,
     originalPriceYuan: packPriceYuan(20),
@@ -113,8 +137,6 @@ export const TOKEN_PACKAGES: TokenPackage[] = [
     id: 'tokens_100m_once',
     label: '双倍 100M',
     shortLabel: '双倍100M',
-    description: '首充双倍 · 每人限购 1 次',
-    description2: '文字对话约 1.7 亿字',
     tokens: 100_000_000,
     priceYuan: 400,
     originalPriceYuan: packPriceYuan(100),
@@ -137,8 +159,6 @@ export const TEST_PACKAGE: TokenPackage = {
   id: 'tokens_test_0_1',
   label: '充值测试 0.1 元',
   shortLabel: '测试0.1',
-  description: '管理端充值链路测试',
-  description2: '支付成功后订单置为已支付,不入账 token',
   tokens: 0,
   priceYuan: 0.1
 }

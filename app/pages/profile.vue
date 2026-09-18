@@ -2112,9 +2112,7 @@ watch(narrLength, v => saveNarrLength(v))
                 </UBadge>
               </p>
               <p class="text-xs text-neutral-500">
-                {{ newbiePkg.description }}
-                <br>
-                {{ newbiePkg.description2 }}
+                到账 {{ newbiePkg.tokens.toLocaleString() }} tokens
               </p>
               <p class="mt-2 flex items-baseline gap-1.5">
                 <span class="text-lg font-bold">¥{{ newbiePkg.priceYuan }}</span>
@@ -2131,9 +2129,6 @@ watch(narrLength, v => saveNarrLength(v))
                   {{ newbiePkg.discountLabel }}
                 </UBadge>
               </p>
-              <p class="text-xs text-neutral-500">
-                到账 {{ newbiePkg.tokens.toLocaleString() }} tokens
-              </p>
               <p
                 v-if="pendingByPackageId[newbiePkg.id]"
                 class="mt-1.5 flex items-center gap-1 text-xs font-medium text-amber-600"
@@ -2145,45 +2140,6 @@ watch(narrLength, v => saveNarrLength(v))
                 有一笔待支付订单,点击支付将续付该订单
               </p>
             </UCard>
-
-            <!-- 常规加油包:三列 -->
-            <div class="grid gap-3 sm:grid-cols-3">
-              <UCard
-                v-for="pkg in regularPackages"
-                :key="pkg.id"
-                class="cursor-pointer border-2 transition"
-                :class="selectedPkg?.id === pkg.id ? 'border-primary-400' : 'border-transparent'"
-                :ui="{ body: 'p-2 sm:p-3' }"
-                @click="selectedPkg = pkg"
-              >
-                <p class="font-semibold">
-                  {{ pkg.label }}
-                </p>
-                <p class="text-xs text-neutral-500">
-                  {{ pkg.description }}
-                  <br>
-                  {{ pkg.description2 }}
-                </p>
-                <p class="mt-2 flex items-baseline gap-1.5">
-                  <span class="text-lg font-bold">¥{{ pkg.priceYuan }}</span>
-                  <span
-                    v-if="pkg.originalPriceYuan"
-                    class="text-xs text-neutral-400 line-through"
-                  >¥{{ pkg.originalPriceYuan }}</span>
-                  <UBadge
-                    v-if="pkg.discountLabel"
-                    size="sm"
-                    color="error"
-                    variant="soft"
-                  >
-                    {{ pkg.discountLabel }}
-                  </UBadge>
-                </p>
-                <p class="text-xs text-neutral-500">
-                  到账 {{ pkg.tokens.toLocaleString() }} tokens
-                </p>
-              </UCard>
-            </div>
 
             <!-- 双倍首充包(同价双 token,每档每人限购一次):有可购档位才显示 -->
             <div
@@ -2197,7 +2153,7 @@ watch(narrLength, v => saveNarrLength(v))
                 />
                 首充双倍 · 每档限购一次
               </p>
-              <div class="grid gap-3 sm:grid-cols-3">
+              <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 <UCard
                   v-for="pkg in doublePackages"
                   :key="pkg.id"
@@ -2216,10 +2172,8 @@ watch(narrLength, v => saveNarrLength(v))
                       限购一次
                     </UBadge>
                   </p>
-                  <p class="text-xs text-neutral-500">
-                    {{ pkg.description }}
-                    <br>
-                    {{ pkg.description2 }}
+                  <p class="text-xs font-medium text-amber-600 dark:text-amber-400">
+                    到账 {{ pkg.tokens.toLocaleString() }} tokens(双倍)
                   </p>
                   <p class="mt-2 flex items-baseline gap-1.5">
                     <span class="text-lg font-bold">¥{{ pkg.priceYuan }}</span>
@@ -2236,9 +2190,6 @@ watch(narrLength, v => saveNarrLength(v))
                       {{ pkg.discountLabel }}
                     </UBadge>
                   </p>
-                  <p class="text-xs font-medium text-amber-600 dark:text-amber-400">
-                    到账 {{ pkg.tokens.toLocaleString() }} tokens(双倍)
-                  </p>
                   <p
                     v-if="pendingByPackageId[pkg.id]"
                     class="mt-1.5 flex items-center gap-1 text-xs font-medium text-amber-600"
@@ -2251,6 +2202,40 @@ watch(narrLength, v => saveNarrLength(v))
                   </p>
                 </UCard>
               </div>
+            </div>
+
+            <!-- 常规加油包:手机两列,sm 起三列 -->
+            <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <UCard
+                v-for="pkg in regularPackages"
+                :key="pkg.id"
+                class="cursor-pointer border-2 transition"
+                :class="selectedPkg?.id === pkg.id ? 'border-primary-400' : 'border-transparent'"
+                :ui="{ body: 'p-2 sm:p-3' }"
+                @click="selectedPkg = pkg"
+              >
+                <p class="font-semibold">
+                  {{ pkg.label }}
+                </p>
+                <p class="text-xs text-neutral-500">
+                  到账 {{ pkg.tokens.toLocaleString() }} tokens
+                </p>
+                <p class="mt-2 flex items-baseline gap-1.5">
+                  <span class="text-lg font-bold">¥{{ pkg.priceYuan }}</span>
+                  <span
+                    v-if="pkg.originalPriceYuan"
+                    class="text-xs text-neutral-400 line-through"
+                  >¥{{ pkg.originalPriceYuan }}</span>
+                  <UBadge
+                    v-if="pkg.discountLabel"
+                    size="sm"
+                    color="error"
+                    variant="soft"
+                  >
+                    {{ pkg.discountLabel }}
+                  </UBadge>
+                </p>
+              </UCard>
             </div>
           </div>
           <p
