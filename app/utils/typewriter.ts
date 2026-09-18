@@ -27,7 +27,7 @@ export interface TypewriterOptions {
   onAutoEnd?: () => void
   /**
    * 显示门(可选):每次即将显示新内容前调用;返回 pending 的 Promise 时打字机暂停,
-   * 落定后继续。用于配音跟读(段落文字上屏后等音频播完再显示下一段)。flush(快进)后不再调用。
+   * 落定后继续。用于需要阻塞显示的外部等待;flush(快进)后不再调用。
    */
   waitFor?: (display: string, fullText: string) => Promise<unknown> | null | undefined
 }

@@ -45,6 +45,10 @@ watch(() => props.open, async (open) => {
 
 watch(config, () => {
   if (!loaded.value || !props.scopeId) return
+  // 任意设置变更:正在进行的朗读立即停止(旧队列基于旧音色/语速,继续播已不符合新设置),
+  // 并即时回传新配置(页面立刻停跟读链、后续分段改用新配置);IndexedDB 写入仍防抖
+  if (ttsPlayer.state.value !== 'idle') ttsPlayer.stopTts()
+  emit('saved', JSON.parse(JSON.stringify(config.value)) as WorkVoiceConfig)
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     saveTimer = undefined
@@ -55,11 +59,20 @@ watch(config, () => {
 async function persist() {
   try {
     await saveVoiceConfig(props.scopeId, config.value)
-    emit('saved', JSON.parse(JSON.stringify(config.value)) as WorkVoiceConfig)
   } catch (e) {
     toast.add({ title: '配音设置保存失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
   }
 }
+
+// ---- 朗读实时状态(播放器是全局单例:剧情跟读/消息朗读/听书/试听共用,只读展示 + 暂停/停止) ----
+const playState = computed(() => ttsPlayer.state.value)
+const playSource = computed(() => ttsPlayer.currentSource.value)
+const playIndex = computed(() => ttsPlayer.currentIndex.value)
+const playTotal = computed(() => ttsPlayer.totalSegments.value)
+const playSegText = computed(() => playSource.value?.segments[playIndex.value]?.text?.trim().slice(0, 50) ?? '')
+const playProgress = computed(() => (playTotal.value > 0 ? Math.round((playIndex.value / playTotal.value) * 100) : 0))
+const playStateLabel = computed(() =>
+  ({ loading: '合成中', playing: '朗读中', paused: '已暂停', error: '出错' } as Record<string, string>)[playState.value] ?? '')
 
 /**
  * 「不配音」哨兵值:reka 的 SelectItem 禁止空字符串 value(挂载即抛错,
@@ -133,6 +146,53 @@ function toastTtsError(e: unknown) {
       <p class="mb-4 text-xs text-neutral-500">
         设置保存在本浏览器(IndexedDB),换设备需重新配置。旁白朗读剧情描述(可选「关闭旁白」,只朗读角色台词);为角色单独设置音色后,对白将按角色发音。
       </p>
+      <!-- 朗读实时进度(全局播放器:剧情跟读/消息朗读/听书/试听),可暂停/继续/停止 -->
+      <div
+        v-if="playSource && playState !== 'idle'"
+        class="mb-4 rounded-lg border border-primary-500/30 bg-primary-500/5 px-3 py-2.5"
+      >
+        <div class="flex items-center justify-between gap-2">
+          <p class="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+            <UIcon
+              name="i-lucide-volume-2"
+              class="size-4 shrink-0"
+              :class="playState === 'playing' ? 'text-primary-500' : 'text-neutral-400'"
+            />
+            <span class="shrink-0">{{ playStateLabel }}</span>
+            <span class="min-w-0 truncate text-neutral-500">· {{ playSource.label }}</span>
+          </p>
+          <div class="flex shrink-0 items-center gap-1">
+            <UButton
+              :icon="playState === 'paused' ? 'i-lucide-play' : 'i-lucide-pause'"
+              :label="playState === 'paused' ? '继续' : '暂停'"
+              size="xs"
+              color="neutral"
+              variant="soft"
+              :disabled="playState === 'error'"
+              @click="playState === 'paused' ? ttsPlayer.resumeTts() : ttsPlayer.pauseTts()"
+            />
+            <UButton
+              icon="i-lucide-square"
+              label="停止"
+              size="xs"
+              color="error"
+              variant="soft"
+              @click="ttsPlayer.stopTts()"
+            />
+          </div>
+        </div>
+        <p
+          class="mt-1.5 truncate text-xs text-neutral-500"
+          :title="playSource.segments[playIndex]?.text"
+        >
+          第 {{ playIndex + 1 }}/{{ playTotal }} 段:{{ playSegText }}
+        </p>
+        <UProgress
+          :model-value="playProgress"
+          size="xs"
+          class="mt-1.5"
+        />
+      </div>
       <div
         v-if="loaded"
         class="flex flex-col gap-4"
@@ -179,7 +239,7 @@ function toastTtsError(e: unknown) {
               打字机跟读
             </p>
             <p class="text-xs text-neutral-500">
-              新回合剧情打字机显示时同步朗读:文字显示到一段就播一段(旁白与角色各用其音色),播完继续显示;关闭后仅手动点消息旁的朗读按钮播放
+              新回合剧情打字机显示时同步朗读:段落一开始显示就开播,文字与朗读并行(旁白与角色各用其音色);关闭后仅手动点消息旁的朗读按钮播放
             </p>
           </div>
           <USwitch

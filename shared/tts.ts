@@ -155,18 +155,37 @@ export function buildSpeechSegments(text: string, opts: BuildSpeechOptions): Spe
     if (start < 0) continue
     const narration = text.slice(cursor, start)
     if (narration.trim() && !narratorOff) raw.push({ text: narration, voice: opts.narratorVoice })
-    // 归属说话角色:在引号前的旁白尾段(末 60 字)找角色名
-    const gap = normName(narration.slice(-60))
+    // 归属说话角色:① 强信号——旁白尾段以「角色名+引导词+冒号」紧邻引号收尾(prompt 强制该格式),
+    // 冒号前紧邻的已知角色名即说话人;比「最近名字」扫描可靠(「A看着B道:」多名字句式扫描必归错);
+    // ② 弱信号——末 60 字内离引号最近出现的角色名(引号前刚说完「XX道:」的才是说话人;
+    // 名单顺序不可靠——旁白里常先提到别的角色,如「青璃推门而入…掌柜压低了声音:」);
+    // ③ 兜底——沿用上一个说话角色(连续对白)
+    const gap = normName(narration.slice(-80))
     let speaker: string | null = null
     if (opts.voiceOf) {
-      // 取「离引号最近出现」的角色名(引号前刚说完「XX道:」的才是说话人;
-      // 名单顺序不可靠——旁白里常先提到别的角色,如「青璃推门而入…掌柜压低了声音:」)
-      let best: { name: string, pos: number } | null = null
-      for (const n of names) {
-        const pos = gap.lastIndexOf(n.norm)
-        if (pos >= 0 && (!best || pos > best.pos)) best = { name: n.raw, pos }
+      const ci = Math.max(gap.lastIndexOf('：'), gap.lastIndexOf(':'))
+      if (ci >= 0 && ci >= gap.length - 12) {
+        const head = gap.slice(0, ci)
+        // 「名字+短引导词(≤6 字)+冒号」:取离冒号最近的已知角色名;距离并列取长名(names 已按长度降序)
+        let hit: { name: string, dist: number } | null = null
+        for (const n of names) {
+          const pos = head.lastIndexOf(n.norm)
+          if (pos < 0) continue
+          const dist = head.length - (pos + n.norm.length)
+          if (dist > 6) continue
+          if (!hit || dist < hit.dist) hit = { name: n.raw, dist }
+        }
+        if (hit) speaker = hit.name
       }
-      speaker = best?.name ?? lastSpeaker
+      if (!speaker) {
+        const scan = gap.slice(-60)
+        let best: { name: string, pos: number } | null = null
+        for (const n of names) {
+          const pos = scan.lastIndexOf(n.norm)
+          if (pos >= 0 && (!best || pos > best.pos)) best = { name: n.raw, pos }
+        }
+        speaker = best?.name ?? lastSpeaker
+      }
     }
     if (speaker) lastSpeaker = speaker
     const voice = (speaker && opts.voiceOf?.(speaker)) || opts.narratorVoice

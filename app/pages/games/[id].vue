@@ -101,10 +101,13 @@ function openVoiceSettings() {
   voiceModalOpen.value = true
 }
 const voiceConfig = ref<WorkVoiceConfig>({ narratorVoice: '', speed: 1, autoSpeak: true, characters: {} })
-/** 跟读进度:本回合流式文本中已被朗读过的字符数(与打字机 waitFor 门配对使用) */
-let spokenLen = 0
-/** 跟读分段缓存(按流式全文长度失效;同长度内分段稳定,免每 tick 重算) */
-let segCache: { srcLen: number, segs: SpeechSegment[] } | null = null
+/** 跟读调度游标:本回合流式文本中已排入播放链的字符数(段落一开始上屏即排入,不阻塞显示) */
+let scheduledLen = 0
+/** 跟读分段缓存:全文长度 + 稳定边界(最后一个闭合引号之前的分段不随流式追加变化) */
+let segCache: { srcLen: number, segs: SpeechSegment[], stable: number } | null = null
+/** 跟读播放链:段落串行播放的 promise 尾;token 递增使未起播的段作废(停止/快进/新回合/手动朗读/设置变更) */
+let liveChainToken = 0
+let liveChain: Promise<void> = Promise.resolve()
 /** 本回合配音已消耗的 TTS token(客户端与 server/api/tts.post.ts 同公式估算;服务端为计费真源) */
 const turnTtsTokens = ref(0)
 
@@ -127,12 +130,52 @@ function isVoiceActiveFor(msgId: string): boolean {
     && !['idle', 'error'].includes(ttsPlayer.state.value)
 }
 
+/** 稳定边界:最后一个闭合引号的结束位置——其前文本不会再随流式追加而重新分段(引号闭合即定型) */
+function stableFrontier(text: string): number {
+  let last = 0
+  for (const q of ['」', '”', '』']) {
+    const i = text.lastIndexOf(q)
+    if (i >= 0) last = Math.max(last, i + 1)
+  }
+  return last
+}
+
+/** 停止本回合跟读:作废链上未起播的段 + 停掉在播音频(停止/快进/新回合/设置变更共用) */
+function stopLiveTts() {
+  liveChainToken++
+  liveChain = Promise.resolve()
+  ttsPlayer.stopTts()
+}
+
+/** 把段落串入跟读播放链(不阻塞打字机):链内逐段顺序播,前一段播完自动接续;
+ *  被手动朗读/弹窗试听抢占时该步让位,不再与用户操作抢播放器 */
+function enqueueLiveSegment(seg: SpeechSegment, speed: number) {
+  const token = liveChainToken
+  liveChain = liveChain.then(() => {
+    if (token !== liveChainToken) return
+    const cur = ttsPlayer.currentSource.value
+    if (cur && cur.id !== 'tts-live') return
+    return ttsPlayer.playTtsSource({ id: 'tts-live', label: '剧情跟读', segments: [seg] }, { speed })
+      .then(() => {
+        // 播放成功 = 服务端已按段计费:计入回合统计(失败会退款,不计)
+        addTurnTtsTokens(seg.text, speed)
+      })
+      .catch((e: unknown) => {
+        // 失败跳过该段继续:配音永不阻塞或中断文字体验
+        toast.add({ title: '语音合成失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+      })
+  })
+}
+
 /** 播放/停止一条旁白消息的剧情朗读 */
 function toggleNarratorVoiceover(msgId: string, content: string) {
   if (isVoiceActiveFor(msgId)) {
     ttsPlayer.stopTts()
     return
   }
+  // 手动朗读接管播放器:作废本回合跟读链,避免链上后续段落抢走播放
+  liveChainToken++
+  liveChain = Promise.resolve()
   void ttsPlayer.playTtsSource(
     { id: msgId, label: '剧情朗读', segments: speechSegmentsOf(content) },
     { speed: voiceConfig.value.speed }
@@ -141,9 +184,11 @@ function toggleNarratorVoiceover(msgId: string, content: string) {
   })
 }
 
-/** 配音设置弹窗保存回传(下一条消息的朗读即用新配置) */
+/** 配音设置弹窗保存回传:立即停掉进行中的跟读(旧队列基于旧音色/语速,继续播已不符合新设置),
+ *  后续分段调度改用新配置 */
 function onVoiceConfigSaved(cfg: WorkVoiceConfig) {
   voiceConfig.value = cfg
+  stopLiveTts()
 }
 
 /** 段回注间隔(每 N 回合重新注入当前段情节 + 水位后的原文窗口;本地偏好,即时保存,新回合生效) */
@@ -460,7 +505,7 @@ const failedTurn = ref<{ choice?: string } | null>(null)
 /** 停止本回合:正文未就绪时中止在途 AI 调用,未获回应的行动将被撤销;正文已完整(打字机播放中)则快进到全文 */
 function stopTurn() {
   if (narrReady.value) {
-    typewriter?.flush()
+    flushStream()
     return
   }
   turnAbort?.abort()
@@ -492,8 +537,8 @@ const narrReady = ref(false)
 
 /** 点击流式文本 → 立即显示全文(剩余设备指令顺序执行,停顿跳过,自动会话收尾) */
 function flushStream() {
-  // 快进 = 跳过剩余文字显示,跟读音频一并停止(快速模式下打字机门不再触发)
-  ttsPlayer.stopTts()
+  // 快进 = 跳过剩余文字显示,跟读链与在播音频一并停止(快速模式下打字机门不再触发)
+  stopLiveTts()
   typewriter?.flush()
 }
 
@@ -1260,44 +1305,39 @@ async function sendTurn(choice?: string) {
   let deviceCmdCount = 0
   const startNarrStream = () => {
     deviceCmdCount = 0
-    spokenLen = 0
+    scheduledLen = 0
     segCache = null
     turnTtsTokens.value = 0
-    ttsPlayer.stopTts()
+    stopLiveTts()
     typewriter?.dispose()
     narrParser = createNarrParser()
     const speedTier = narrSpeedTierOf(narrSpeed.value)
     typewriter = createTypewriter({
       cps: narrSpeed.value,
       pauseScale: speedTier.pauseScale,
-      // 配音跟读门:段落文字完整上屏即朗读该段(打字机暂停等音频),播完继续显示下一段;
-      // 仅在叙事流结束后预取剩余段(流式期间段文本还在增长,预取必然缓存失效,纯浪费);
-      // 关闭跟读/失败时门放行,不阻塞文字显示
+      // 配音跟读调度(门永远放行,不阻塞文字):段落一开始上屏就排入播放链——朗读与打字机同步开始,
+      // 链内逐段顺序播,文字可跑在朗读前面。流式期间只调度「稳定边界」内的段(闭合引号前的分段
+      // 不再随追加变化,跨边界的段落会整体重切);叙事流结束后全文定型,剩余段随上屏逐段调度+预取。
+      // 关闭跟读时门直接放行,不产生任何播放
       waitFor: (display, full) => {
         const cfg = voiceConfig.value
         if (!cfg.autoSpeak || !full) return null
         if (segCache?.srcLen !== full.length) {
-          segCache = { srcLen: full.length, segs: speechSegmentsOf(full) }
+          segCache = { srcLen: full.length, segs: speechSegmentsOf(full), stable: stableFrontier(full) }
         }
+        const horizon = narrReady.value ? full.length : segCache.stable
         let start = 0
         for (const seg of segCache.segs) {
           const end = start + seg.text.length
-          if (end > spokenLen) {
-            if (display.length < end) {
+          if (end > horizon) break // 段跨过稳定边界(流式前沿,分段未定型):流结束后再调度
+          if (end > scheduledLen) {
+            if (display.length <= start) {
+              // 段还未开始显示:叙事流结束后预取,轮到播放时零等待
               if (narrReady.value) ttsPlayer.prefetchTts(seg.text, seg.voice, cfg.speed)
-              return null
+              break
             }
-            return ttsPlayer.playTtsSource({ id: 'tts-live', label: '剧情跟读', segments: [seg] }, { speed: cfg.speed })
-              .then(() => {
-                spokenLen = end
-                // 播放成功 = 服务端已按段计费:计入回合统计(失败会退款,不计)
-                addTurnTtsTokens(seg.text, cfg.speed)
-              })
-              .catch((e: unknown) => {
-                // 失败同样推进游标:门不放行会死循环重试同一失败段;文字显示永不被配音卡死
-                spokenLen = end
-                toast.add({ title: '语音合成失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
-              })
+            enqueueLiveSegment(seg, cfg.speed)
+            scheduledLen = end
           }
           start = end
         }
@@ -1519,24 +1559,27 @@ async function sendTurn(choice?: string) {
         optionsErr = e instanceof CancelledError ? null : e
       })
 
-    // 等打字机播完。流结束后在途请求的 abort 监听已随 fetch 拆除,播放阶段自行监听停止信号:
-    // 点击「停止」立即冻结播放;收尾已结算(成功或失败)时保留剧情正常走后续(失败走错误路径重试),
-    // 未结算时撤销本回合(行动未获回应)。
+    // 等打字机播完 + 跟读链收尾(朗读与文字并行,文字先完时此处等音频追上;
+    // 「快进/停止」会作废链,此处立即落定)。流结束后在途请求的 abort 监听已随 fetch 拆除,
+    // 播放阶段自行监听停止信号:点击「停止」立即冻结播放与朗读;收尾已结算(成功或失败)时
+    // 保留剧情正常走后续(失败走错误路径重试),未结算时撤销本回合(行动未获回应)。
     await new Promise<void>((resolve, reject) => {
       const sig = turnAbort?.signal
       const stop = () => {
         sig?.removeEventListener('abort', stop)
         typewriter?.dispose()
-        ttsPlayer.stopTts()
+        stopLiveTts()
         if (optionsOk || optionsErr) resolve()
         else reject(new CancelledError())
       }
       if (!sig || sig.aborted) return stop()
       sig.addEventListener('abort', stop, { once: true })
-      ;(typewriter ? typewriter.done() : Promise.resolve()).then(() => {
-        sig.removeEventListener('abort', stop)
+      ;(async () => {
+        await (typewriter ? typewriter.done() : Promise.resolve())
+        await liveChain
+        sig?.removeEventListener('abort', stop)
         resolve()
-      })
+      })()
     })
 
     // 播放结束:旁白上屏;收尾未就绪时显示选项骨架屏(等待时长已与播放重叠,通常即刻可用)
@@ -1705,7 +1748,8 @@ interface RollbackMenuState { x: number, y: number, msgId: string }
 const rollbackMenu = ref<RollbackMenuState | null>(null)
 
 async function openRollbackMenu(e: MouseEvent, msg: LocalGame['messages'][number]) {
-  if (streaming.value || msg.role !== 'user') return
+  // 生成/播放中同样允许打开:确认弹窗会先要求「放弃当前生成」再回滚(见 rollbackAction)
+  if (msg.role !== 'user') return
   const points = await listGamePoints(gameId)
   if (!points.some(p => p.idx < msg.idx)) return
   rollbackMenu.value = {
@@ -1715,13 +1759,47 @@ async function openRollbackMenu(e: MouseEvent, msg: LocalGame['messages'][number
   }
 }
 
+/** 生成中回滚确认弹窗:先放弃当前生成(打字机播放/收尾期间点历史行动)再回滚 */
+const rollbackAbortOpen = ref(false)
+let rollbackAbortMsgId = ''
+
 async function rollbackAction() {
   const menu = rollbackMenu.value
-  if (!menu || streaming.value) return
+  if (!menu) return
   const msg = messages.value.find(m => m.id === menu.msgId)
   rollbackMenu.value = null
   if (!msg || msg.role !== 'user') return
+  if (streaming.value) {
+    rollbackAbortMsgId = msg.id
+    rollbackAbortOpen.value = true
+    return
+  }
+  await rollbackToMessage(msg)
+}
 
+/** 确认放弃当前生成:中止回合(与停止按钮同路径),等回合收尾完全落定后执行回滚
+ *  (不等落定会与 sendTurn 的 catch 清理竞态:撤销行动/恢复选项可能发生在截断之后) */
+async function confirmRollbackAbort() {
+  const msgId = rollbackAbortMsgId
+  rollbackAbortOpen.value = false
+  rollbackAbortMsgId = ''
+  if (!msgId) return
+  turnAbort?.abort()
+  if (streaming.value) {
+    await new Promise<void>((resolve) => {
+      const un = watch(streaming, (v) => {
+        if (!v) {
+          un()
+          resolve()
+        }
+      })
+    })
+  }
+  const msg = messages.value.find(m => m.id === msgId)
+  if (msg) await rollbackToMessage(msg)
+}
+
+async function rollbackToMessage(msg: LocalGame['messages'][number]) {
   const points = await listGamePoints(gameId)
   const target = points.find(p => p.idx < msg.idx)
   if (!target) return
@@ -2809,7 +2887,9 @@ watch([messages, streamDisplay], async () => {
           v-else
           block
           :label="narrReady ? '快进' : (awaitingOptions ? '生成选项中…' : '停止')"
-          :icon="narrReady ? 'i-lucide-chevrons-right' : (awaitingOptions ? 'i-lucide-loader-circle' : 'i-lucide-square')"
+          :icon="narrReady ? 'i-lucide-chevrons-right' : (awaitingOptions ? undefined : 'i-lucide-square')"
+          :loading="awaitingOptions"
+          loading-icon="i-lucide-loader-circle"
           :color="narrReady ? 'primary' : 'error'"
           variant="outline"
           @click="stopTurn"
@@ -3041,6 +3121,35 @@ watch([messages, streamDisplay], async () => {
           />
         </div>
       </Teleport>
+
+      <!-- 生成中回滚确认:剧情还在生成时选择回滚,先确认放弃当前生成 -->
+      <UModal
+        v-model:open="rollbackAbortOpen"
+        title="当前正在生成"
+        :ui="{ content: 'sm:max-w-sm' }"
+      >
+        <template #body>
+          <p class="text-sm text-neutral-600 dark:text-neutral-300">
+            剧情还在生成中,回滚会立即放弃当前生成进度,并恢复到该行动之前的状态。确定要放弃吗?
+          </p>
+        </template>
+        <template #footer>
+          <div class="flex justify-end gap-2">
+            <UButton
+              label="继续生成"
+              color="neutral"
+              variant="outline"
+              @click="rollbackAbortOpen = false"
+            />
+            <UButton
+              label="放弃并回滚"
+              icon="i-lucide-rotate-ccw"
+              color="error"
+              @click="confirmRollbackAbort"
+            />
+          </div>
+        </template>
+      </UModal>
 
       <!-- AI 开场选择模态框:左右滑动/箭头切换开场设定,确认后开始故事 -->
       <UModal
