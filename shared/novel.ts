@@ -509,10 +509,14 @@ export interface MergedFaction extends ExtractedFaction {
   mentionCount: number
 }
 export interface MergedTimelineEvent extends ExtractedTimelineEvent {
+  /** 合并阶段的展示文本(与 event 同文;历史档只有 name) */
+  name: string
   sources: EntitySource[]
   mentionCount: number
 }
 export interface MergedWorldRule extends ExtractedWorldRule {
+  /** 合并阶段的展示文本(与 rule 同文;历史档只有 name) */
+  name: string
   sources: EntitySource[]
   mentionCount: number
 }
@@ -521,6 +525,8 @@ export interface MergedItem extends ExtractedItem {
   mentionCount: number
 }
 export interface MergedForeshadow extends ExtractedForeshadow {
+  /** 合并阶段的展示文本(与 hint 同文;历史档只有 name) */
+  name: string
   sources: EntitySource[]
   mentionCount: number
 }

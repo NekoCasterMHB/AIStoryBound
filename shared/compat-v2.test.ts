@@ -47,7 +47,7 @@ function makeWork(): LocalWork {
     storyline,
     entities: {
       characters: [], locations: [], factions: [], timeline_events: [],
-      world_rules: [{ category: '校园', rule: '资料室需登记', quote: null, sources: [], mentionCount: 1 }],
+      world_rules: [{ name: '资料室需登记', category: '校园', rule: '资料室需登记', quote: null, sources: [], mentionCount: 1 }],
       items: [], foreshadowing: []
     },
     conflicts: [],

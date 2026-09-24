@@ -1458,6 +1458,7 @@ async function sendTurn(choice?: string) {
       entities: work.value?.world.entities,
       conflicts: work.value?.world.conflicts,
       storyline: work.value?.storyline,
+      fulltext: work.value?.fulltext,
       v2Segment: v2Segment.value,
       characterArcs: work.value?.world.characterArcs,
       playerArcCharacter: game.value?.characterName,

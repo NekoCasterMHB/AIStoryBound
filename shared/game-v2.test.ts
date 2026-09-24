@@ -259,3 +259,74 @@ test('prompt:回注块标明「未演绎的前瞻参考」并禁止回段首重�
   // 剧情回顾标头声明均为已发生事实,防止摘要里的旧事件被当成待演剧情
   assert.match(text, /【剧情回顾\(以下均为已发生的事实/)
 })
+
+test('prompt:旧管线实体字段兼容(rule/hint 缺失回退 name),空条目不产出空编号行', () => {
+  const text = buildTurnPromptParts({
+    title: '资料室之行',
+    playerName: '林凡',
+    playerCard: oldProtagonist,
+    cards: [oldProtagonist],
+    state: stateWith({}),
+    history: [],
+    entities: {
+      characters: [], locations: [], factions: [], timeline_events: [], items: [],
+      world_rules: [
+        { name: '公堂上顶撞县令会被打板子', category: '社会规则', mentionCount: 0 },
+        { name: '公堂上顶撞县令会被打板子。', category: '社会规则', mentionCount: 0 },
+        { category: '社会规则', mentionCount: 0 }
+      ],
+      foreshadowing: [
+        { name: '吊坠为上弦月,属男子', mentionCount: 0 },
+        { mentionCount: 0 }
+      ]
+    } as unknown as Parameters<typeof buildTurnPromptParts>[0]['entities']
+  }).map(p => p.content).join('\n')
+  // rule 缺失回退 name;纯空条目被过滤,不再产出「规则:社会规则;…」与空伏笔行;
+  // 仅差句号的重复条目归一化去重,只注入一次
+  assert.match(text, /规则:社会规则·公堂上顶撞县令会被打板子/)
+  assert.equal((text.match(/公堂上顶撞县令会被打板子/g) ?? []).length, 1)
+  assert.match(text, /伏笔\/悬念:\n1\. 吊坠为上弦月,属男子/)
+  assert.doesNotMatch(text, /^\d+\. $/m)
+})
+
+test('prompt:mentionCount 全 0 时按全文出现次数回填排序', () => {
+  const fulltext = '临溪县衙升堂。他走向临溪县衙。临溪县衙外人声鼎沸。云汐一中是现代学校。'
+  const text = buildTurnPromptParts({
+    title: '资料室之行',
+    playerName: '林凡',
+    playerCard: oldProtagonist,
+    cards: [oldProtagonist],
+    state: stateWith({}),
+    history: [],
+    fulltext,
+    entities: {
+      characters: [], timeline_events: [], world_rules: [], foreshadowing: [], items: [], factions: [],
+      locations: [
+        { name: '云汐一中', mentionCount: 0 },
+        { name: '临溪县衙', mentionCount: 0 }
+      ]
+    } as unknown as Parameters<typeof buildTurnPromptParts>[0]['entities']
+  }).map(p => p.content).join('\n')
+  // 出现 3 次的临溪县衙排在出现 1 次的云汐一中之前(不再按数组顺序取头部)
+  assert.match(text, /地点:临溪县衙[\s\S]*云汐一中/)
+})
+
+test('prompt:段主角名单存在但除玩家外无卡可锚时,不回退未登场的 role=主角 卡', () => {
+  const ocCard: CharacterCard = { name: '千夏', role: '主角', identity: '作者自设', personality: [] }
+  const seg: SegmentDir = {
+    canon: { index: 0, title: '段', cast: ['林凡', '小美'], 主角: ['林凡'], beat: 'b', 节点: [], text: 'x' },
+    characters: {}
+  }
+  const text = buildTurnPromptParts({
+    title: '资料室之行',
+    playerName: '林凡',
+    playerCard: oldProtagonist,
+    cards: [ocCard, oldProtagonist],
+    state: stateWith({}),
+    history: [],
+    stageIndex: 0,
+    storyline: [{ index: 0, startChar: 0, label: '段', summary: 's', cast: ['林凡', '小美'] }],
+    v2Segment: seg
+  }).map(p => p.content).join('\n')
+  assert.doesNotMatch(text, /【NPC 对手戏角色[\s\S]*千夏/)
+})

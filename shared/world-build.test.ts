@@ -1,7 +1,7 @@
 // 弧线归一化测试:beatIndex 段号约定校正(模型常按提示词里的 1 基 [段N] 输出,消费端按 0 基读)
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { normalizeCharacterArcs } from './world-build'
+import { emptyExtraction, mergeExtractions, normalizeCharacterArcs } from './world-build'
 import type { StoryBeat } from './novel'
 
 const beats: StoryBeat[] = [
@@ -91,4 +91,25 @@ test('normalizeCharacterArcs:越界段号丢弃、名字对齐人物卡', () => 
   const out = normalizeCharacterArcs(raw, beats, [{ name: '林清雪' }])
   assert.equal(out[0]!.character, '林清雪')
   assert.deepEqual(out[0]!.beats.map(b => b.beatIndex), [0])
+})
+
+test('mergeExtractions:合并产物携带真实 mentionCount/sources,rule/hint/event 首选项回填', () => {
+  const m = mergeExtractions([
+    { chapter: 1, extract: { ...emptyExtraction(), characters: [{ name: '北柠' }], world_rules: [{ rule: '异国之人入关须有通关文牒', category: '社会规则' }], foreshadowing: [{ hint: '吊坠属男子' }], timeline_events: [{ event: '北柠坠入黑暗' }] } },
+    { chapter: 2, extract: { ...emptyExtraction(), characters: [{ name: '北柠' }, { name: '石勇' }], world_rules: [{ rule: '异国之人入关须有通关文牒', category: '社会规则' }], foreshadowing: [{ hint: '吊坠属男子' }], timeline_events: [{ event: '北柠坠入黑暗', time: '傍晚' }] } }
+  ])
+  const rule = m.entities.world_rules[0]!
+  assert.equal(rule.rule, '异国之人入关须有通关文牒')
+  assert.ok(rule.mentionCount >= 2, `规则计数应 ≥2,实际 ${rule.mentionCount}`)
+  assert.ok(rule.sources.length >= 2)
+  const f = m.entities.foreshadowing[0]!
+  assert.equal(f.hint, '吊坠属男子')
+  assert.ok(f.mentionCount >= 2)
+  const ev = m.entities.timeline_events[0]!
+  assert.equal(ev.event, '北柠坠入黑暗')
+  assert.equal(ev.time, '傍晚')
+  const c = m.entities.characters.find(x => x.name === '北柠')!
+  assert.equal(c.mentionCount, 2)
+  // 旧字段 name 保留(历史消费方/旧档兼容)
+  assert.equal(rule.name, '异国之人入关须有通关文牒')
 })

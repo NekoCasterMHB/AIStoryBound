@@ -552,6 +552,8 @@ export interface TurnPromptArgs {
   playerArcCharacter?: string
   /** overlay 高层字段(性向/尺度/舞台/标签),拼进题材行 */
   overlayMeta?: Pick<WorldOverlay, 'orientation' | 'setting' | 'heat' | 'tags'>
+  /** 归档全文(book2/works 均传):实体 mentionCount 缺失/全 0(旧管线产物)时按名称出现次数回填排序 */
+  fulltext?: string
 }
 
 /** null/undefined 安全截断:旧作品的实体字段(如伏笔 hint)可能缺省,直接读 length 会崩 */
@@ -657,6 +659,34 @@ function overlayToneLine(
   return bits.join('。')
 }
 
+/** 实体 mentionCount 回填缓存(WeakMap 按 entities 对象记忆化;每作品至多全文扫描一次)。
+ *  部分旧管线作品的实体 mentionCount 全为 0——topBy 退化为数组顺序,会把与现代世界相关的
+ *  头部实体(如穿越作品的现代学校/马路)每回合注入古代场景,产出毫不相干的剧情 */
+const mentionBackfillCache = new WeakMap<WorldEntities, Map<string, number>>()
+
+function backfillMentions(entities: WorldEntities | undefined, fulltext: string | undefined): Map<string, number> | null {
+  if (!entities || !fulltext) return null
+  const cached = mentionBackfillCache.get(entities)
+  if (cached) return cached
+  const counts = new Map<string, number>()
+  const names = new Set<string>()
+  for (const e of [...(entities.factions ?? []), ...(entities.locations ?? []), ...(entities.items ?? [])]) {
+    const n = (e as { name?: string }).name?.trim()
+    if (n && !(e.mentionCount > 0)) names.add(n)
+  }
+  for (const n of names) {
+    let pos = 0
+    let c = 0
+    while ((pos = fulltext.indexOf(n, pos)) >= 0) {
+      c++
+      pos += n.length
+    }
+    counts.set(n, c)
+  }
+  mentionBackfillCache.set(entities, counts)
+  return counts
+}
+
 /** 剧情轨道:细纲/弧线窗口化(玩家角色有弧线时用其弧线,按当前段近窗全量、远段压缩)+ 世界压缩 + 伏笔/冲突
  *  + v2 段节点锚(只注入已达摘要 + 下一未触发节点,§7.4)与各角色本段分线(§3.2) */
 function plotTrackBlock(args: {
@@ -673,10 +703,18 @@ function plotTrackBlock(args: {
   lastNode?: number
   /** 各角色本段分线(玩家在前;来自段角色文件「剧情」,仅建有文件的角色) */
   segmentStorylines?: { name: string, plot: string }[]
+  /** 归档全文(mentionCount 回填用,见 backfillMentions) */
+  fulltext?: string
 }): string {
   const lines: string[] = []
+  const backfill = backfillMentions(args.entities, args.fulltext)
+  const mcOf = <T extends { mentionCount: number }>(e: T): number => {
+    if (e.mentionCount > 0) return e.mentionCount
+    const n = (e as { name?: string }).name
+    return (n && backfill?.get(n.trim())) || 0
+  }
   const topBy = <T extends { mentionCount: number }>(arr: T[] | undefined, n: number) =>
-    [...(arr ?? [])].sort((a, b) => b.mentionCount - a.mentionCount).slice(0, n)
+    [...(arr ?? [])].sort((a, b) => mcOf(b) - mcOf(a)).slice(0, n)
 
   const arc = playerArc(args.characterArcs, args.playerName)
   if (arc) {
@@ -719,12 +757,29 @@ function plotTrackBlock(args: {
     lines.push(`本段各角色分线(各角色在这段时间点的剧情/行动线,演绎时保持一致):\n${args.segmentStorylines.map(s => `- ${s.name}:${clampText(s.plot, 240)}`).join('\n')}`)
   }
 
-  const rules = topBy(args.entities?.world_rules, 5)
+  // 旧管线作品的字段错位兼容:world_rules 无 rule(写在 name)、foreshadowing 无 hint(写在 name);
+  // 回退读取后仍过滤空条目——否则每回合注入「规则:社会规则;…」与空编号行(玩家看到的「乱码」)。
+  // 另按归一化文本去重(旧数据常见仅差句号的重复条目),去重后再取前 N
+  const dedupeByText = <T>(arr: T[] | undefined, textOf: (e: T) => string): T[] => {
+    const seen = new Set<string>()
+    return (arr ?? []).filter((e) => {
+      const k = textOf(e).replace(/[。.!！?？\s]/g, '')
+      if (!k || seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
+  }
+  const rules = topBy(dedupeByText(args.entities?.world_rules, r => r.rule ?? (r as { name?: string }).name ?? ''), 5)
+    .map(r => clampText([r.category, r.rule ?? (r as { name?: string }).name].filter(Boolean).join('·'), 40))
+    .filter(Boolean)
+  const foreshadows = topBy(dedupeByText(args.entities?.foreshadowing, f => f.hint ?? (f as { name?: string }).name ?? ''), 8)
+    .map(f => clampText(f.hint ?? (f as { name?: string }).name, 60))
+    .filter(Boolean)
   const factions = topBy(args.entities?.factions, 4)
   const locations = topBy(args.entities?.locations, 4)
   const worldBits: string[] = []
   if (rules.length) {
-    worldBits.push(`规则:${rules.map(r => clampText([r.category, r.rule].filter(Boolean).join('·'), 40)).join('；')}`)
+    worldBits.push(`规则:${rules.join('；')}`)
   }
   if (factions.length) {
     worldBits.push(`势力:${factions.map(f => `${f.name}${f.goal ? `(${clampText(f.goal, 24)})` : ''}`).join('、')}`)
@@ -734,9 +789,8 @@ function plotTrackBlock(args: {
   }
   if (worldBits.length) lines.push(`世界设定:\n${worldBits.join('\n')}`)
 
-  const foreshadows = topBy(args.entities?.foreshadowing, 8)
   if (foreshadows.length) {
-    lines.push(`伏笔/悬念:\n${foreshadows.map((f, i) => `${i + 1}. ${clampText(f.hint, 60)}`).join('\n')}`)
+    lines.push(`伏笔/悬念:\n${foreshadows.map((f, i) => `${i + 1}. ${f}`).join('\n')}`)
   }
   // 已被 AI 检查判为"非冲突"的条目不再占用游戏内裁决位
   const confs = (args.conflicts ?? []).filter(c => c.verdict !== 'not_conflict').slice(0, 5)
@@ -763,7 +817,7 @@ export interface TurnPromptPart {
 
 /** 组装叙事 prompt 分段:system 各块在前、user 各块在后,顺序即最终拼接顺序 */
 export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
-  const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening, deviceSpec, narrLength, reinjectPlot, entities, conflicts, storyline, characterArcs, playerArcCharacter, overlayMeta, stageIndex, v2Segment } = args
+  const { title, genre, summary, playerName, playerCard, cards, state, history, choice, summaryText, adultMode, activeSkills, preferScenes, avoidScenes, opening, deviceSpec, narrLength, reinjectPlot, entities, conflicts, storyline, characterArcs, playerArcCharacter, overlayMeta, stageIndex, v2Segment, fulltext } = args
   // v2 段数据:当前段角色文件(key=姓名)+ 已达节点进度(换段后进度不匹配视为未触发)
   const segFiles = v2Segment?.characters
   const nodeProgress = state.nodeProgress?.beat === stageIndex ? state.nodeProgress : undefined
@@ -842,7 +896,7 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
         })
         .filter((x): x is { name: string, plot: string } => !!x)
     : []
-  const track = plotTrackBlock({ entities, conflicts, storyline, characterArcs, playerName: playerArcCharacter || playerName, currentBeat: stageIndex, v2Segment, lastNode, segmentStorylines })
+  const track = plotTrackBlock({ entities, conflicts, storyline, characterArcs, playerName: playerArcCharacter || playerName, currentBeat: stageIndex, v2Segment, lastNode, segmentStorylines, fulltext })
   const playerLine = `你是《${title}》的互动叙事引擎。玩家扮演「${playerName}」(${headPlayer ? cardBrief(headPlayer) : '原著角色'})。`
   const othersLine = `可能出场的其他角色:\n${others.map(c => cardBrief(c)).join('\n')}`
   const stateLine = `当前游戏状态:${JSON.stringify(stateForPrompt(state, [...sceneNames, playerName]), null, 0)}`
@@ -976,7 +1030,12 @@ export function buildTurnPromptParts(args: TurnPromptArgs): TurnPromptPart[] {
       return !!k && protagonistNames.some(n => n === k || n.includes(k) || k.includes(n))
     })
   }
-  if (!mainChar) mainChar = effCards.find(c => c.name !== playerName && c.role === '主角')
+  // 段未标「主角」名单时才回退 role==='主角',且仅限当段登场卡——老作品/作者自设常有多张
+  // 主角卡(如不在剧情中的 OC 卡),无差别回退会把毫不相干的角色立为「对手戏锚」每回合注入,
+  // AI 会把她写进场景产出无关剧情;段标了名单但除玩家外无卡可锚时,宁可不贴锚
+  if (!mainChar && !protagonistNames.length) {
+    mainChar = effCards.find(c => c.name !== playerName && c.role === '主角' && sceneNames.has(c.name))
+  }
   if (mainChar) {
     anchors.push(`【NPC 对手戏角色,不可扮演,只能以玩家视角观察其言行】${mainChar.name}:${cardBrief(mainChar, dyn[mainChar.name])}`)
   }

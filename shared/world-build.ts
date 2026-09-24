@@ -744,15 +744,22 @@ export function mergeExtractions(
     if (acc.textParts.background.length > 1) ent.backgroundVariants = [...acc.textParts.background]
   }
 
+  // 输出统一回填累加器上的真实计数与来源:initEntity 在 entity 内预置的 mentionCount:0/sources:[]
+  // 从未被 addSource 更新(它只累加 Acc 包装层),直接输出 entity 会让成书合成选角、游玩引擎、
+  // 世界详情弹窗全部拿到全 0 计数与空出处。规则/伏笔/事件的文本被合并存进 name,消费方按提取
+  // schema 读取 rule/hint/event,这里同步回填同名首选项。
+  const out = <T>(a: Acc, extra?: Record<string, unknown>): T =>
+    ({ ...a.entity, sources: a.sources, mentionCount: a.mentionCount, ...extra }) as T
+
   return {
     entities: {
-      characters: [...chars.values()].map(a => a.entity as unknown as MergedCharacter),
-      locations: [...locs.values()].map(a => a.entity as unknown as WorldEntities['locations'][number]),
-      factions: [...factionMap.values()].map(a => a.entity as unknown as WorldEntities['factions'][number]),
-      timeline_events: [...events.values()].map(a => a.entity as unknown as WorldEntities['timeline_events'][number]),
-      world_rules: [...rules.values()].map(a => a.entity as unknown as WorldEntities['world_rules'][number]),
-      items: [...items.values()].map(a => a.entity as unknown as WorldEntities['items'][number]),
-      foreshadowing: [...foreshadow.values()].map(a => a.entity as unknown as WorldEntities['foreshadowing'][number])
+      characters: [...chars.values()].map(a => out<MergedCharacter>(a)),
+      locations: [...locs.values()].map(a => out(a)),
+      factions: [...factionMap.values()].map(a => out(a)),
+      timeline_events: [...events.values()].map(a => out(a, { event: a.displayName })),
+      world_rules: [...rules.values()].map(a => out(a, { rule: a.displayName })),
+      items: [...items.values()].map(a => out(a)),
+      foreshadowing: [...foreshadow.values()].map(a => out(a, { hint: a.displayName }))
     },
     conflicts
   }
