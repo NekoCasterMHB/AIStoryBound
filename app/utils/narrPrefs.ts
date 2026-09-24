@@ -1,12 +1,12 @@
 // app/utils/narrPrefs.ts
 // 叙事温度(本地偏好,默认 1.0):回合正文生成的随机性/文风多样性档位。
-// 范围 0~2.0、步进 0.1(与 DeepSeek 官方 temperature 参数范围一致);
-// 档位划分依据官方参数建议(创意写作/诗歌推荐 temperature=1.5)与社区常用区间。
-// 设置入口:个人中心滑动条(即时保存);游戏页每回合读入注入叙事调用。
+// 范围 0~1.0、步进 0.1;档位划分依据社区常用区间(稳定叙事优先,高温易跳设定/情节失控)。
+// 设置入口:个人中心/游戏内设置滑动条(即时保存);游戏页每回合读入注入叙事调用。
+// 存量迁移:旧版本上限 2.0,超出新上限的存档值在读取时按越界处理自动回落默认 1.0。
 const KEY = 'narr-temperature'
 
 export const NARR_TEMP_MIN = 0
-export const NARR_TEMP_MAX = 2.0
+export const NARR_TEMP_MAX = 1.0
 export const NARR_TEMP_STEP = 0.1
 export const NARR_TEMP_DEFAULT = 1.0
 
@@ -21,9 +21,7 @@ export interface TempTier {
 
 export const NARR_TEMP_TIERS: TempTier[] = [
   { label: '稳定', range: [0, 0.6], desc: '严格遵循人物卡与设定,文风收敛,叙事保守' },
-  { label: '均衡', range: [0.7, 1.0], desc: '兼顾文笔与稳定性,叙事平稳(默认档 1.0)' },
-  { label: '生动', range: [1.1, 1.5], desc: '文笔更丰富、角色更鲜活,偶有情节跳脱' },
-  { label: '创意', range: [1.6, 2.0], desc: '官方创意写作推荐区间,文风最自由,可能偏离原设定' }
+  { label: '均衡', range: [0.7, 1.0], desc: '兼顾文笔与稳定性,叙事平稳(默认档 1.0,上限)' }
 ]
 
 export function loadNarrTemp(): number {
@@ -39,7 +37,8 @@ export function loadNarrTemp(): number {
 
 export function saveNarrTemp(v: number): void {
   if (typeof localStorage === 'undefined') return
-  localStorage.setItem(KEY, String(Math.round(v * 10) / 10))
+  const clamped = Math.min(NARR_TEMP_MAX, Math.max(NARR_TEMP_MIN, Math.round(v * 10) / 10))
+  localStorage.setItem(KEY, String(clamped))
 }
 
 /** 当前温度所属档位(区间外返回 null) */
