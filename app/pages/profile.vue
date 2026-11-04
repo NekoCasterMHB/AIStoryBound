@@ -72,13 +72,17 @@ interface PurchaseRecord {
 const me = ref<MeInfo | null>(null)
 const loadError = ref<string | null>(null)
 
-/** 充值开关(数据库配置,管理端可即时启停):true=维护中禁用 */
+/** 支付渠道可用性(数据库配置,管理端可按渠道单独启停):两渠道都禁 = 全局维护 */
 const paymentDisabled = ref(false)
+const wxpayDisabled = ref(false)
+const alipayDisabled = ref(false)
 
 async function fetchPaymentConfig() {
-  paymentDisabled.value = await $fetch<{ paymentDisabled: boolean }>('/api/payment/config')
-    .then(r => r.paymentDisabled)
-    .catch(() => false)
+  const cfg = await $fetch<{ paymentDisabled: boolean, wxpayDisabled: boolean, alipayDisabled: boolean }>('/api/payment/config')
+    .catch(() => null)
+  wxpayDisabled.value = cfg?.wxpayDisabled ?? false
+  alipayDisabled.value = cfg?.alipayDisabled ?? false
+  paymentDisabled.value = cfg?.paymentDisabled ?? false
 }
 
 async function loadMe() {
@@ -2247,33 +2251,44 @@ watch(narrLength, v => saveNarrLength(v))
         </div>
       </template>
       <template #footer>
-        <div class="grid w-full grid-cols-2 gap-2">
+        <div
+          class="grid w-full gap-2"
+          :class="wxpayDisabled || alipayDisabled ? 'grid-cols-1' : 'grid-cols-2'"
+        >
           <UButton
+            v-if="!wxpayDisabled"
             block
             class="bg-[#07C160]! text-white!"
             :loading="buyBusy === 'wxpay'"
-            :disabled="paymentDisabled || buyBusy === 'alipay'"
+            :disabled="buyBusy === 'alipay'"
             @click="submitOrder('wxpay')"
           >
             <UIcon
               name="i-simple-icons-wechat"
               class="size-5 shrink-0"
             />
-            {{ paymentDisabled ? '微信支付(维护中)' : '微信支付' }}
+            微信支付
           </UButton>
           <UButton
+            v-if="!alipayDisabled"
             block
             class="bg-[#1677FF]! text-white!"
             :loading="buyBusy === 'alipay'"
-            :disabled="paymentDisabled || buyBusy === 'wxpay'"
+            :disabled="buyBusy === 'wxpay'"
             @click="submitOrder('alipay')"
           >
             <UIcon
               name="i-simple-icons-alipay"
               class="size-5 shrink-0"
             />
-            {{ paymentDisabled ? '支付宝(维护中)' : '支付宝' }}
+            支付宝
           </UButton>
+          <p
+            v-if="paymentDisabled"
+            class="col-span-full text-sm text-amber-600"
+          >
+            当前支付渠道均不可用,可私聊作者购买 token。
+          </p>
           <p class="col-span-2 text-left text-xs leading-loose text-neutral-500">
             * 充值 token 不支持退款
             <br>

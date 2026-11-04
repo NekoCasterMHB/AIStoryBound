@@ -5,7 +5,7 @@ import { requireUser } from '../../utils/authz'
 import { getMicropayConfig, buildSignStr, signRSA, generateOutTradeNo } from '../../utils/micropay'
 import { isTokenPackageId, getTokenPackageById } from '../../../shared/quota-packages'
 import { useD1 } from '../../utils/d1'
-import { isPaymentDisabled } from '../../utils/config'
+import { isPaymentDisabled, isChannelDisabled } from '../../utils/config'
 import { closeExpiredPendingOrders } from '../../utils/orders'
 import { quotaPackageOrder } from '../../db/schema'
 import { eq, and } from 'drizzle-orm'
@@ -18,11 +18,6 @@ export default defineEventHandler(async (event) => {
   const sessUser = await requireUser(event)
   const db = useD1(event)
 
-  // 充值开关(管理端可即时启停,见 /admin/recharge 与 app_config 表)
-  if (await isPaymentDisabled(db)) {
-    throw createError({ statusCode: 503, statusMessage: '充值功能维护中,暂时无法下单' })
-  }
-
   const body = await readBody<{ packageId?: string, payType?: string }>(event).catch(() => ({} as { packageId?: string, payType?: string }))
   const { packageId, payType } = body
 
@@ -31,6 +26,16 @@ export default defineEventHandler(async (event) => {
   }
   if (payType !== 'wxpay' && payType !== 'alipay') {
     throw createError({ statusCode: 400, statusMessage: 'payType 必须为 wxpay 或 alipay' })
+  }
+
+  // 渠道开关(管理端可按渠道单独启停,见 /admin/recharge 与 app_config 表;
+  // 全局维护由健康检查写入,对所有渠道生效)
+  if (await isChannelDisabled(db, payType)) {
+    const globalMaintenance = await isPaymentDisabled(db)
+    throw createError({
+      statusCode: 503,
+      statusMessage: globalMaintenance ? '充值功能维护中,暂时无法下单' : (payType === 'wxpay' ? '微信支付暂不可用' : '支付宝暂不可用')
+    })
   }
   const pkg = getTokenPackageById(packageId)!
 

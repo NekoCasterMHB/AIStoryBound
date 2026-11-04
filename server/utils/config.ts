@@ -45,7 +45,34 @@ export function getPaymentDisabledReason(db: Db): Promise<string | undefined> {
   return getAppConfig(db, CONFIG_KEY_PAYMENT_DISABLED_REASON)
 }
 
-/** 充值是否处于关闭状态(带 event 便捷版,供支付相关接口使用) */
-export function isPaymentDisabledEvent(event: H3Event): Promise<boolean> {
-  return isPaymentDisabled(useD1(event))
+/** 微信支付渠道开关:1=单独禁用,0/缺省=开放(管理员后台可改) */
+export const CONFIG_KEY_WXPAY_DISABLED = 'payment_disabled_wxpay'
+
+/** 支付宝渠道开关:1=单独禁用,0/缺省=开放(管理员后台可改) */
+export const CONFIG_KEY_ALIPAY_DISABLED = 'payment_disabled_alipay'
+
+/** 渠道单独禁用的原因(管理员手动关闭时写入,恢复开放时清除) */
+export const CONFIG_KEY_WXPAY_DISABLED_REASON = 'payment_disabled_wxpay_reason'
+export const CONFIG_KEY_ALIPAY_DISABLED_REASON = 'payment_disabled_alipay_reason'
+
+export type PayChannel = 'wxpay' | 'alipay'
+
+/** 渠道是否有效禁用:渠道开关为 1,或全局维护(健康检查自动关闭)时对所有渠道生效 */
+export async function isChannelDisabled(db: Db, channel: PayChannel): Promise<boolean> {
+  if (await isPaymentDisabled(db)) return true
+  const key = channel === 'wxpay' ? CONFIG_KEY_WXPAY_DISABLED : CONFIG_KEY_ALIPAY_DISABLED
+  return (await getAppConfig(db, key)) === '1'
+}
+
+/** 渠道是否有效禁用(带 event 便捷版) */
+export function isChannelDisabledEvent(event: H3Event, channel: PayChannel): Promise<boolean> {
+  return isChannelDisabled(useD1(event), channel)
+}
+
+/** 渠道单独禁用原因(未单独禁用/无原因返回 undefined;全局维护不算渠道单独禁用) */
+export async function getChannelDisabledReason(db: Db, channel: PayChannel): Promise<string | undefined> {
+  const key = channel === 'wxpay' ? CONFIG_KEY_WXPAY_DISABLED : CONFIG_KEY_ALIPAY_DISABLED
+  if ((await getAppConfig(db, key)) !== '1') return undefined
+  const reasonKey = channel === 'wxpay' ? CONFIG_KEY_WXPAY_DISABLED_REASON : CONFIG_KEY_ALIPAY_DISABLED_REASON
+  return (await getAppConfig(db, reasonKey)) ?? undefined
 }

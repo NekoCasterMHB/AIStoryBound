@@ -74,36 +74,56 @@ function fmtYuan(fen: number) {
   return (fen / 100).toFixed(2)
 }
 
-// ---- 充值开关(存 app_config 表,即时生效,无需重新部署) ----
-const paymentDisabled = ref(false)
-/** 进入维护的原因(健康检查自动关闭 / 管理员手动关闭) */
+// ---- 支付渠道开关(存 app_config 表,按渠道单独启停,即时生效,无需重新部署) ----
+// 两渠道都关闭时用户端即视为全局维护(健康检查自动维护写全局 key,对所有渠道生效)。
+const wxpayDisabled = ref(false)
+const alipayDisabled = ref(false)
+/** 渠道单独禁用的原因(管理员手动关闭时记录) */
+const wxpayReason = ref('')
+const alipayReason = ref('')
+/** 健康检查自动维护的原因(全局 key) */
 const maintenanceReason = ref('')
-const configBusy = ref(false)
+const configBusy = ref<'wxpay' | 'alipay' | null>(null)
 
 async function loadConfig() {
-  const cfg = await $fetch<{ paymentDisabled: boolean, reason?: string }>('/api/payment/config')
-    .catch(() => null)
-  paymentDisabled.value = cfg?.paymentDisabled ?? false
+  const cfg = await $fetch<{
+    paymentDisabled: boolean, reason?: string,
+    wxpayDisabled: boolean, alipayDisabled: boolean,
+    channelReasons: { wxpay?: string, alipay?: string }
+  }>('/api/payment/config').catch(() => null)
+  wxpayDisabled.value = cfg?.wxpayDisabled ?? false
+  alipayDisabled.value = cfg?.alipayDisabled ?? false
+  wxpayReason.value = cfg?.channelReasons?.wxpay ?? ''
+  alipayReason.value = cfg?.channelReasons?.alipay ?? ''
   maintenanceReason.value = cfg?.reason ?? ''
 }
-async function togglePayment() {
-  configBusy.value = true
+
+async function toggleChannel(channel: 'wxpay' | 'alipay') {
+  if (configBusy.value) return
+  configBusy.value = channel
   try {
-    const res = await $fetch<{ paymentDisabled: boolean, reason?: string }>('/api/admin/recharge/config', {
+    const body = channel === 'wxpay'
+      ? { wxpayDisabled: !wxpayDisabled.value }
+      : { alipayDisabled: !alipayDisabled.value }
+    const res = await $fetch<{ wxpayDisabled: boolean, alipayDisabled: boolean }>('/api/admin/recharge/config', {
       method: 'PUT',
-      body: { paymentDisabled: !paymentDisabled.value }
+      body
     })
-    paymentDisabled.value = res.paymentDisabled
-    maintenanceReason.value = res.reason ?? ''
+    wxpayDisabled.value = res.wxpayDisabled
+    alipayDisabled.value = res.alipayDisabled
+    if (channel === 'wxpay') wxpayReason.value = res.wxpayDisabled ? '管理员手动关闭' : ''
+    else alipayReason.value = res.alipayDisabled ? '管理员手动关闭' : ''
     toast.add({
-      title: res.paymentDisabled ? '已关闭充值入口' : '已开启充值入口',
-      description: res.paymentDisabled ? '用户端充值按钮将禁用并显示维护提示' : '用户端可正常下单充值',
-      color: res.paymentDisabled ? 'warning' : 'success'
+      title: channel === 'wxpay'
+        ? (res.wxpayDisabled ? '已禁用微信支付' : '已开启微信支付')
+        : (res.alipayDisabled ? '已禁用支付宝' : '已开启支付宝'),
+      description: res.wxpayDisabled && res.alipayDisabled ? '两渠道均已关闭,用户端充值入口进入维护状态' : undefined,
+      color: (channel === 'wxpay' ? res.wxpayDisabled : res.alipayDisabled) ? 'warning' : 'success'
     })
   } catch (e) {
-    toast.add({ title: '切换充值开关失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+    toast.add({ title: '切换支付渠道开关失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
   } finally {
-    configBusy.value = false
+    configBusy.value = null
   }
 }
 onMounted(() => {
@@ -193,27 +213,50 @@ function fmtTs(ts: number | null) {
           全部 token 加油包订单(微支付网关回调入账,无需人工确认)
         </p>
       </div>
-      <div class="flex items-center gap-4">
-        <div class="flex flex-col items-end gap-1">
+      <div class="flex items-start gap-6">
+        <!-- 渠道开关:按渠道单独启停,两渠道都关闭 = 用户端全局维护 -->
+        <div
+          v-for="ch in ([{ key: 'wxpay', label: '微信支付', disabled: wxpayDisabled, reason: wxpayReason }, { key: 'alipay', label: '支付宝', disabled: alipayDisabled, reason: alipayReason }] as const)"
+          :key="ch.key"
+          class="flex flex-col items-end gap-1"
+        >
           <p class="text-xs text-neutral-500">
-            充值入口
+            {{ ch.label }}
           </p>
           <USwitch
-            :model-value="!paymentDisabled"
-            :loading="configBusy"
+            :model-value="!ch.disabled"
+            :loading="configBusy === ch.key"
             color="primary"
-            aria-label="充值入口开关"
-            @update:model-value="togglePayment"
+            :aria-label="`${ch.label}开关`"
+            @update:model-value="toggleChannel(ch.key)"
           />
           <p
             class="text-xs font-medium"
-            :class="paymentDisabled ? 'text-amber-600' : 'text-emerald-600'"
+            :class="ch.disabled ? 'text-amber-600' : 'text-emerald-600'"
           >
-            {{ paymentDisabled ? '维护中(已关闭)' : '开放中' }}
+            {{ ch.disabled ? '已禁用' : '开放中' }}
           </p>
-          <!-- 维护原因:健康检查自动关闭或管理员手动关闭时记录,便于定位 -->
           <p
-            v-if="paymentDisabled && maintenanceReason"
+            v-if="ch.disabled && ch.reason"
+            class="max-w-64 text-right text-xs text-amber-600"
+            :title="ch.reason"
+          >
+            原因:{{ ch.reason }}
+          </p>
+        </div>
+        <!-- 全局维护状态(两渠道都关闭,或健康检查自动维护) -->
+        <div
+          v-if="wxpayDisabled && alipayDisabled"
+          class="flex flex-col items-end gap-1"
+        >
+          <p class="text-xs text-neutral-500">
+            充值入口
+          </p>
+          <p class="text-xs font-medium text-amber-600">
+            维护中(两渠道均已关闭)
+          </p>
+          <p
+            v-if="maintenanceReason"
             class="max-w-64 text-right text-xs text-amber-600"
             :title="maintenanceReason"
           >
