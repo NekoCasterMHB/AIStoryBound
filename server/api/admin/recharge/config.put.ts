@@ -7,6 +7,7 @@ import { useD1 } from '../../../utils/d1'
 import {
   CONFIG_KEY_WXPAY_DISABLED, CONFIG_KEY_ALIPAY_DISABLED,
   CONFIG_KEY_WXPAY_DISABLED_REASON, CONFIG_KEY_ALIPAY_DISABLED_REASON,
+  CONFIG_KEY_PAYMENT_DISABLED, CONFIG_KEY_PAYMENT_DISABLED_REASON,
   getAppConfig, setAppConfig, deleteAppConfig
 } from '../../../utils/config'
 
@@ -35,6 +36,15 @@ export default defineEventHandler(async (event) => {
 
   await applyChannel('wxpay', wxpayDisabled)
   await applyChannel('alipay', alipayDisabled)
+
+  // 迁移旧版全局开关:渠道判定含全局 key(payment_disabled),若其仍是旧管理 UI 写入的
+  // 「管理员手动关闭」,管理员的本次渠道操作即最新意图,清除之,否则会永久压住渠道开关。
+  // 健康检查写入的自动维护(其他原因)不动,由健康检查成功后自行恢复。
+  const globalReason = await getAppConfig(db, CONFIG_KEY_PAYMENT_DISABLED_REASON)
+  if (globalReason === '管理员手动关闭') {
+    await deleteAppConfig(db, CONFIG_KEY_PAYMENT_DISABLED)
+    await deleteAppConfig(db, CONFIG_KEY_PAYMENT_DISABLED_REASON)
+  }
 
   // 回读实际落库状态(未提交的渠道维持原状)
   const [wxpayKey, alipayKey] = await Promise.all([
