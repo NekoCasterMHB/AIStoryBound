@@ -67,11 +67,14 @@ export default defineEventHandler(async (event) => {
     .offset((page - 1) * pageSize)
     .all()
 
-  // 汇总统计:缓存总数 / 拉取总次数 / 成书总消耗(排查命中问题时一眼看全站缓存规模)
+  // 汇总统计:缓存总数 / 拉取总次数 / 成书总消耗 / 60 天未拉取条数(排查命中问题时一眼看全站缓存规模)
+  // 60 天阈值与 cleanup-stale.post.ts 的 STALE_DAYS 一致,改动需同步
+  const staleCutoff = Date.now() - 60 * 24 * 60 * 60 * 1000
   const summary = await db.select({
     totalCache: count(),
     totalDownloads: sql<number>`COALESCE(SUM(${worldCache.downloads}), 0)`,
-    totalTokens: sql<number>`COALESCE(SUM(${worldCache.tokensUsed}), 0)`
+    totalTokens: sql<number>`COALESCE(SUM(${worldCache.tokensUsed}), 0)`,
+    staleCache: sql<number>`COALESCE(SUM(CASE WHEN ${worldCache.updatedAt} < ${staleCutoff} THEN 1 ELSE 0 END), 0)`
   }).from(worldCache).all()
 
   return {
@@ -101,7 +104,8 @@ export default defineEventHandler(async (event) => {
     stats: {
       totalCache: summary[0]?.totalCache ?? 0,
       totalDownloads: summary[0]?.totalDownloads ?? 0,
-      totalTokens: summary[0]?.totalTokens ?? 0
+      totalTokens: summary[0]?.totalTokens ?? 0,
+      staleCache: summary[0]?.staleCache ?? 0
     }
   }
 })

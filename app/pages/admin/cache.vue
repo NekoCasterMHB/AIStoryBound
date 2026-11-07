@@ -34,7 +34,7 @@ interface CachePage {
   dir: 'asc' | 'desc'
   q: string
   mode: 'full' | 'eco' | undefined
-  stats: { totalCache: number, totalDownloads: number, totalTokens: number }
+  stats: { totalCache: number, totalDownloads: number, totalTokens: number, staleCache: number }
 }
 
 const rows = ref<CacheRow[]>([])
@@ -141,6 +141,28 @@ async function promote(row: CacheRow) {
     promotingId.value = null
   }
 }
+
+// ---- 清理 60 天前旧缓存(批量:删记录 + 删 R2 成书文件) ----
+const cleanupOpen = ref(false)
+const cleaningUp = ref(false)
+
+async function submitCleanup() {
+  cleaningUp.value = true
+  try {
+    const res = await $fetch<{ ok: boolean, deleted: number }>('/api/admin/cache/cleanup-stale', { method: 'POST' })
+    toast.add({
+      title: `已清理 ${res.deleted} 条旧缓存`,
+      description: res.deleted ? '缓存记录与对应成书文件均已删除' : undefined,
+      color: 'success'
+    })
+    cleanupOpen.value = false
+    void load(page.value)
+  } catch (e) {
+    toast.add({ title: '清理失败', description: e instanceof Error ? e.message : String(e), color: 'error' })
+  } finally {
+    cleaningUp.value = false
+  }
+}
 </script>
 
 <template>
@@ -235,6 +257,18 @@ async function promote(row: CacheRow) {
           eco
         </UButton>
       </div>
+      <UButton
+        class="ms-auto"
+        color="error"
+        variant="outline"
+        size="sm"
+        icon="i-lucide-broom"
+        :disabled="!stats || stats.staleCache === 0"
+        :title="stats && stats.staleCache === 0 ? '暂无 60 天未拉取的旧缓存' : undefined"
+        @click="cleanupOpen = true"
+      >
+        清理 60 天前旧缓存({{ stats?.staleCache ?? 0 }})
+      </UButton>
     </div>
 
     <UCard>
@@ -411,6 +445,40 @@ async function promote(row: CacheRow) {
             @click="submitDelete"
           >
             确认删除
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <!-- 清理 60 天前旧缓存确认 -->
+    <UModal
+      v-model:open="cleanupOpen"
+      title="清理 60 天前旧缓存"
+    >
+      <template #body>
+        <p class="text-sm text-neutral-600 dark:text-neutral-300">
+          将删除最近 60 天内没有任何拉取的 <b>{{ stats?.staleCache ?? 0 }}</b> 条缓存,缓存记录与对应成书文件(R2)一并删除。删除后相同内容的 txt 需重新生成才能拉取。
+        </p>
+        <p class="mt-2 text-xs text-error/80">
+          注意:历史拉取任务与缓存共用同一成书文件,清理后这些任务的成书下载将不可用(源文件不受影响)。
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            color="neutral"
+            variant="outline"
+            @click="cleanupOpen = false"
+          >
+            取消
+          </UButton>
+          <UButton
+            color="error"
+            icon="i-lucide-broom"
+            :loading="cleaningUp"
+            @click="submitCleanup"
+          >
+            确认清理 {{ stats?.staleCache ?? 0 }} 条
           </UButton>
         </div>
       </template>
